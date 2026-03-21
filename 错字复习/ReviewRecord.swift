@@ -3,14 +3,14 @@ import SwiftData
 
 @Model
 final class ReviewRecord {
-    var id: UUID
-    var itemID: UUID
-    var reviewedAt: Date
-    var resultRawValue: String
-    var modeRawValue: String
-    var oldStage: Int
-    var newStage: Int
-    var note: String
+    var id: UUID = UUID()
+    var itemID: UUID = UUID()
+    var reviewedAt: Date = Date()
+    var resultRawValue: String = ReviewResult.correct.rawValue
+    var modeRawValue: String = ReviewMode.scheduled.rawValue
+    var oldStage: Int = 0
+    var newStage: Int = 0
+    var note: String = ""
 
     init(
         id: UUID = UUID(),

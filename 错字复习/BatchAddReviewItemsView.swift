@@ -61,17 +61,20 @@ struct BatchAddReviewItemsView: View {
     }
 
     private var introCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("一次导入多条内容")
-                .font(.system(.title, design: .rounded, weight: .bold))
+        VStack(alignment: .leading, spacing: 4) {
+            Text("批量导入错题")
+                .font(.system(.title3, design: .rounded, weight: .bold))
+                .foregroundStyle(.white)
 
-            Text("适合把当天写错的内容整体贴进来。当前批量录入按同一种类型处理。")
-                .foregroundStyle(.secondary)
+            Text("适合把当天写错的内容整体贴进来批量录入。")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.85))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(24)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
         .background(
-            RoundedRectangle(cornerRadius: 28)
+            RoundedRectangle(cornerRadius: 18)
                 .fill(
                     LinearGradient(
                         colors: [.indigo.opacity(0.85), .blue.opacity(0.55)],
@@ -83,70 +86,99 @@ struct BatchAddReviewItemsView: View {
     }
 
     private var configCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("类型与来源")
-                .font(.headline)
-
-            Picker("类型", selection: $type) {
-                ForEach(ReviewItemType.allCases) { itemType in
-                    Text(itemType.rawValue).tag(itemType)
+        VStack(spacing: 18) {
+            HStack {
+                Text("题目类型")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Picker("类型", selection: $type) {
+                    Text("词句").tag(ReviewItemType.phrase)
+                    Text("英语").tag(ReviewItemType.englishWord)
                 }
+                .pickerStyle(.segmented)
+                .frame(width: 120)
             }
-            .pickerStyle(.segmented)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20))
 
-            TextField("默认来源，可选，例如 语文听写 / 英语听写", text: $defaultSource)
-                .textFieldStyle(.roundedBorder)
+            VStack(alignment: .leading, spacing: 10) {
+                Label("默认来源 (可选)", systemImage: "tag.fill")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.purple)
+                
+                TextField("输入这批错题共用的来源", text: $defaultSource)
+                    .textFieldStyle(.plain)
+                    .padding(12)
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+            }
+            .padding(20)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
         }
-        .padding(20)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
     }
 
     private var editorCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text("批量内容")
-                    .font(.headline)
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("核心内容", systemImage: "star.fill")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.orange)
+                    Text("每行一条，点右侧按钮插入分隔符")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
-                Text(editorStatusText)
-                    .foregroundStyle(.secondary)
+                
+                Button {
+                    rawText += " | "
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("|")
+                            .font(.system(.body, design: .monospaced, weight: .bold))
+                        Text("分隔符")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.accentColor.opacity(0.12), in: Capsule())
+                }
             }
 
-            TextEditor(text: $rawText)
-                .frame(minHeight: 220)
-                .padding(12)
-                .background(Color(uiColor: .secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 18))
-                .overlay(alignment: .topLeading) {
-                    if rawText.isEmpty {
-                        Text(placeholderText)
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 20)
-                    }
-                }
+            PlaceholderTextEditor(text: $rawText, placeholder: placeholderText, minHeight: 240)
+            
+            HStack {
+                Label(editorStatusText, systemImage: "text.badge.checkmark")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(canImport ? .blue : .secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(canImport ? Color.blue.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(20)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
     }
 
     private var formatCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("格式说明")
-                .font(.headline)
-
-            Text("每行一条，支持这几种写法：")
-                .foregroundStyle(.secondary)
-
-            Text("`欢迎`")
-                .font(.callout.monospaced())
-            Text("`欢迎 | 高兴地接待别人`")
-                .font(.callout.monospaced())
-            Text("`apple | 苹果 | 英语听写`")
-                .font(.callout.monospaced())
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "info.circle.fill")
+                .foregroundStyle(.blue)
+            
+            VStack(alignment: .leading, spacing: 6) {
+                Text("支持格式：每行一条，可用 | 分隔提示和来源。")
+                Text("例如：`apple | 苹果 | 英语作业`")
+                    .font(.caption.monospaced())
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(20)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+        .padding(16)
+        .background(Color.blue.opacity(0.05), in: RoundedRectangle(cornerRadius: 16))
     }
 
     private var placeholderText: String {

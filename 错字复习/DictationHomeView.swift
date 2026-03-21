@@ -4,6 +4,9 @@ import SwiftData
 struct DictationHomeView: View {
     @Query(sort: \DictationSession.createdAt, order: .reverse) private var sessions: [DictationSession]
     @Query(sort: \DictationEntry.sortOrder) private var allEntries: [DictationEntry]
+    
+    @State private var previewSession: DictationSession?
+    @State private var activeSession: DictationSession?
 
     var body: some View {
         List {
@@ -53,6 +56,18 @@ struct DictationHomeView: View {
             }
         }
         .navigationTitle("听写安排")
+        .sheet(item: $previewSession) { session in
+            DictationPreviewView(
+                session: session,
+                entries: entries(for: session),
+                onStartSession: {
+                    activeSession = session
+                }
+            )
+        }
+        .navigationDestination(item: $activeSession) { session in
+            DictationSessionView(session: session, entries: entries(for: session))
+        }
     }
 
     private var todayAndOverdue: [DictationSession] {
@@ -75,26 +90,42 @@ struct DictationHomeView: View {
     }
 
     private func sessionRow(for session: DictationSession) -> some View {
-        NavigationLink {
-            destinationView(for: session)
-        } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text(session.title)
-                        .font(.headline)
-                    Spacer()
-                    Text(statusText(for: session))
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(statusColor(for: session))
-                }
+        HStack(spacing: 0) {
+            NavigationLink {
+                destinationView(for: session)
+            } label: {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(session.title)
+                            .font(.headline)
+                        Spacer()
+                        Text(statusText(for: session))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(statusColor(for: session))
+                    }
 
-                HStack {
-                    Text("\(session.type.rawValue) · \(entries(for: session).count) 条")
-                    Spacer()
-                    Text(session.scheduledDate.formatted(date: .abbreviated, time: .omitted))
-                        .font(.caption)
+                    HStack {
+                        Text("\(session.type.displayName) · \(entries(for: session).count) 条")
+                        Spacer()
+                        Text(session.scheduledDate.formatted(date: .abbreviated, time: .omitted))
+                            .font(.caption)
+                    }
+                    .foregroundStyle(.secondary)
                 }
-                .foregroundStyle(.secondary)
+            }
+            
+            if !session.isFinished && !session.isReviewed {
+                Button {
+                    previewSession = session
+                } label: {
+                    Image(systemName: "eye.circle")
+                        .font(.title2)
+                        .foregroundStyle(.blue.opacity(0.8))
+                        .padding(.leading, 12)
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -151,5 +182,111 @@ struct DictationHomeView: View {
             return .gray
         }
         return .blue
+    }
+}
+
+struct DictationPreviewView: View {
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var speaker = DictationSpeaker()
+    
+    let session: DictationSession
+    let entries: [DictationEntry]
+    var onStartSession: () -> Void
+    
+    var body: some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 20) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(session.title)
+                            .font(.system(.title2, design: .rounded, weight: .bold))
+                        
+                        Text("共 \(entries.count) 条内容 · \(session.type.displayName)")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
+                    
+                    VStack(spacing: 12) {
+                        ForEach(entries.indices, id: \.self) { index in
+                            let entry = entries[index]
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    HStack {
+                                        Text("\(index + 1)")
+                                            .font(.caption2.weight(.bold))
+                                            .foregroundStyle(.blue)
+                                            .frame(width: 22, height: 22)
+                                            .background(Color.blue.opacity(0.1), in: Circle())
+                                        
+                                        TypeBadge(type: entry.type)
+                                        
+                                        Spacer()
+                                    }
+                                    
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(entry.content)
+                                            .font(.system(.title3, design: .rounded, weight: .bold))
+                                            .foregroundStyle(.primary)
+                                        
+                                        if !entry.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                            Text(entry.prompt)
+                                                .font(.headline.weight(.medium))
+                                                .foregroundStyle(.blue)
+                                        }
+                                    }
+                                }
+                                
+                                Spacer()
+                                
+                                Button {
+                                    speaker.speak(content: entry.content, type: entry.type)
+                                } label: {
+                                    Image(systemName: "speaker.wave.2.circle.fill")
+                                        .font(.title2)
+                                        .foregroundStyle(.blue.opacity(0.6))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(16)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 20)
+                                    .strokeBorder(.secondary.opacity(0.1), lineWidth: 1)
+                            )
+                        }
+                    }
+                }
+                .padding(20)
+                .padding(.bottom, 100)
+            }
+            .navigationTitle("听写预习")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("关闭") {
+                        dismiss()
+                    }
+                }
+            }
+            .onDisappear {
+                speaker.stop()
+            }
+            .safeAreaInset(edge: .bottom) {
+                VStack {
+                    Button {
+                        dismiss()
+                        onStartSession()
+                    } label: {
+                        Text("开始听写")
+                    }
+                    .buttonStyle(ResultButtonStyle(color: .blue))
+                    .padding()
+                }
+                .background(.bar)
+            }
+        }
     }
 }

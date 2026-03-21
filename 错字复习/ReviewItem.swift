@@ -3,20 +3,20 @@ import SwiftData
 
 @Model
 final class ReviewItem {
-    var id: UUID
-    var typeRawValue: String
-    var content: String
-    var prompt: String
-    var note: String
-    var source: String
-    var stage: Int
-    var nextReviewAt: Date
+    var id: UUID = UUID()
+    var typeRawValue: String = ReviewItemType.chineseCharacter.rawValue
+    var content: String = ""
+    var prompt: String = ""
+    var note: String = ""
+    var source: String = ""
+    var stage: Int = 0
+    var nextReviewAt: Date = Date()
     var lastReviewedAt: Date?
-    var consecutiveCorrectCount: Int
-    var consecutiveWrongCount: Int
-    var isPriority: Bool
-    var createdAt: Date
-    var updatedAt: Date
+    var consecutiveCorrectCount: Int = 0
+    var consecutiveWrongCount: Int = 0
+    var isPriority: Bool = false
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
 
     init(
         id: UUID = UUID(),

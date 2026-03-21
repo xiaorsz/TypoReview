@@ -8,7 +8,7 @@ struct RootTabView: View {
 
     var body: some View {
         TabView {
-            Tab("复习", systemImage: "book.closed.fill") {
+            Tab("首页", systemImage: "house.fill") {
                 NavigationStack {
                     HomeView()
                 }
@@ -40,11 +40,13 @@ struct RootTabView: View {
         }
         .tabViewStyle(.sidebarAdaptable)
         .task {
-            syncStatusStore.refresh(using: modelContext, trigger: .launch)
+            await syncStatusStore.refresh(using: modelContext, trigger: .launch)
         }
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase == .active else { return }
-            syncStatusStore.refresh(using: modelContext, trigger: .foreground)
+            Task {
+                await syncStatusStore.refresh(using: modelContext, trigger: .foreground)
+            }
         }
     }
 }

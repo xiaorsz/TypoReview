@@ -130,7 +130,7 @@ struct LibraryView: View {
                 }
             }
         }
-        .searchable(text: $searchText, prompt: "搜索错字、词语或单词")
+        .searchable(text: $searchText, prompt: "搜索词句或英语")
         .navigationTitle("题库")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -157,7 +157,7 @@ struct LibraryView: View {
             return prompt
         }
 
-        return "听写模式：直接朗读 \(item.type.rawValue)"
+        return "听写模式：直接朗读 \(item.type.displayName)"
     }
 
     private var emptyIcon: String {

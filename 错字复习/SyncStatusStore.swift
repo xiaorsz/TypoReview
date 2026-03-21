@@ -1,3 +1,4 @@
+import CloudKit
 import Foundation
 import SwiftData
 import Observation
@@ -5,23 +6,80 @@ import Observation
 @MainActor
 @Observable
 final class SyncStatusStore {
+    enum CloudAccountState {
+        case unknown
+        case available
+        case noAccount
+        case restricted
+        case temporarilyUnavailable
+        case couldNotDetermine(String)
+
+        var title: String {
+            switch self {
+            case .unknown:
+                return "未检查"
+            case .available:
+                return "可用"
+            case .noAccount:
+                return "未登录 iCloud"
+            case .restricted:
+                return "受限"
+            case .temporarilyUnavailable:
+                return "暂时不可用"
+            case .couldNotDetermine:
+                return "检查失败"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .unknown:
+                return "还没有进行 CloudKit 账户检查。"
+            case .available:
+                return "当前 Apple ID 可以访问 CloudKit。"
+            case .noAccount:
+                return "这台设备没有登录 iCloud，或当前账号未启用 iCloud。"
+            case .restricted:
+                return "系统限制了 CloudKit 访问，常见于家长控制或企业设备策略。"
+            case .temporarilyUnavailable:
+                return "CloudKit 当前暂时不可用，可以稍后再试一次。"
+            case .couldNotDetermine(let message):
+                return message
+            }
+        }
+    }
+
     enum Trigger {
         case launch
         case foreground
         case manual
     }
 
+    private let fallbackContainerIdentifier = "iCloud.cc.xiaorsz.typo-review"
+
     var isRefreshing = false
     var lastRefreshAt: Date?
     var lastErrorMessage = ""
     var lastTrigger: Trigger = .launch
+    var cloudKitEnabled = false
+    var containerIdentifier = "iCloud.cc.xiaorsz.typo-review"
+    var cloudAccountState: CloudAccountState = .unknown
+    var localDataSummary = "尚未检查本地数据"
+    var cloudKitInitializationError = ""
 
-    func refresh(using modelContext: ModelContext, trigger: Trigger) {
+    func configure(cloudKitEnabled: Bool, containerIdentifier: String? = nil, initializationError: String = "") {
+        self.cloudKitEnabled = cloudKitEnabled
+        self.containerIdentifier = containerIdentifier ?? fallbackContainerIdentifier
+        self.cloudKitInitializationError = initializationError
+    }
+
+    func refresh(using modelContext: ModelContext, trigger: Trigger) async {
         guard !isRefreshing else { return }
 
         isRefreshing = true
         lastTrigger = trigger
         lastErrorMessage = ""
+        localDataSummary = "检查中..."
 
         do {
             if modelContext.hasChanges {
@@ -29,16 +87,49 @@ final class SyncStatusStore {
             }
 
             modelContext.processPendingChanges()
-            _ = try modelContext.fetchCount(FetchDescriptor<ReviewItem>())
-            _ = try modelContext.fetchCount(FetchDescriptor<ReviewRecord>())
-            _ = try modelContext.fetchCount(FetchDescriptor<TaskItem>())
-            _ = try modelContext.fetchCount(FetchDescriptor<AppSettings>())
+            let reviewItemCount = try modelContext.fetchCount(FetchDescriptor<ReviewItem>())
+            let reviewRecordCount = try modelContext.fetchCount(FetchDescriptor<ReviewRecord>())
+            let taskCount = try modelContext.fetchCount(FetchDescriptor<TaskItem>())
+            let settingsCount = try modelContext.fetchCount(FetchDescriptor<AppSettings>())
+            let dictationSessionCount = try modelContext.fetchCount(FetchDescriptor<DictationSession>())
+            let dictationEntryCount = try modelContext.fetchCount(FetchDescriptor<DictationEntry>())
+
+            localDataSummary = "题库 \(reviewItemCount) 条，记录 \(reviewRecordCount) 条，待办 \(taskCount) 条，听写 \(dictationSessionCount) 组 / \(dictationEntryCount) 条，设置 \(settingsCount) 条"
             lastRefreshAt = .now
         } catch {
             lastErrorMessage = error.localizedDescription
+            localDataSummary = "本地数据检查失败"
         }
 
+        await refreshCloudAccountState()
         isRefreshing = false
+    }
+
+    private func refreshCloudAccountState() async {
+        guard cloudKitEnabled else {
+            cloudAccountState = .couldNotDetermine("当前运行的是本地存储模式，CloudKit 没有启用。")
+            return
+        }
+
+        do {
+            let status = try await CKContainer(identifier: containerIdentifier).accountStatus()
+            switch status {
+            case .available:
+                cloudAccountState = .available
+            case .noAccount:
+                cloudAccountState = .noAccount
+            case .restricted:
+                cloudAccountState = .restricted
+            case .temporarilyUnavailable:
+                cloudAccountState = .temporarilyUnavailable
+            case .couldNotDetermine:
+                cloudAccountState = .couldNotDetermine("系统无法确定 CloudKit 账户状态。")
+            @unknown default:
+                cloudAccountState = .couldNotDetermine("遇到了未知的 CloudKit 账户状态。")
+            }
+        } catch {
+            cloudAccountState = .couldNotDetermine(error.localizedDescription)
+        }
     }
 
     var statusText: String {
@@ -70,5 +161,9 @@ final class SyncStatusStore {
         case .manual:
             return "这是你刚刚手动触发的一次同步检查。"
         }
+    }
+
+    var cloudKitModeText: String {
+        cloudKitEnabled ? "CloudKit 已启用" : "CloudKit 未启用"
     }
 }

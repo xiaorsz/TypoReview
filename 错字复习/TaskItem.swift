@@ -91,6 +91,13 @@ final class TaskItem {
         }
     }
 
+    func isCompletedToday(completions: [TaskCompletion]) -> Bool {
+        let calendar = Calendar.current
+        return completions.contains {
+            $0.taskID == id && calendar.isDateInToday($0.completedDate)
+        }
+    }
+
     /// For weekly unskippable: check if any past scheduled weekday was missed.
     private func hasOverdueOccurrence(before date: Date, completions: [TaskCompletion]) -> Bool {
         let calendar = Calendar.current

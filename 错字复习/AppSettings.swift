@@ -3,11 +3,11 @@ import SwiftData
 
 @Model
 final class AppSettings {
-    var id: UUID
-    var childName: String
-    var dailyLimit: Int
-    var remindHour: Int
-    var remindMinute: Int
+    var id: UUID = UUID()
+    var childName: String = "乐乐"
+    var dailyLimit: Int = 15
+    var remindHour: Int = 19
+    var remindMinute: Int = 30
 
     init(
         id: UUID = UUID(),

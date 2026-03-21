@@ -23,6 +23,14 @@ enum ReviewItemType: String, Codable, CaseIterable, Identifiable {
     case englishWord = "单词"
 
     var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .chineseCharacter: return "汉字"
+        case .phrase: return "词句"
+        case .englishWord: return "英语"
+        }
+    }
 }
 
 enum DictationResult: String, Codable, CaseIterable, Identifiable {

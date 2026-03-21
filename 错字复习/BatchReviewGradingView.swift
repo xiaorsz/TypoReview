@@ -27,6 +27,7 @@ struct BatchReviewGradingView: View {
     @Environment(\.modelContext) private var modelContext
 
     let items: [ReviewItem]
+    var onReturnFromCompletion: (() -> Void)? = nil
 
     @State private var entryStates: [BatchReviewEntryState] = []
     @State private var isSubmitted = false
@@ -34,17 +35,14 @@ struct BatchReviewGradingView: View {
     
     private let scheduler = ReviewScheduler()
 
-    init(items: [ReviewItem]) {
+    init(items: [ReviewItem], onReturnFromCompletion: (() -> Void)? = nil) {
         self.items = items
+        self.onReturnFromCompletion = onReturnFromCompletion
     }
 
     private var allMarked: Bool {
         !entryStates.isEmpty && entryStates.allSatisfy { $0.result != .pending }
     }
-    
-    // Using a simple navigation pop to root view since we are presented as part of daily review
-    @Environment(\.presentationMode) var presentationMode
-
     var body: some View {
         Group {
             if isSubmitted {
@@ -74,51 +72,106 @@ struct BatchReviewGradingView: View {
     }
 
     private var gradingView: some View {
-        VStack(spacing: 0) {
-            List {
-                ForEach($entryStates) { $state in
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            TypeBadge(type: state.item.type)
-                            Spacer()
-                            if !state.item.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                Text(state.item.prompt)
-                                    .font(.subheadline)
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 12) {
+                HStack(spacing: 12) {
+                    reviewStat(title: "总条数", value: "\(entryStates.count)", tint: .blue)
+                    reviewStat(title: "未判定", value: "\(entryStates.filter { $0.result == .pending }.count)", tint: allMarked ? .green : .orange)
+                    reviewStat(title: "已判定", value: "\(entryStates.filter { $0.result != .pending }.count)", tint: .mint)
+                }
+                .padding(14)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
+
+                VStack(spacing: 10) {
+                    ForEach(entryStates.indices, id: \.self) { index in
+                        let state = $entryStates[index]
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 8) {
+                                Text("\(index + 1)")
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(.blue)
+                                    .frame(width: 20, height: 20)
+                                    .background(Color.blue.opacity(0.1), in: Circle())
+
+                                TypeBadge(type: state.wrappedValue.item.type)
+                                
+                                Spacer()
+                                
+                                Text(resultText(for: state.wrappedValue.result))
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(statusColor(for: state.wrappedValue.result))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(statusColor(for: state.wrappedValue.result).opacity(0.1), in: Capsule())
+                            }
+
+                            HStack(spacing: 12) {
+                                Text(state.wrappedValue.item.content)
+                                    .font(.system(size: 24, weight: .bold, design: .rounded))
+                                    .foregroundStyle(.primary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.vertical, 6)
+                                    .padding(.horizontal, 10)
+                                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+
+                                HStack(spacing: 8) {
+                                    Button {
+                                        state.wrappedValue.result = (state.wrappedValue.result == .correct) ? .pending : .correct
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: state.wrappedValue.result == .correct ? "checkmark.circle.fill" : "checkmark.circle")
+                                            Text("正确")
+                                        }
+                                        .font(.subheadline.weight(.bold))
+                                        .foregroundStyle(state.wrappedValue.result == .correct ? .white : .green)
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 44)
+                                        .background(state.wrappedValue.result == .correct ? Color.green : Color.green.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+                                    }
+                                    .buttonStyle(.plain)
+
+                                    Button {
+                                        state.wrappedValue.result = (state.wrappedValue.result == .wrong) ? .pending : .wrong
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: state.wrappedValue.result == .wrong ? "xmark.circle.fill" : "xmark.circle")
+                                            Text("错误")
+                                        }
+                                        .font(.subheadline.weight(.bold))
+                                        .foregroundStyle(state.wrappedValue.result == .wrong ? .white : .red)
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 44)
+                                        .background(state.wrappedValue.result == .wrong ? Color.red : Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                .frame(width: 160)
+                            }
+
+                            if !state.wrappedValue.item.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Text(state.wrappedValue.item.prompt)
+                                    .font(.caption)
                                     .foregroundStyle(.secondary)
+                                    .lineLimit(1)
                             }
                         }
-
-                        Text(state.item.content)
-                            .font(.system(.title2, design: .rounded, weight: .bold))
-
-                        HStack(spacing: 12) {
-                            Button {
-                                state.result = (state.result == .correct) ? .pending : .correct
-                            } label: {
-                                Label("正确", systemImage: state.result == .correct ? "checkmark.circle.fill" : "checkmark.circle")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(state.result == .correct ? .green : .gray.opacity(0.3))
-                            .foregroundStyle(state.result == .correct ? .white : .primary)
-
-                            Button {
-                                state.result = (state.result == .wrong) ? .pending : .wrong
-                            } label: {
-                                Label("错误", systemImage: state.result == .wrong ? "xmark.circle.fill" : "xmark.circle")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(state.result == .wrong ? .red : .gray.opacity(0.3))
-                            .foregroundStyle(state.result == .wrong ? .white : .primary)
-                        }
-                        .padding(.top, 4)
+                        .padding(12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 18)
+                                .fill(.thinMaterial)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 18)
+                                        .strokeBorder(.secondary.opacity(0.1), lineWidth: 1)
+                                )
+                        )
                     }
-                    .padding(.vertical, 8)
                 }
             }
-            .listStyle(.plain)
-
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 110)
+        }
+        .safeAreaInset(edge: .bottom) {
             VStack(spacing: 16) {
                 if !allMarked {
                     Text("还有未判定的项目")
@@ -134,6 +187,42 @@ struct BatchReviewGradingView: View {
             }
             .padding(20)
             .background(.thinMaterial)
+        }
+    }
+
+    private func reviewStat(title: String, value: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(value)
+                .font(.system(.title3, design: .rounded, weight: .bold))
+                .foregroundStyle(tint)
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    private func resultText(for result: DictationResult) -> String {
+        switch result {
+        case .pending:
+            return "未判定"
+        case .correct:
+            return "正确"
+        case .wrong:
+            return "错误"
+        }
+    }
+
+    private func statusColor(for result: DictationResult) -> Color {
+        switch result {
+        case .pending:
+            return .secondary
+        case .correct:
+            return .green
+        case .wrong:
+            return .red
         }
     }
 
@@ -162,8 +251,9 @@ struct BatchReviewGradingView: View {
                 VStack(spacing: 20) {
                     // Hero card
                     VStack(alignment: .leading, spacing: 12) {
-                        Text(wrongCount == 0 ? "🎉" : "👏")
-                            .font(.system(size: 48))
+                        Image(systemName: wrongCount == 0 ? "checkmark.seal.fill" : "arrow.trianglehead.clockwise")
+                            .font(.system(size: 44, weight: .bold))
+                            .foregroundStyle(.white)
 
                         Text("今日复习完成")
                             .font(.system(.largeTitle, design: .rounded, weight: .bold))
@@ -226,15 +316,9 @@ struct BatchReviewGradingView: View {
                     }
 
                     Button("返回首页") {
-                        // Dismiss all the way back
-                        // Using a standard dismiss doesn't pop to root if we are deeply pushed,
-                        // but setting the window's root view or using a custom environment key can pop.
-                        // For simplicity in iOS 16+, setting a navigation state to false works.
-                        // Here we just dismiss multiple times or rely on the root view binding if available.
-                        // A simple hack is setting the entry states to empty might not pop. Let's just use window root pop or rely on basic view presentation behavior (a back button is also at the top).
-                        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                           let window = windowScene.windows.first {
-                            window.rootViewController?.dismiss(animated: true)
+                        dismiss()
+                        DispatchQueue.main.async {
+                            onReturnFromCompletion?()
                         }
                     }
                     .buttonStyle(ResultButtonStyle(color: .blue))

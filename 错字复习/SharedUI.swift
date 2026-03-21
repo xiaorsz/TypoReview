@@ -17,6 +17,26 @@ struct ResultButtonStyle: ButtonStyle {
     }
 }
 
+struct GradingChoiceButtonStyle: ButtonStyle {
+    let color: Color
+    let isSelected: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(.headline, design: .rounded, weight: .semibold))
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 52)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(isSelected ? color : color.opacity(0.12))
+            )
+            .foregroundStyle(isSelected ? .white : color)
+            .contentShape(RoundedRectangle(cornerRadius: 16))
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .animation(.spring(response: 0.2, dampingFraction: 0.8), value: configuration.isPressed)
+    }
+}
+
 // MARK: - Stat Grid Card
 
 struct StatGridCard: View {
@@ -90,6 +110,36 @@ extension View {
     }
 }
 
+// MARK: - Placeholder Text Editor
+
+struct PlaceholderTextEditor: View {
+    @Binding var text: String
+    let placeholder: String
+    var minHeight: CGFloat = 220
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 18)
+                .fill(Color(uiColor: .secondarySystemBackground))
+
+            TextEditor(text: $text)
+                .scrollContentBackground(.hidden)
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: minHeight)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 8)
+
+            if text.isEmpty {
+                Text(placeholder)
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 16)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+}
+
 // MARK: - Feedback Answer Overlay
 
 struct AnswerFeedbackOverlay: View {
@@ -142,7 +192,7 @@ struct TypeBadge: View {
     }
 
     var body: some View {
-        Text(type.rawValue)
+        Text(type.displayName)
             .font(.caption2.weight(.bold))
             .foregroundStyle(.white)
             .padding(.horizontal, 8)
@@ -160,5 +210,95 @@ extension Int {
         case 3...5: return .orange
         default: return .green
         }
+    }
+}
+
+import AVFoundation
+
+@MainActor
+final class DictationSpeaker: NSObject, ObservableObject {
+    @Published var isSpeaking = false
+
+    private let synthesizer = AVSpeechSynthesizer()
+    private var lastUtteranceText = ""
+    private var lastType: ReviewItemType = .chineseCharacter
+
+    override init() {
+        super.init()
+        synthesizer.delegate = self
+    }
+
+    func prepare(content: String, type: ReviewItemType) {
+        lastUtteranceText = content
+        lastType = type
+        stop()
+    }
+
+    func speak(content: String, type: ReviewItemType) {
+        lastUtteranceText = content
+        lastType = type
+        speakCurrentText()
+    }
+
+    func stop() {
+        synthesizer.stopSpeaking(at: .immediate)
+        SpeechAudioSession.deactivate()
+        isSpeaking = false
+    }
+
+    private func speakCurrentText() {
+        stop()
+        SpeechAudioSession.activate()
+        let utterance = AVSpeechUtterance(string: lastUtteranceText)
+        utterance.voice = SpeechVoicePicker.voice(for: lastType)
+        utterance.rate = lastType == .englishWord ? 0.42 : 0.36
+        utterance.pitchMultiplier = 1.0
+        synthesizer.speak(utterance)
+    }
+}
+
+extension DictationSpeaker: @preconcurrency AVSpeechSynthesizerDelegate {
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        isSpeaking = true
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        SpeechAudioSession.deactivate()
+        isSpeaking = false
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        SpeechAudioSession.deactivate()
+        isSpeaking = false
+    }
+}
+
+struct DictationTranslationService {
+    static func fetchTranslation(for word: String) async -> String? {
+        let trimmed = word.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        
+        let urlString = "https://dict-mobile.iciba.com/interface/index.php?c=word&m=getsuggest&nums=1&is_standard=1&word=\(trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")"
+        
+        guard let url = URL(string: urlString) else { return nil }
+        
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let message = json["message"] as? [[String: Any]],
+               let firstMatch = message.first,
+               let paraphrase = firstMatch["paraphrase"] as? String {
+                
+                var result = paraphrase
+                if let dotIndex = result.firstIndex(of: ".") {
+                    result = String(result[result.index(after: dotIndex)...])
+                }
+                return result.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        } catch {
+            print("Translation fetch failed: \(error)")
+        }
+        
+        return nil
     }
 }

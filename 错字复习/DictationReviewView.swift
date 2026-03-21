@@ -3,6 +3,7 @@ import SwiftData
 
 struct DictationReviewView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
 
     @Query(sort: \ReviewItem.updatedAt, order: .reverse) private var reviewItems: [ReviewItem]
 
@@ -12,6 +13,7 @@ struct DictationReviewView: View {
 
     let session: DictationSession
     let entries: [DictationEntry]
+    var onReturnToList: (() -> Void)? = nil
 
     private var pendingCount: Int {
         entries.filter { $0.result == .pending }.count
@@ -26,61 +28,120 @@ struct DictationReviewView: View {
     }
 
     var body: some View {
-        List {
-            Section {
-                statRow(title: "总条数", value: "\(entries.count)")
-                statRow(title: "未判定", value: "\(pendingCount)")
-                statRow(title: "判错", value: "\(wrongCount)")
-            } header: {
-                Text("批量判定")
-            } footer: {
-                Text("点“正确”或“错误”都可以选；再点一次会取消，回到未判定。")
-            }
-
-            Section {
-                Button("全部标记正确") {
-                    markAll(.correct)
-                }
-                Button("清空判定") {
-                    markAll(.pending)
-                }
-            }
-
-            Section("逐条判定") {
-                ForEach(entries) { entry in
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text(entry.content)
-                                .font(.headline)
-                            Spacer()
-                            Text(entry.result.rawValue)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(statusColor(for: entry.result))
-                            Text(entry.type.rawValue)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        if !entry.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            Text(entry.prompt)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        if !entry.source.isEmpty {
-                            Text(entry.source)
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-
-                        HStack(spacing: 10) {
-                            resultButton(title: "正确", result: .correct, entry: entry, color: .green)
-                            resultButton(title: "错误", result: .wrong, entry: entry, color: .red)
-                        }
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 12) {
+                        reviewStat(title: "总条数", value: "\(entries.count)", tint: .blue)
+                        reviewStat(title: "未判定", value: "\(pendingCount)", tint: pendingCount == 0 ? .green : .orange)
+                        reviewStat(title: "判错", value: "\(wrongCount)", tint: .red)
                     }
-                    .padding(.vertical, 6)
+
+                    HStack(spacing: 12) {
+                        Button("全部正确") { markAll(.correct) }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.green)
+                            .controlSize(.small)
+
+                        Button("清空") { markAll(.pending) }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        
+                        Spacer()
+                    }
+                }
+                .padding(14)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
+
+                VStack(spacing: 10) {
+                    ForEach(entries.indices, id: \.self) { index in
+                        let entry = entries[index]
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 8) {
+                                Text("\(index + 1)")
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(.blue)
+                                    .frame(width: 20, height: 20)
+                                    .background(Color.blue.opacity(0.1), in: Circle())
+
+                                TypeBadge(type: entry.type)
+                                
+                                Spacer()
+                                
+                                Text(entry.result.rawValue)
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(statusColor(for: entry.result))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(statusColor(for: entry.result).opacity(0.1), in: Capsule())
+                            }
+
+                            HStack(spacing: 12) {
+                                Text(entry.content)
+                                    .font(.system(size: 24, weight: .bold, design: .rounded))
+                                    .foregroundStyle(.primary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.vertical, 6)
+                                    .padding(.horizontal, 10)
+                                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+
+                                HStack(spacing: 8) {
+                                    Button {
+                                        entry.result = entry.result == .correct ? .pending : .correct
+                                        entry.updatedAt = .now
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: entry.result == .correct ? "checkmark.circle.fill" : "checkmark.circle")
+                                            Text("正确")
+                                        }
+                                        .font(.subheadline.weight(.bold))
+                                        .foregroundStyle(entry.result == .correct ? .white : .green)
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 44)
+                                        .background(entry.result == .correct ? Color.green : Color.green.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+                                    }
+                                    .buttonStyle(.plain)
+
+                                    Button {
+                                        entry.result = entry.result == .wrong ? .pending : .wrong
+                                        entry.updatedAt = .now
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: entry.result == .wrong ? "xmark.circle.fill" : "xmark.circle")
+                                            Text("错误")
+                                        }
+                                        .font(.subheadline.weight(.bold))
+                                        .foregroundStyle(entry.result == .wrong ? .white : .red)
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 44)
+                                        .background(entry.result == .wrong ? Color.red : Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                .frame(width: 160)
+                            }
+
+                            if !entry.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Text(entry.prompt)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.blue)
+                            }
+                        }
+                        .padding(12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 18)
+                                .fill(.thinMaterial)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 18)
+                                        .strokeBorder(.secondary.opacity(0.1), lineWidth: 1)
+                                )
+                        )
+                    }
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 110)
         }
         .navigationTitle("统一判定")
         .navigationBarTitleDisplayMode(.inline)
@@ -104,18 +165,27 @@ struct DictationReviewView: View {
         .navigationDestination(isPresented: $navigateToSummary) {
             DictationSummaryView(
                 title: session.title,
-                summaries: submittedSummaries
+                summaries: submittedSummaries,
+                onReturnToList: {
+                    dismiss()
+                    onReturnToList?()
+                }
             )
         }
     }
 
-    private func statRow(title: String, value: String) -> some View {
-        HStack {
-            Text(title)
-            Spacer()
+    private func reviewStat(title: String, value: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
             Text(value)
-                .fontWeight(.semibold)
+                .font(.system(.title3, design: .rounded, weight: .bold))
+                .foregroundStyle(tint)
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 18))
     }
 
     private func resultButton(title: String, result: DictationResult, entry: DictationEntry, color: Color) -> some View {
@@ -123,14 +193,8 @@ struct DictationReviewView: View {
             entry.result = entry.result == result ? .pending : result
             entry.updatedAt = .now
         }
-        .font(.subheadline.weight(.semibold))
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(entry.result == result ? color : color.opacity(0.12))
-        )
-        .foregroundStyle(entry.result == result ? .white : color)
+        .buttonStyle(GradingChoiceButtonStyle(color: color, isSelected: entry.result == result))
+        .contentShape(Rectangle())
     }
 
     private func statusColor(for result: DictationResult) -> Color {
@@ -227,6 +291,7 @@ private struct DictationSummaryView: View {
 
     let title: String
     let summaries: [DictationEntrySummary]
+    let onReturnToList: () -> Void
 
     private var totalCount: Int {
         summaries.count
@@ -253,8 +318,9 @@ private struct DictationSummaryView: View {
             ScrollView {
                 VStack(spacing: 20) {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text(wrongCount == 0 ? "🎉" : "👏")
-                            .font(.system(size: 48))
+                        Image(systemName: wrongCount == 0 ? "checkmark.seal.fill" : "pencil.and.outline")
+                            .font(.system(size: 44, weight: .bold))
+                            .foregroundStyle(.white)
 
                         Text("今日听写完成")
                             .font(.system(.largeTitle, design: .rounded, weight: .bold))
@@ -326,6 +392,9 @@ private struct DictationSummaryView: View {
 
                     Button("返回听写列表") {
                         dismiss()
+                        DispatchQueue.main.async {
+                            onReturnToList()
+                        }
                     }
                     .buttonStyle(ResultButtonStyle(color: .blue))
                 }

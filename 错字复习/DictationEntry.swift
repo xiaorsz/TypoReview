@@ -3,17 +3,17 @@ import SwiftData
 
 @Model
 final class DictationEntry {
-    var id: UUID
-    var sessionID: UUID
-    var sortOrder: Int
-    var typeRawValue: String
-    var content: String
-    var prompt: String
-    var note: String
-    var source: String
-    var resultRawValue: String
-    var createdAt: Date
-    var updatedAt: Date
+    var id: UUID = UUID()
+    var sessionID: UUID = UUID()
+    var sortOrder: Int = 0
+    var typeRawValue: String = ReviewItemType.chineseCharacter.rawValue
+    var content: String = ""
+    var prompt: String = ""
+    var note: String = ""
+    var source: String = ""
+    var resultRawValue: String = DictationResult.pending.rawValue
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
 
     init(
         id: UUID = UUID(),

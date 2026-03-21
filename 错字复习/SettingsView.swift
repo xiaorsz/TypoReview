@@ -164,8 +164,25 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                         .font(.caption)
 
+                    VStack(alignment: .leading, spacing: 10) {
+                        diagnosticRow(title: "同步模式", value: syncStatusStore.cloudKitModeText)
+                        diagnosticRow(title: "容器 ID", value: syncStatusStore.containerIdentifier, monospaced: true)
+                        diagnosticRow(title: "iCloud 账户", value: syncStatusStore.cloudAccountState.title)
+                        Text(syncStatusStore.cloudAccountState.detail)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                        diagnosticRow(title: "本地数据", value: syncStatusStore.localDataSummary)
+                        if !syncStatusStore.cloudKitInitializationError.isEmpty {
+                            diagnosticRow(title: "启动错误", value: syncStatusStore.cloudKitInitializationError, monospaced: true)
+                        }
+                    }
+                    .padding(12)
+                    .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12))
+
                     Button {
-                        syncStatusStore.refresh(using: modelContext, trigger: .manual)
+                        Task {
+                            await syncStatusStore.refresh(using: modelContext, trigger: .manual)
+                        }
                     } label: {
                         HStack {
                             if syncStatusStore.isRefreshing {
@@ -198,7 +215,7 @@ struct SettingsView: View {
                             .font(.headline)
                     }
 
-                    Text("错字复习 — 帮助孩子按遗忘曲线复习写错的汉字、词语和英文单词。")
+                    Text("听写复习本 — 帮助孩子按遗忘曲线复习写错的词句和英语。")
                         .foregroundStyle(.secondary)
                         .font(.subheadline)
 
@@ -229,6 +246,18 @@ struct SettingsView: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(stage.stageColor.opacity(0.12), in: Capsule())
+    }
+
+    private func diagnosticRow(title: String, value: String, monospaced: Bool = false) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(title)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .font(monospaced ? .caption.monospaced() : .subheadline)
+                .multilineTextAlignment(.trailing)
+                .foregroundStyle(.primary)
+        }
     }
 
     private func bind<Value>(_ keyPath: ReferenceWritableKeyPath<AppSettings, Value>) -> Binding<Value> {

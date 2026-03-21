@@ -36,118 +36,10 @@ struct AddTaskView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
-                // Title & Note
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack {
-                        Image(systemName: "pencil.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(.blue)
-                        Text("任务信息")
-                            .font(.headline)
-                    }
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("任务名称")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        TextField("例如：每天朗读课文 20 分钟", text: $title)
-                            .textFieldStyle(.roundedBorder)
-                    }
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("备注 (选填)")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        TextField("补充说明", text: $note)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                }
-                .padding(20)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
-
-                // Recurrence
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .font(.title2)
-                            .foregroundStyle(.green)
-                        Text("重复规则")
-                            .font(.headline)
-                    }
-
-                    Picker("重复", selection: $recurrenceKind) {
-                        ForEach(TaskRecurrence.Kind.allCases) { kind in
-                            Text(kind.rawValue).tag(kind)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-
-                    if recurrenceKind == .weekly {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("选择周几")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-
-                            HStack(spacing: 8) {
-                                ForEach(0..<7, id: \.self) { index in
-                                    let displayOrder = (index + 1) % 7 + 1 // Display Mon first
-                                    let actualWeekday = displayOrder
-                                    let label = weekdayNames[actualWeekday - 1]
-
-                                    Button {
-                                        if selectedWeekdays.contains(actualWeekday) {
-                                            selectedWeekdays.remove(actualWeekday)
-                                        } else {
-                                            selectedWeekdays.insert(actualWeekday)
-                                        }
-                                    } label: {
-                                        Text(label)
-                                            .font(.subheadline.weight(.semibold))
-                                            .frame(maxWidth: .infinity)
-                                            .padding(.vertical, 10)
-                                            .background(
-                                                selectedWeekdays.contains(actualWeekday)
-                                                    ? Color.accentColor
-                                                    : Color(uiColor: .tertiarySystemFill),
-                                                in: RoundedRectangle(cornerRadius: 10)
-                                            )
-                                            .foregroundStyle(selectedWeekdays.contains(actualWeekday) ? .white : .primary)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                .padding(20)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
-
-                // Skip Policy & Start Date
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack {
-                        Image(systemName: "exclamationmark.shield.fill")
-                            .font(.title2)
-                            .foregroundStyle(.orange)
-                        Text("过期处理")
-                            .font(.headline)
-                    }
-
-                    Picker("跳过策略", selection: $skipPolicy) {
-                        ForEach(TaskSkipPolicy.allCases) { policy in
-                            Text(policy.rawValue).tag(policy)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-
-                    Text(skipPolicy == .skippable
-                         ? "过期未完成就自动作废，不再出现。"
-                         : "过期未完成会累积到当天，直到手动完成。")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-
-                    DatePicker("生效日期", selection: $startDate, displayedComponents: .date)
-                }
-                .padding(20)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+                introCard
+                infoCard
+                recurrenceCard
+                policyCard
             }
             .padding(20)
             .frame(maxWidth: 780)
@@ -165,6 +57,149 @@ struct AddTaskView: View {
                 .disabled(!canSave)
             }
         }
+    }
+
+    private var introCard: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(existingTask == nil ? "新增任务" : "编辑任务")
+                .font(.system(.title3, design: .rounded, weight: .bold))
+                .foregroundStyle(.white)
+
+            Text("任务可以设置为单次或按周期重复。")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.85))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(
+                    LinearGradient(
+                        colors: [.blue.opacity(0.85), .indigo.opacity(0.65)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+        )
+    }
+
+    private var infoCard: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("任务名称", systemImage: "star.fill")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.orange)
+                
+                TextField("例如：每天朗读课文 20 分钟", text: $title)
+                    .font(.title2.weight(.medium))
+                    .textFieldStyle(.plain)
+                    .padding(12)
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+            }
+            
+            VStack(alignment: .leading, spacing: 10) {
+                Label("备注 (可选)", systemImage: "tag.fill")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.purple)
+                
+                TextField("补充说明", text: $note)
+                    .textFieldStyle(.plain)
+                    .padding(12)
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+        .padding(20)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private var recurrenceCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("重复规则")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Picker("重复", selection: $recurrenceKind) {
+                    ForEach(TaskRecurrence.Kind.allCases) { kind in
+                        Text(kind.rawValue).tag(kind)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 180)
+            }
+            
+            if recurrenceKind == .weekly {
+                Divider()
+                
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("选择周几执行", systemImage: "calendar.badge.clock")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.blue)
+
+                    HStack(spacing: 8) {
+                        ForEach(0..<7, id: \.self) { index in
+                            let displayOrder = (index + 1) % 7 + 1 // Display Mon first
+                            let actualWeekday = displayOrder
+                            let label = weekdayNames[actualWeekday - 1]
+
+                            Button {
+                                if selectedWeekdays.contains(actualWeekday) {
+                                    selectedWeekdays.remove(actualWeekday)
+                                } else {
+                                    selectedWeekdays.insert(actualWeekday)
+                                }
+                            } label: {
+                                Text(label)
+                                    .font(.subheadline.weight(.semibold))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 10)
+                                    .background(
+                                        selectedWeekdays.contains(actualWeekday)
+                                            ? Color.accentColor
+                                            : Color(uiColor: .secondarySystemBackground),
+                                        in: RoundedRectangle(cornerRadius: 10)
+                                    )
+                                    .foregroundStyle(selectedWeekdays.contains(actualWeekday) ? .white : .primary)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private var policyCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("过期处理")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Picker("跳过策略", selection: $skipPolicy) {
+                    ForEach(TaskSkipPolicy.allCases) { policy in
+                        Text(policy.rawValue).tag(policy)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 180)
+            }
+            
+            Text(skipPolicy == .skippable
+                 ? "提示：过期未完成就自动作废，不再出现。"
+                 : "提示：过期未完成会累积到当天，直到手动完成。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            
+            Divider()
+
+            DatePicker("生效日期", selection: $startDate, displayedComponents: .date)
+                .font(.subheadline.weight(.medium))
+        }
+        .padding(20)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
     }
 
     private func save() {

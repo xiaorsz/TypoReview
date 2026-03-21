@@ -3,9 +3,9 @@ import SwiftData
 
 @Model
 final class DictationSession {
-    var id: UUID
-    var title: String
-    var typeRawValue: String
+    var id: UUID = UUID()
+    var title: String = ""
+    var typeRawValue: String = ReviewItemType.chineseCharacter.rawValue
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
     var scheduledDate: Date = Date()

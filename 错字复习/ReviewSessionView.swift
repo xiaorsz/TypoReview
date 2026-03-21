@@ -72,10 +72,12 @@ struct ReviewSessionView: View {
                                     speaker.speak(item)
                                 } label: {
                                     Label(speaker.isSpeaking ? "正在朗读" : "点击朗读", systemImage: "speaker.wave.2.fill")
+                                        .font(.system(.title2, design: .rounded, weight: .bold))
                                         .frame(maxWidth: .infinity)
+                                        .frame(minHeight: 56)
                                 }
                                 .buttonStyle(.borderedProminent)
-                                .font(.headline)
+                                .controlSize(.large)
 
                                 Text(helperText(for: item))
                                     .foregroundStyle(.secondary)
@@ -172,8 +174,9 @@ struct ReviewSessionView: View {
                 VStack(spacing: 20) {
                     // Hero card
                     VStack(alignment: .leading, spacing: 12) {
-                        Text(wrongCount == 0 ? "🎉" : "👏")
-                            .font(.system(size: 48))
+                        Image(systemName: wrongCount == 0 ? "checkmark.seal.fill" : "arrow.trianglehead.clockwise")
+                            .font(.system(size: 44, weight: .bold))
+                            .foregroundStyle(.white)
 
                         Text("今日复习完成")
                             .font(.system(.largeTitle, design: .rounded, weight: .bold))
@@ -339,9 +342,9 @@ struct ReviewSessionView: View {
             case .chineseCharacter:
                 return "点击朗读，听写这个汉字"
             case .phrase:
-                return "点击朗读，听写这个词语"
+                return "点击朗读，听写这个词句"
             case .englishWord:
-                return "点击朗读，听写这个单词"
+                return "点击朗读，听写这个英语"
             }
         }
 
@@ -509,7 +512,7 @@ private final class ReviewSpeaker: NSObject, ObservableObject {
         SpeechAudioSession.activate()
 
         let utterance = AVSpeechUtterance(string: lastUtteranceText)
-        utterance.voice = preferredVoice(for: type)
+        utterance.voice = SpeechVoicePicker.voice(for: type)
         utterance.rate = type == .englishWord ? 0.42 : 0.36
         utterance.pitchMultiplier = 1.0
 
@@ -518,44 +521,6 @@ private final class ReviewSpeaker: NSObject, ObservableObject {
 
     private func speechText(for item: ReviewItem) -> String {
         item.content
-    }
-
-    private func preferredVoice(for type: ReviewItemType) -> AVSpeechSynthesisVoice? {
-        switch type {
-        case .chineseCharacter, .phrase:
-            let voices = AVSpeechSynthesisVoice.speechVoices()
-            let preferredLanguages = ["zh-CN", "zh-Hans-CN", "zh-Hans", "zh-CN_#Hans"]
-
-            for language in preferredLanguages {
-                if let voice = bestVoice(in: voices, matching: language) {
-                    return voice
-                }
-            }
-
-            return AVSpeechSynthesisVoice(language: "zh-CN")
-        case .englishWord:
-            return AVSpeechSynthesisVoice(language: "en-US")
-        }
-    }
-
-    private func bestVoice(in voices: [AVSpeechSynthesisVoice], matching language: String) -> AVSpeechSynthesisVoice? {
-        voices
-            .filter { $0.language == language }
-            .sorted { lhs, rhs in
-                voiceRank(lhs) > voiceRank(rhs)
-            }
-            .first
-    }
-
-    private func voiceRank(_ voice: AVSpeechSynthesisVoice) -> Int {
-        switch voice.quality {
-        case .premium:
-            return 3
-        case .enhanced:
-            return 2
-        default:
-            return 1
-        }
     }
 }
 

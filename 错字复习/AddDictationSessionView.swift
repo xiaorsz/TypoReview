@@ -10,6 +10,7 @@ struct AddDictationSessionView: View {
     @State private var scheduledDate: Date = .now
     @State private var defaultSource = ""
     @State private var rawText = ""
+    @State private var isSaving = false
 
     private var entries: [ParsedDictationEntry] {
         rawText
@@ -37,26 +38,57 @@ struct AddDictationSessionView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("开始听写") {
-                    save()
+                if isSaving {
+                    ProgressView()
+                } else {
+                    Button("开始听写") {
+                        Task {
+                            await save()
+                        }
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(!canSave)
                 }
-                .fontWeight(.semibold)
-                .disabled(!canSave)
+            }
+        }
+        .overlay {
+            if isSaving {
+                ZStack {
+                    Color.black.opacity(0.15)
+                        .ignoresSafeArea()
+                    
+                    VStack(spacing: 12) {
+                        ProgressView()
+                            .controlSize(.large)
+                        Text("正在生成听写计划...")
+                            .font(.headline)
+                        if type == .englishWord {
+                            Text("系统正在自动翻译单词意思")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(24)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
+                }
             }
         }
     }
 
     private var introCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("先导入要听写的内容，再指定听写日期")
-                .font(.system(.title, design: .rounded, weight: .bold))
-            Text("可以提前做好明后天的听写计划。孩子只会在指定日期或逾期时在首页看到任务。")
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 4) {
+            Text("新增听写计划")
+                .font(.system(.title3, design: .rounded, weight: .bold))
+                .foregroundStyle(.white)
+            Text("录入内容并指定日期，孩子只在当天看到任务。")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.85))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(24)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
         .background(
-            RoundedRectangle(cornerRadius: 28)
+            RoundedRectangle(cornerRadius: 18)
                 .fill(
                     LinearGradient(
                         colors: [.teal.opacity(0.9), .cyan.opacity(0.55)],
@@ -68,75 +100,102 @@ struct AddDictationSessionView: View {
     }
 
     private var formCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("听写设置")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("题目类型")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Picker("类型", selection: $type) {
+                    Text("词句").tag(ReviewItemType.phrase)
+                    Text("英语").tag(ReviewItemType.englishWord)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 120)
+            }
 
-            Picker("类型", selection: $type) {
-                ForEach(ReviewItemType.allCases) { itemType in
-                    Text(itemType.rawValue).tag(itemType)
+            DatePicker("计划日期", selection: $scheduledDate, displayedComponents: .date)
+                .font(.subheadline.weight(.medium))
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("听写标题", systemImage: "star.fill")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.orange)
+                    
+                    TextField("例如：Unit 5 听写", text: $title)
+                        .font(.title2.weight(.medium))
+                        .textFieldStyle(.plain)
+                        .padding(12)
+                        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                }
+                
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("默认来源 (可选)", systemImage: "tag.fill")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.purple)
+                    
+                    TextField("输入所有错题共用的来源", text: $defaultSource)
+                        .textFieldStyle(.plain)
+                        .padding(12)
+                        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
                 }
             }
-            .pickerStyle(.segmented)
-
-            DatePicker("计划听写日期", selection: $scheduledDate, displayedComponents: .date)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 8)
-
-            TextField("听写标题，例如 3月19日英语听写", text: $title)
-                .textFieldStyle(.roundedBorder)
-
-            TextField("默认来源，可选，例如 第五单元 / 语文听写", text: $defaultSource)
-                .textFieldStyle(.roundedBorder)
         }
         .padding(20)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
     }
 
     private var editorCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text("听写内容")
-                    .font(.headline)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("听写内容")
+                        .font(.headline)
+                    Text("共 \(entries.count) 条")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
-                Text("共 \(entries.count) 条")
-                    .foregroundStyle(.secondary)
+                
+                Button {
+                    rawText += " | "
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("|")
+                            .font(.system(.body, design: .monospaced, weight: .bold))
+                        Text("分隔符")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.accentColor.opacity(0.12), in: Capsule())
+                }
             }
 
-            TextEditor(text: $rawText)
-                .frame(minHeight: 240)
-                .padding(12)
-                .background(Color(uiColor: .secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 18))
-                .overlay(alignment: .topLeading) {
-                    if rawText.isEmpty {
-                        Text(placeholderText)
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 20)
-                    }
-                }
+            PlaceholderTextEditor(text: $rawText, placeholder: placeholderText, minHeight: 240)
         }
         .padding(20)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
     }
 
     private var formatCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("格式说明")
-                .font(.headline)
-            Text("每行一条，支持这些格式：")
-                .foregroundStyle(.secondary)
-            Text("`欢迎`")
-                .font(.callout.monospaced())
-            Text("`欢迎 | 高兴地接待别人`")
-                .font(.callout.monospaced())
-            Text("`apple | 苹果 | 第五单元`")
-                .font(.callout.monospaced())
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "info.circle.fill")
+                .foregroundStyle(.blue)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("支持格式：每行一条，可用 | 分隔提示和来源。")
+                Text("例如：`apple | 苹果` 或 `欢迎 | 高兴地接待`")
+                    .font(.caption.monospaced())
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(20)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+        .padding(16)
+        .background(Color.blue.opacity(0.05), in: RoundedRectangle(cornerRadius: 16))
     }
 
     private var placeholderText: String {
@@ -150,7 +209,10 @@ struct AddDictationSessionView: View {
         }
     }
 
-    private func save() {
+    private func save() async {
+        guard !isSaving else { return }
+        isSaving = true
+        
         let now = Date()
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let sessionTitle = trimmedTitle.isEmpty ? "\(scheduledDate.formatted(date: .abbreviated, time: .omitted))听写" : trimmedTitle
@@ -165,14 +227,24 @@ struct AddDictationSessionView: View {
         )
         modelContext.insert(session)
 
-        for (index, entry) in entries.enumerated() {
+        let currentEntries = entries
+        for (index, entry) in currentEntries.enumerated() {
+            var prompt = entry.prompt
+            
+            // Auto translation for English if prompt is empty
+            if type == .englishWord && prompt.isEmpty {
+                if let translated = await DictationTranslationService.fetchTranslation(for: entry.content) {
+                    prompt = translated
+                }
+            }
+            
             modelContext.insert(
                 DictationEntry(
                     sessionID: session.id,
                     sortOrder: index,
                     type: type,
                     content: entry.content,
-                    prompt: entry.prompt,
+                    prompt: prompt,
                     note: "",
                     source: entry.source.isEmpty ? sourceFallback : entry.source,
                     result: .pending,
@@ -182,6 +254,8 @@ struct AddDictationSessionView: View {
             )
         }
 
+        try? modelContext.save()
+        isSaving = false
         dismiss()
     }
 }
