@@ -17,6 +17,12 @@ struct ReviewScheduler {
         return date.addingTimeInterval(Self.intervals[safeStage])
     }
 
+    func nextDayStart(from date: Date = .now) -> Date {
+        let calendar = Calendar.current
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: date) ?? date
+        return calendar.startOfDay(for: tomorrow)
+    }
+
     func handle(
         item: ReviewItem,
         result: ReviewResult,
@@ -26,19 +32,42 @@ struct ReviewScheduler {
         item.lastReviewedAt = now
         item.updatedAt = now
 
-        switch result {
-        case .correct:
-            item.consecutiveCorrectCount += 1
-            item.consecutiveWrongCount = 0
-            item.stage = min(item.stage + 1, Self.intervals.count - 1)
-            item.nextReviewAt = nextReviewDateAvoidingSameDay(for: item.stage, from: now)
-            item.isPriority = false
-        case .wrong:
-            item.consecutiveCorrectCount = 0
-            item.consecutiveWrongCount += 1
-            item.stage = max(item.stage - 1, 1)
-            item.nextReviewAt = nextReviewDateAvoidingSameDay(for: item.stage, from: now)
-            item.isPriority = item.consecutiveWrongCount >= 2
+        if item.isDictationPass {
+            if result == .correct {
+                item.consecutiveCorrectCount += 1
+                item.consecutiveWrongCount = 0
+                if item.stage == 2 {
+                    item.stage = 5
+                    item.nextReviewAt = nextReviewDateAvoidingSameDay(for: item.stage, from: now)
+                } else {
+                    item.stage = Self.intervals.count - 1
+                    item.isDictationPass = false
+                    item.nextReviewAt = nextReviewDateAvoidingSameDay(for: item.stage, from: now)
+                }
+                item.isPriority = false
+            } else {
+                item.isDictationPass = false
+                item.consecutiveCorrectCount = 0
+                item.consecutiveWrongCount += 1
+                item.stage = max(oldStage - 1, 1)
+                item.nextReviewAt = nextReviewDateAvoidingSameDay(for: item.stage, from: now)
+                item.isPriority = item.consecutiveWrongCount >= 2
+            }
+        } else {
+            switch result {
+            case .correct:
+                item.consecutiveCorrectCount += 1
+                item.consecutiveWrongCount = 0
+                item.stage = min(item.stage + 1, Self.intervals.count - 1)
+                item.nextReviewAt = nextReviewDateAvoidingSameDay(for: item.stage, from: now)
+                item.isPriority = false
+            case .wrong:
+                item.consecutiveCorrectCount = 0
+                item.consecutiveWrongCount += 1
+                item.stage = max(item.stage - 1, 1)
+                item.nextReviewAt = nextReviewDateAvoidingSameDay(for: item.stage, from: now)
+                item.isPriority = item.consecutiveWrongCount >= 2
+            }
         }
 
         return (
@@ -66,7 +95,6 @@ struct ReviewScheduler {
             return candidate
         }
 
-        let tomorrow = calendar.date(byAdding: .day, value: 1, to: date) ?? date
-        return calendar.startOfDay(for: tomorrow)
+        return nextDayStart(from: date)
     }
 }

@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import WidgetKit
 
 struct TasksView: View {
     @Environment(\.modelContext) private var modelContext
@@ -11,17 +12,17 @@ struct TasksView: View {
     }
 
     private var todayPending: [TaskItem] {
-        activeTasks.filter { $0.shouldAppear(on: .now, completions: completions) }
+        TodayTaskListBuilder
+            .build(from: activeTasks, completions: completions)
+            .filter { !$0.isCompleted }
+            .map(\.task)
     }
 
     private var todayDone: [TaskItem] {
-        let calendar = Calendar.current
-        let todayCompletionIDs = Set(
-            completions
-                .filter { calendar.isDateInToday($0.completedDate) }
-                .map(\.taskID)
-        )
-        return activeTasks.filter { todayCompletionIDs.contains($0.id) }
+        TodayTaskListBuilder
+            .build(from: activeTasks, completions: completions)
+            .filter(\.isCompleted)
+            .map(\.task)
     }
 
     private var archivedTasks: [TaskItem] {
@@ -97,6 +98,8 @@ struct TasksView: View {
                                         modelContext.delete(c)
                                     }
                                     modelContext.delete(task)
+                                    try? modelContext.save()
+                                    WidgetCenter.shared.reloadAllTimelines()
                                 }
                             }
                         }
@@ -104,6 +107,8 @@ struct TasksView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(Color(uiColor: .systemBackground))
         .navigationTitle("任务管理")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -151,6 +156,13 @@ struct TasksView: View {
                         }
                     }
 
+                    let pendingOccurrenceCount = task.pendingOccurrenceCount(on: .now, completions: completions)
+                    if task.skipPolicy == .unskippable && pendingOccurrenceCount > 1 && !isDone {
+                        Text("已累计 \(pendingOccurrenceCount) 次未完成")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.orange)
+                    }
+
                     if !task.note.isEmpty {
                         Text(task.note)
                             .font(.caption)
@@ -166,6 +178,8 @@ struct TasksView: View {
                 withAnimation {
                     task.isArchived = true
                 }
+                try? modelContext.save()
+                WidgetCenter.shared.reloadAllTimelines()
             }
         }
     }
@@ -198,5 +212,7 @@ struct TasksView: View {
             let generator = UINotificationFeedbackGenerator()
             generator.notificationOccurred(.success)
         }
+        try? modelContext.save()
+        WidgetCenter.shared.reloadAllTimelines()
     }
 }

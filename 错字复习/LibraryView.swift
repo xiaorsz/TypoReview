@@ -41,8 +41,9 @@ struct LibraryView: View {
             }
             .pickerStyle(.segmented)
             .padding(.horizontal)
-            .padding(.top, 8)
-            .padding(.bottom, 12)
+            .padding(.top, 20)
+            .padding(.bottom, 16)
+            .background(Color(uiColor: .systemBackground))
 
             if filteredItems.isEmpty {
                 ContentUnavailableView {
@@ -128,8 +129,10 @@ struct LibraryView: View {
                         }
                     }
                 }
+                .scrollContentBackground(.hidden)
             }
         }
+        .background(Color(uiColor: .systemBackground))
         .searchable(text: $searchText, prompt: "搜索词句或英语")
         .navigationTitle("题库")
         .toolbar {

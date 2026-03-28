@@ -6,20 +6,23 @@ struct AddReviewItemView: View {
     @Environment(\.modelContext) private var modelContext
 
     private let existingItem: ReviewItem?
-    @State private var type: ReviewItemType = .chineseCharacter
+    @State private var type: ReviewItemType?
     @State private var content = ""
     @State private var prompt = ""
     @State private var note = ""
     @State private var source = ""
     @State private var showSaveToast = false
+    @State private var showTypePickerAttention = false
+    @State private var isTypeManuallyChosen: Bool
 
     init(item: ReviewItem? = nil) {
         self.existingItem = item
-        _type = State(initialValue: item?.type ?? .chineseCharacter)
+        _type = State(initialValue: item?.type)
         _content = State(initialValue: item?.content ?? "")
         _prompt = State(initialValue: item?.prompt ?? "")
         _note = State(initialValue: item?.note ?? "")
         _source = State(initialValue: item?.source ?? "")
+        _isTypeManuallyChosen = State(initialValue: item != nil)
     }
 
     private var canSave: Bool {
@@ -44,6 +47,10 @@ struct AddReviewItemView: View {
                 .padding(isWide ? 32 : 20)
                 .frame(maxWidth: .infinity)
             }
+        }
+        .onChange(of: content) { _, newValue in
+            guard !isTypeManuallyChosen else { return }
+            type = ReviewItemTypeInference.infer(from: newValue)
         }
         .toast("已保存 ✓", isPresented: $showSaveToast, duration: 0.8)
         .navigationTitle(existingItem == nil ? "新增错题" : "编辑错题")
@@ -100,9 +107,15 @@ struct AddReviewItemView: View {
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(.secondary)
             Spacer()
-            Picker("类型", selection: $type) {
-                Text("词句").tag(ReviewItemType.phrase)
-                Text("英语").tag(ReviewItemType.englishWord)
+            Picker("类型", selection: Binding(
+                get: { type },
+                set: { newValue in
+                    type = newValue
+                    isTypeManuallyChosen = true
+                }
+            )) {
+                Text("词句").tag(Optional(ReviewItemType.phrase))
+                Text("英语").tag(Optional(ReviewItemType.englishWord))
             }
             .pickerStyle(.segmented)
             .frame(width: 120)
@@ -110,6 +123,14 @@ struct AddReviewItemView: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20)
+                .fill(Color.orange.opacity(showTypePickerAttention ? 0.18 : 0))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 20)
+                .stroke(showTypePickerAttention ? Color.orange : .clear, lineWidth: 2)
+        }
     }
 
     private var inputCard: some View {
@@ -117,7 +138,7 @@ struct AddReviewItemView: View {
             // Section 1: Core Content
             VStack(alignment: .leading, spacing: 10) {
                 Label("核心内容", systemImage: "star.fill")
-                    .font(.caption.weight(.bold))
+                    .font(.subheadline.weight(.bold))
                     .foregroundStyle(.orange)
                 
                 TextField(contentLabel, text: $content)
@@ -130,7 +151,7 @@ struct AddReviewItemView: View {
             // Section 2: Source
             VStack(alignment: .leading, spacing: 10) {
                 Label("来源 (例如: 语文作业)", systemImage: "tag.fill")
-                    .font(.caption.weight(.bold))
+                    .font(.subheadline.weight(.bold))
                     .foregroundStyle(.purple)
                 
                 TextField("输入错题来源", text: $source)
@@ -198,47 +219,51 @@ struct AddReviewItemView: View {
 
     private var contentLabel: String {
         switch type {
-        case .chineseCharacter:
-            "正确汉字"
-        case .phrase:
+        case .phrase?:
             "正确词句，例如 欢迎 / 在家休息"
-        case .englishWord:
+        case .englishWord?:
             "正确英语，例如 apple / good morning"
+        default:
+            "先选择题目类型"
         }
     }
 
     private var promptLabel: String {
         switch type {
-        case .chineseCharacter:
-            "题目提示"
-        case .phrase:
+        case .phrase?:
             "题目提示，可选，例如 根据意思写词句: 高兴地接待别人"
-        case .englishWord:
+        case .englishWord?:
             "题目提示，可选，例如 看中文写英语: 苹果"
+        default:
+            "题目提示，可选"
         }
     }
 
     private var exampleText: String {
         switch type {
-        case .chineseCharacter:
-            ""
-        case .phrase:
+        case .phrase?:
             "如果要练词句填空，可补全提示；如果不填，复习时会直接朗读词句。"
-        case .englishWord:
+        case .englishWord?:
             "英语单词可以直接按听写来播报；如果想要中文释义出题，再补提示。"
+        default:
+            "请先选择题目类型，再录入内容。"
         }
     }
 
     private func save(keepOpen: Bool = false) {
         let trimmedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedContent.isEmpty else { return }
+        guard let selectedType = type else {
+            flashTypePickerAttention()
+            return
+        }
 
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedSource = source.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if let existingItem {
-            existingItem.type = type
+            existingItem.type = selectedType
             existingItem.content = trimmedContent
             existingItem.prompt = trimmedPrompt
             existingItem.note = trimmedNote
@@ -247,7 +272,7 @@ struct AddReviewItemView: View {
         } else {
             modelContext.insert(
                 ReviewItem(
-                    type: type,
+                    type: selectedType,
                     content: trimmedContent,
                     prompt: trimmedPrompt,
                     note: trimmedNote,
@@ -274,6 +299,20 @@ struct AddReviewItemView: View {
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                 dismiss()
+            }
+        }
+    }
+
+    private func flashTypePickerAttention() {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            showTypePickerAttention = true
+        }
+        Task {
+            try? await Task.sleep(for: .milliseconds(450))
+            await MainActor.run {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    showTypePickerAttention = false
+                }
             }
         }
     }

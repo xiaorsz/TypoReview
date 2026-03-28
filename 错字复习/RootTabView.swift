@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import WidgetKit
 
 struct RootTabView: View {
     @Environment(\.scenePhase) private var scenePhase
@@ -40,12 +41,24 @@ struct RootTabView: View {
         }
         .tabViewStyle(.sidebarAdaptable)
         .task {
+            do {
+                _ = try AppSettings.ensureSingleton(in: modelContext)
+            } catch {
+                print("AppSettings singleton setup failed on launch: \(error)")
+            }
             await syncStatusStore.refresh(using: modelContext, trigger: .launch)
+            WidgetCenter.shared.reloadAllTimelines()
         }
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase == .active else { return }
             Task {
+                do {
+                    _ = try AppSettings.ensureSingleton(in: modelContext)
+                } catch {
+                    print("AppSettings singleton setup failed on foreground: \(error)")
+                }
                 await syncStatusStore.refresh(using: modelContext, trigger: .foreground)
+                WidgetCenter.shared.reloadAllTimelines()
             }
         }
     }

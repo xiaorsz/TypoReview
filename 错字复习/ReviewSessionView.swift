@@ -11,6 +11,7 @@ struct ReviewSessionView: View {
     @State private var completedCount = 0
     @State private var wrongCount = 0
     @State private var showResultButtons = false
+    @State private var isContentRevealed = false
     @State private var reviewedSummaries: [SessionReviewSummary] = []
     @State private var showFeedback = false
     @State private var lastResultCorrect = true
@@ -68,6 +69,7 @@ struct ReviewSessionView: View {
                                 Text(headlineText(for: item))
                                     .font(.system(isWide ? .largeTitle : .title2, design: .rounded, weight: .bold))
 
+
                                 Button {
                                     speaker.speak(item)
                                 } label: {
@@ -79,9 +81,44 @@ struct ReviewSessionView: View {
                                 .buttonStyle(.borderedProminent)
                                 .controlSize(.large)
 
-                                Text(helperText(for: item))
-                                    .foregroundStyle(.secondary)
-                                    .font(.subheadline)
+                                HStack(alignment: .top) {
+                                    Text(helperText(for: item))
+                                        .foregroundStyle(.secondary)
+                                        .font(.subheadline)
+                                    
+                                    Spacer()
+                                    
+                                    Button {
+                                        withAnimation(.easeInOut(duration: 0.2)) {
+                                            isContentRevealed.toggle()
+                                        }
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: isContentRevealed ? "eye.slash.fill" : "eye.fill")
+                                            Text(isContentRevealed ? "隐藏文字" : "显示文字")
+                                        }
+                                        .font(.subheadline.weight(.medium))
+                                        .foregroundStyle(.blue)
+                                        .padding(.vertical, 6)
+                                        .padding(.horizontal, 12)
+                                        .background(Color.blue.opacity(0.1), in: Capsule())
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+
+                                if isContentRevealed {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Divider()
+                                            .padding(.vertical, 8)
+                                        Text("题目答案")
+                                            .font(.caption.weight(.medium))
+                                            .foregroundStyle(.secondary)
+                                        Text(item.content)
+                                            .font(.system(isWide ? .title : .title2, design: .rounded, weight: .semibold))
+                                            .foregroundStyle(.blue)
+                                    }
+                                    .transition(.opacity.combined(with: .move(edge: .top)))
+                                }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(isWide ? 32 : 24)
@@ -155,6 +192,7 @@ struct ReviewSessionView: View {
             }
         }
         .onChange(of: currentIndex) {
+            isContentRevealed = false
             if let currentItem {
                 speaker.prepare(currentItem)
             } else {

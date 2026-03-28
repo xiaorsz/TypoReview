@@ -1,16 +1,55 @@
 import SwiftUI
 import SwiftData
+import Translation
 
 struct AddDictationSessionView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
 
-    @State private var type: ReviewItemType = .chineseCharacter
+    @State private var type: ReviewItemType?
     @State private var title = ""
     @State private var scheduledDate: Date = .now
     @State private var defaultSource = ""
     @State private var rawText = ""
     @State private var isSaving = false
+    @State private var saveErrorMessage: String?
+    @State private var translationConfiguration: TranslationSession.Configuration?
+    @State private var pendingSaveContext: PendingDictationSaveContext?
+    @State private var showTypePickerAttention = false
+    @State private var isTypeManuallyChosen: Bool
+
+    var editingSession: DictationSession?
+    var existingEntries: [DictationEntry]?
+
+    init(editingSession: DictationSession? = nil, existingEntries: [DictationEntry]? = nil) {
+        self.editingSession = editingSession
+        self.existingEntries = existingEntries
+
+        if let session = editingSession {
+            _type = State(initialValue: session.type)
+            _title = State(initialValue: session.title)
+            _scheduledDate = State(initialValue: session.scheduledDate)
+
+            if let entriesToEdit = existingEntries {
+                let text = entriesToEdit
+                    .sorted { $0.sortOrder < $1.sortOrder }
+                    .map { entry in
+                        var line = entry.content
+                        if !entry.prompt.isEmpty || !entry.source.isEmpty {
+                            line += " | \(entry.prompt)"
+                        }
+                        if !entry.source.isEmpty {
+                            line += " | \(entry.source)"
+                        }
+                        return line
+                    }
+                    .joined(separator: "\n")
+                _rawText = State(initialValue: text)
+            }
+        }
+
+        _isTypeManuallyChosen = State(initialValue: editingSession != nil)
+    }
 
     private var entries: [ParsedDictationEntry] {
         rawText
@@ -34,14 +73,21 @@ struct AddDictationSessionView: View {
             .frame(maxWidth: 860)
             .frame(maxWidth: .infinity)
         }
-        .navigationTitle("新增今日听写")
+        .navigationTitle(editingSession != nil ? "编辑听写计划" : "新增今日听写")
         .navigationBarTitleDisplayMode(.inline)
+        .translationTask(translationConfiguration) { @Sendable session in
+            await handlePendingTranslation(using: session)
+        }
+        .onChange(of: rawText) { _, newValue in
+            guard !isTypeManuallyChosen else { return }
+            type = ReviewItemTypeInference.infer(from: newValue)
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 if isSaving {
                     ProgressView()
                 } else {
-                    Button("开始听写") {
+                    Button(editingSession != nil ? "完成修改" : "保存计划") {
                         Task {
                             await save()
                         }
@@ -50,6 +96,14 @@ struct AddDictationSessionView: View {
                     .disabled(!canSave)
                 }
             }
+        }
+        .alert("保存失败", isPresented: Binding(
+            get: { saveErrorMessage != nil },
+            set: { if !$0 { saveErrorMessage = nil } }
+        )) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text(saveErrorMessage ?? "")
         }
         .overlay {
             if isSaving {
@@ -63,7 +117,7 @@ struct AddDictationSessionView: View {
                         Text("正在生成听写计划...")
                             .font(.headline)
                         if type == .englishWord {
-                            Text("系统正在自动翻译单词意思")
+                            Text("正在使用 Apple 翻译补全单词释义")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -77,10 +131,10 @@ struct AddDictationSessionView: View {
 
     private var introCard: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("新增听写计划")
+            Text(editingSession != nil ? "编辑听写计划" : "新增听写计划")
                 .font(.system(.title3, design: .rounded, weight: .bold))
                 .foregroundStyle(.white)
-            Text("录入内容并指定日期，孩子只在当天看到任务。")
+            Text(editingSession != nil ? "修改听写内容和日期，保存后即生效。" : "录入内容并指定日期，孩子只在当天看到任务。")
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.85))
         }
@@ -106,12 +160,29 @@ struct AddDictationSessionView: View {
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Picker("类型", selection: $type) {
-                    Text("词句").tag(ReviewItemType.phrase)
-                    Text("英语").tag(ReviewItemType.englishWord)
+                Picker("类型", selection: Binding(
+                    get: { type },
+                    set: { newValue in
+                        type = newValue
+                        isTypeManuallyChosen = true
+                    }
+                )) {
+                    Text("词句").tag(Optional(ReviewItemType.phrase))
+                    Text("英语").tag(Optional(ReviewItemType.englishWord))
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 120)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20))
+            .overlay {
+                RoundedRectangle(cornerRadius: 20)
+                    .fill(Color.orange.opacity(showTypePickerAttention ? 0.18 : 0))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 20)
+                    .stroke(showTypePickerAttention ? Color.orange : .clear, lineWidth: 2)
             }
 
             DatePicker("计划日期", selection: $scheduledDate, displayedComponents: .date)
@@ -122,7 +193,7 @@ struct AddDictationSessionView: View {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 10) {
                     Label("听写标题", systemImage: "star.fill")
-                        .font(.caption.weight(.bold))
+                        .font(.subheadline.weight(.bold))
                         .foregroundStyle(.orange)
                     
                     TextField("例如：Unit 5 听写", text: $title)
@@ -134,7 +205,7 @@ struct AddDictationSessionView: View {
                 
                 VStack(alignment: .leading, spacing: 10) {
                     Label("默认来源 (可选)", systemImage: "tag.fill")
-                        .font(.caption.weight(.bold))
+                        .font(.subheadline.weight(.bold))
                         .foregroundStyle(.purple)
                     
                     TextField("输入所有错题共用的来源", text: $defaultSource)
@@ -200,63 +271,185 @@ struct AddDictationSessionView: View {
 
     private var placeholderText: String {
         switch type {
-        case .chineseCharacter:
-            return "睛\n辨 | 容易和辩混淆\n迎 | 走之旁的迎 | 第三单元"
-        case .phrase:
+        case .phrase?:
             return "欢迎\n认真 | 做事不马虎\n提醒 | 让别人注意 | 第三单元"
-        case .englishWord:
+        case .englishWord?:
             return "apple\nbanana | 香蕉\norange | 橙子 | Unit 5"
+        default:
+            return "请先选择题目类型，再录入听写内容"
         }
     }
 
     private func save() async {
         guard !isSaving else { return }
+        guard let selectedType = type else {
+            flashTypePickerAttention()
+            return
+        }
         isSaving = true
+        saveErrorMessage = nil
         
         let now = Date()
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let sessionTitle = trimmedTitle.isEmpty ? "\(scheduledDate.formatted(date: .abbreviated, time: .omitted))听写" : trimmedTitle
         let sourceFallback = defaultSource.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        let session = DictationSession(
-            title: sessionTitle, 
-            type: type, 
-            createdAt: now, 
-            updatedAt: now, 
-            scheduledDate: scheduledDate
-        )
-        modelContext.insert(session)
-
         let currentEntries = entries
-        for (index, entry) in currentEntries.enumerated() {
-            var prompt = entry.prompt
-            
-            // Auto translation for English if prompt is empty
-            if type == .englishWord && prompt.isEmpty {
-                if let translated = await DictationTranslationService.fetchTranslation(for: entry.content) {
-                    prompt = translated
+
+        let context = PendingDictationSaveContext(
+            title: sessionTitle,
+            scheduledDate: scheduledDate,
+            type: selectedType,
+            sourceFallback: sourceFallback,
+            entries: currentEntries,
+            createdAt: now
+        )
+
+        let needsTranslation = selectedType == .englishWord && currentEntries.contains { $0.prompt.isEmpty }
+        if needsTranslation {
+            pendingSaveContext = context
+            if translationConfiguration == nil {
+                translationConfiguration = TranslationSession.Configuration(
+                    source: Locale.Language(identifier: "en"),
+                    target: Locale.Language(identifier: "zh-Hans")
+                )
+            } else {
+                translationConfiguration?.invalidate()
+            }
+            return
+        }
+
+        await persist(context: context)
+    }
+
+    private func handlePendingTranslation(using session: TranslationSession) async {
+        guard let context = pendingSaveContext else { return }
+
+        let pendingRequests: [TranslationSession.Request] = context.entries.enumerated().compactMap { pair in
+            let (index, entry) = pair
+            guard entry.prompt.isEmpty else { return nil }
+            return TranslationSession.Request(sourceText: entry.content, clientIdentifier: String(index))
+        }
+
+        guard !pendingRequests.isEmpty else {
+            translationConfiguration = nil
+            pendingSaveContext = nil
+            await persist(context: context)
+            return
+        }
+
+        do {
+            try await session.prepareTranslation()
+            let responses = try await session.translations(from: pendingRequests)
+            await applyTranslationResponses(responses, to: context)
+        } catch {
+            translationConfiguration = nil
+            pendingSaveContext = nil
+            isSaving = false
+            saveErrorMessage = "Apple 翻译暂时不可用。请确认设备已安装需要的翻译语言，或先手动填写中文释义后再保存。"
+        }
+    }
+
+    private func applyTranslationResponses(
+        _ responses: [TranslationSession.Response],
+        to context: PendingDictationSaveContext
+    ) async {
+        var resolvedEntries = context.entries
+
+        for response in responses {
+            guard let identifier = response.clientIdentifier,
+                  let index = Int(identifier),
+                  resolvedEntries.indices.contains(index) else {
+                continue
+            }
+
+            let translated = response.targetText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !translated.isEmpty else { continue }
+            resolvedEntries[index] = resolvedEntries[index].settingPrompt(to: translated)
+        }
+
+        translationConfiguration = nil
+        pendingSaveContext = nil
+
+        if resolvedEntries.contains(where: { $0.prompt.isEmpty }) {
+            rawText = resolvedEntries.map(\.serializedLine).joined(separator: "\n")
+        }
+
+        await persist(
+            context: PendingDictationSaveContext(
+                title: context.title,
+                scheduledDate: context.scheduledDate,
+                type: context.type,
+                sourceFallback: context.sourceFallback,
+                entries: resolvedEntries,
+                createdAt: context.createdAt
+            )
+        )
+    }
+
+    private func persist(context: PendingDictationSaveContext) async {
+        let session: DictationSession
+        if let existing = editingSession {
+            session = existing
+            session.title = context.title
+            session.type = context.type
+            session.scheduledDate = context.scheduledDate
+            session.updatedAt = context.createdAt
+
+            if let entriesToDelete = existingEntries {
+                for entry in entriesToDelete {
+                    modelContext.delete(entry)
                 }
             }
-            
+        } else {
+            session = DictationSession(
+                title: context.title,
+                type: context.type,
+                createdAt: context.createdAt,
+                updatedAt: context.createdAt,
+                scheduledDate: context.scheduledDate
+            )
+            modelContext.insert(session)
+        }
+
+        for (index, entry) in context.entries.enumerated() {
             modelContext.insert(
                 DictationEntry(
                     sessionID: session.id,
                     sortOrder: index,
-                    type: type,
+                    type: context.type,
                     content: entry.content,
-                    prompt: prompt,
+                    prompt: entry.prompt,
                     note: "",
-                    source: entry.source.isEmpty ? sourceFallback : entry.source,
+                    source: entry.source.isEmpty ? context.sourceFallback : entry.source,
                     result: .pending,
-                    createdAt: now,
-                    updatedAt: now
+                    createdAt: context.createdAt,
+                    updatedAt: context.createdAt
                 )
             )
         }
 
-        try? modelContext.save()
-        isSaving = false
-        dismiss()
+        do {
+            try modelContext.save()
+            isSaving = false
+            dismiss()
+        } catch {
+            isSaving = false
+            saveErrorMessage = "听写计划保存失败，请稍后再试。\(error.localizedDescription)"
+        }
+    }
+
+    private func flashTypePickerAttention() {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            showTypePickerAttention = true
+        }
+        Task {
+            try? await Task.sleep(for: .milliseconds(450))
+            await MainActor.run {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    showTypePickerAttention = false
+                }
+            }
+        }
     }
 }
 
@@ -279,4 +472,34 @@ private struct ParsedDictationEntry {
         self.prompt = parts.count > 1 ? parts[1] : ""
         self.source = parts.count > 2 ? parts[2] : ""
     }
+
+    init(content: String, prompt: String, source: String) {
+        self.content = content
+        self.prompt = prompt
+        self.source = source
+    }
+
+    func settingPrompt(to prompt: String) -> ParsedDictationEntry {
+        ParsedDictationEntry(content: content, prompt: prompt, source: source)
+    }
+
+    var serializedLine: String {
+        var line = content
+        if !prompt.isEmpty || !source.isEmpty {
+            line += " | \(prompt)"
+        }
+        if !source.isEmpty {
+            line += " | \(source)"
+        }
+        return line
+    }
+}
+
+private struct PendingDictationSaveContext {
+    let title: String
+    let scheduledDate: Date
+    let type: ReviewItemType
+    let sourceFallback: String
+    let entries: [ParsedDictationEntry]
+    let createdAt: Date
 }

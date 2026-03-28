@@ -15,6 +15,7 @@ final class ReviewItem {
     var consecutiveCorrectCount: Int = 0
     var consecutiveWrongCount: Int = 0
     var isPriority: Bool = false
+    var isDictationPass: Bool = false
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
 
@@ -31,6 +32,7 @@ final class ReviewItem {
         consecutiveCorrectCount: Int = 0,
         consecutiveWrongCount: Int = 0,
         isPriority: Bool = false,
+        isDictationPass: Bool = false,
         createdAt: Date = .now,
         updatedAt: Date = .now
     ) {
@@ -46,6 +48,7 @@ final class ReviewItem {
         self.consecutiveCorrectCount = consecutiveCorrectCount
         self.consecutiveWrongCount = consecutiveWrongCount
         self.isPriority = isPriority
+        self.isDictationPass = isDictationPass
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }

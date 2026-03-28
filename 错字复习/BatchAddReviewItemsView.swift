@@ -6,10 +6,14 @@ struct BatchAddReviewItemsView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var reviewItems: [ReviewItem]
 
-    @State private var type: ReviewItemType = .chineseCharacter
+    @State private var type: ReviewItemType?
     @State private var rawText = ""
     @State private var defaultSource = ""
     @State private var importSummary: BatchImportSummary?
+    @State private var showTypePickerAttention = false
+    @State private var isTypeManuallyChosen = false
+
+    private let resultCardAnchor = "batchImportResultCard"
 
     private var parsedLines: [BatchReviewLineResult] {
         rawText
@@ -32,20 +36,34 @@ struct BatchAddReviewItemsView: View {
         GeometryReader { proxy in
             let isWide = proxy.size.width >= 700
 
-            ScrollView {
-                VStack(spacing: 20) {
-                    introCard
-                    configCard
-                    editorCard
-                    formatCard
-                    if let importSummary {
-                        resultCard(summary: importSummary)
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    VStack(spacing: 20) {
+                        if let importSummary {
+                            resultCard(summary: importSummary)
+                                .id(resultCardAnchor)
+                        }
+
+                        introCard
+                        configCard
+                        editorCard
+                        formatCard
+                    }
+                    .padding(isWide ? 32 : 20)
+                    .frame(maxWidth: isWide ? 860 : .infinity)
+                    .frame(maxWidth: .infinity)
+                }
+                .onChange(of: importSummary?.importedCount) { _, newValue in
+                    guard newValue != nil else { return }
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        scrollProxy.scrollTo(resultCardAnchor, anchor: .top)
                     }
                 }
-                .padding(isWide ? 32 : 20)
-                .frame(maxWidth: isWide ? 860 : .infinity)
-                .frame(maxWidth: .infinity)
             }
+        }
+        .onChange(of: rawText) { _, newValue in
+            guard !isTypeManuallyChosen else { return }
+            type = ReviewItemTypeInference.infer(from: newValue)
         }
         .navigationTitle("批量录入")
         .navigationBarTitleDisplayMode(.inline)
@@ -92,9 +110,15 @@ struct BatchAddReviewItemsView: View {
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Picker("类型", selection: $type) {
-                    Text("词句").tag(ReviewItemType.phrase)
-                    Text("英语").tag(ReviewItemType.englishWord)
+                Picker("类型", selection: Binding(
+                    get: { type },
+                    set: { newValue in
+                        type = newValue
+                        isTypeManuallyChosen = true
+                    }
+                )) {
+                    Text("词句").tag(Optional(ReviewItemType.phrase))
+                    Text("英语").tag(Optional(ReviewItemType.englishWord))
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 120)
@@ -102,10 +126,18 @@ struct BatchAddReviewItemsView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 14)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20))
+            .overlay {
+                RoundedRectangle(cornerRadius: 20)
+                    .fill(Color.orange.opacity(showTypePickerAttention ? 0.18 : 0))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 20)
+                    .stroke(showTypePickerAttention ? Color.orange : .clear, lineWidth: 2)
+            }
 
             VStack(alignment: .leading, spacing: 10) {
                 Label("默认来源 (可选)", systemImage: "tag.fill")
-                    .font(.caption.weight(.bold))
+                    .font(.subheadline.weight(.bold))
                     .foregroundStyle(.purple)
                 
                 TextField("输入这批错题共用的来源", text: $defaultSource)
@@ -115,7 +147,7 @@ struct BatchAddReviewItemsView: View {
             }
             .padding(20)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
-        }
+    }
     }
 
     private var editorCard: some View {
@@ -123,7 +155,7 @@ struct BatchAddReviewItemsView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 6) {
                     Label("核心内容", systemImage: "star.fill")
-                        .font(.caption.weight(.bold))
+                        .font(.subheadline.weight(.bold))
                         .foregroundStyle(.orange)
                     Text("每行一条，点右侧按钮插入分隔符")
                         .font(.caption)
@@ -183,12 +215,12 @@ struct BatchAddReviewItemsView: View {
 
     private var placeholderText: String {
         switch type {
-        case .chineseCharacter:
-            return "睛\n辨 | 容易写成辩\n迎 | 走之旁的迎 | 语文听写"
-        case .phrase:
+        case .phrase?:
             return "欢迎\n认真 | 做事不马虎\n提醒 | 让别人注意 | 语文听写"
-        case .englishWord:
+        case .englishWord?:
             return "apple\nbanana | 香蕉\norange | 橙子 | 英语听写"
+        default:
+            return "请先选择题目类型，再粘贴批量内容"
         }
     }
 
@@ -276,6 +308,11 @@ struct BatchAddReviewItemsView: View {
     }
 
     private func save() {
+        guard let selectedType = type else {
+            flashTypePickerAttention()
+            return
+        }
+
         let sourceFallback = defaultSource.trimmingCharacters(in: .whitespacesAndNewlines)
         let existingKeys = Set(
             reviewItems.map {
@@ -296,7 +333,7 @@ struct BatchAddReviewItemsView: View {
                 continue
             }
 
-            let key = BatchImportKey(type: type, content: entry.content)
+            let key = BatchImportKey(type: selectedType, content: entry.content)
             if existingKeys.contains(key) || seenInThisBatch.contains(key) {
                 duplicateLines.append(line)
                 continue
@@ -304,7 +341,7 @@ struct BatchAddReviewItemsView: View {
 
             modelContext.insert(
                 ReviewItem(
-                    type: type,
+                    type: selectedType,
                     content: entry.content,
                     prompt: entry.prompt,
                     note: "",
@@ -322,6 +359,25 @@ struct BatchAddReviewItemsView: View {
             duplicateLines: duplicateLines,
             invalidLines: invalidLines
         )
+
+        if importedCount > 0 {
+            rawText = ""
+            defaultSource = ""
+        }
+    }
+
+    private func flashTypePickerAttention() {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            showTypePickerAttention = true
+        }
+        Task {
+            try? await Task.sleep(for: .milliseconds(450))
+            await MainActor.run {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    showTypePickerAttention = false
+                }
+            }
+        }
     }
 }
 

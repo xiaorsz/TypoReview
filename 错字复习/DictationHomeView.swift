@@ -4,9 +4,11 @@ import SwiftData
 struct DictationHomeView: View {
     @Query(sort: \DictationSession.createdAt, order: .reverse) private var sessions: [DictationSession]
     @Query(sort: \DictationEntry.sortOrder) private var allEntries: [DictationEntry]
+    @Environment(\.modelContext) private var modelContext
     
     @State private var previewSession: DictationSession?
     @State private var activeSession: DictationSession?
+    @State private var editingSession: DictationSession?
 
     var body: some View {
         List {
@@ -55,6 +57,8 @@ struct DictationHomeView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(Color(uiColor: .systemBackground))
         .navigationTitle("听写安排")
         .sheet(item: $previewSession) { session in
             DictationPreviewView(
@@ -62,11 +66,22 @@ struct DictationHomeView: View {
                 entries: entries(for: session),
                 onStartSession: {
                     activeSession = session
+                },
+                onEditSession: {
+                    previewSession = nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        editingSession = session
+                    }
                 }
             )
         }
         .navigationDestination(item: $activeSession) { session in
             DictationSessionView(session: session, entries: entries(for: session))
+        }
+        .sheet(item: $editingSession) { session in
+            NavigationStack {
+                AddDictationSessionView(editingSession: session, existingEntries: entries(for: session))
+            }
         }
     }
 
@@ -126,6 +141,22 @@ struct DictationHomeView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+            }
+        }
+        .swipeActions {
+            Button(role: .destructive) {
+                modelContext.delete(session)
+            } label: {
+                Label("删除", systemImage: "trash")
+            }
+            
+            if !session.isFinished && !session.isReviewed {
+                Button {
+                    editingSession = session
+                } label: {
+                    Label("修改", systemImage: "pencil")
+                }
+                .tint(.orange)
             }
         }
     }
@@ -192,6 +223,7 @@ struct DictationPreviewView: View {
     let session: DictationSession
     let entries: [DictationEntry]
     var onStartSession: () -> Void
+    var onEditSession: (() -> Void)? = nil
     
     var body: some View {
         NavigationStack {
@@ -268,6 +300,14 @@ struct DictationPreviewView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("关闭") {
                         dismiss()
+                    }
+                }
+                if let onEditAction = onEditSession {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("修改") {
+                            dismiss()
+                            onEditAction()
+                        }
                     }
                 }
             }

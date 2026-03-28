@@ -213,6 +213,61 @@ extension Int {
     }
 }
 
+enum ReviewItemTypeInference {
+    static func infer(from text: String) -> ReviewItemType? {
+        let sample = text
+            .components(separatedBy: .newlines)
+            .compactMap { line -> String? in
+                let content = line
+                    .split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+                    .first?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return content.isEmpty ? nil : content
+            }
+            .first
+
+        guard let sample else { return nil }
+
+        if sample.containsChineseCharacters {
+            return .phrase
+        }
+
+        if sample.isLikelyEnglishContent {
+            return .englishWord
+        }
+
+        return nil
+    }
+}
+
+private extension String {
+    var containsChineseCharacters: Bool {
+        unicodeScalars.contains { scalar in
+            (0x4E00...0x9FFF).contains(scalar.value) ||
+            (0x3400...0x4DBF).contains(scalar.value)
+        }
+    }
+
+    var isLikelyEnglishContent: Bool {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        guard !trimmed.containsChineseCharacters else { return false }
+
+        let allowedPunctuation = CharacterSet(charactersIn: " -'")
+        let allowedScalars = CharacterSet.decimalDigits
+            .union(.letters)
+            .union(allowedPunctuation)
+
+        guard trimmed.unicodeScalars.allSatisfy({ allowedScalars.contains($0) && $0.isASCII }) else {
+            return false
+        }
+
+        return trimmed.unicodeScalars.contains { scalar in
+            CharacterSet.letters.contains(scalar) && scalar.isASCII
+        }
+    }
+}
+
 import AVFoundation
 
 @MainActor
@@ -270,35 +325,5 @@ extension DictationSpeaker: @preconcurrency AVSpeechSynthesizerDelegate {
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
         SpeechAudioSession.deactivate()
         isSpeaking = false
-    }
-}
-
-struct DictationTranslationService {
-    static func fetchTranslation(for word: String) async -> String? {
-        let trimmed = word.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        
-        let urlString = "https://dict-mobile.iciba.com/interface/index.php?c=word&m=getsuggest&nums=1&is_standard=1&word=\(trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")"
-        
-        guard let url = URL(string: urlString) else { return nil }
-        
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let message = json["message"] as? [[String: Any]],
-               let firstMatch = message.first,
-               let paraphrase = firstMatch["paraphrase"] as? String {
-                
-                var result = paraphrase
-                if let dotIndex = result.firstIndex(of: ".") {
-                    result = String(result[result.index(after: dotIndex)...])
-                }
-                return result.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-        } catch {
-            print("Translation fetch failed: \(error)")
-        }
-        
-        return nil
     }
 }

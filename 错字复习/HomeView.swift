@@ -1,9 +1,13 @@
+
 import SwiftUI
 import SwiftData
+import Observation
+import AVFoundation
+import WidgetKit
 
 struct HomeView: View {
     @Environment(\.modelContext) private var modelContext
-    @Environment(SyncStatusStore.self) private var syncStatusStore
+    @Environment(SyncStatusStore.self) private var syncStatusStore: SyncStatusStore
     @Query(sort: \ReviewItem.nextReviewAt) private var reviewItems: [ReviewItem]
     @Query(sort: \ReviewRecord.reviewedAt, order: .reverse) private var reviewRecords: [ReviewRecord]
     @Query(sort: \DictationSession.createdAt, order: .reverse) private var dictationSessions: [DictationSession]
@@ -11,8 +15,9 @@ struct HomeView: View {
     @Query private var settings: [AppSettings]
     @Query(sort: \TaskItem.createdAt) private var allTasks: [TaskItem]
     @Query(sort: \TaskCompletion.completedAt, order: .reverse) private var taskCompletions: [TaskCompletion]
-    @AppStorage("reviewInteractionStyle") private var reviewStyle: ReviewInteractionStyle = .oneByOne
     
+    @State private var showingReviewPreview = false
+    @State private var isReviewActive = false
     @State private var previewSession: DictationSession?
     @State private var activeDictationSession: DictationSession?
 
@@ -38,6 +43,10 @@ struct HomeView: View {
         return settings.childName.isEmpty ? "小朋友" : settings.childName
     }
 
+    private var reviewStyle: ReviewInteractionStyle {
+        settings.first?.reviewInteractionStyle ?? AppSettings.defaultReviewInteractionStyle
+    }
+
     private var todayRecords: [ReviewRecord] {
         let calendar = Calendar.current
         return reviewRecords.filter { calendar.isDateInToday($0.reviewedAt) }
@@ -54,8 +63,17 @@ struct HomeView: View {
     }
 
     private var pendingDictationCount: Int {
-        guard let session = latestDictationSession, !session.isReviewed else { return 0 }
-        return dictationEntries.filter { $0.sessionID == session.id }.count
+        let calendar = Calendar.current
+        let todayStart = calendar.startOfDay(for: .now)
+        let pendingSessions = dictationSessions.filter {
+            !$0.isReviewed && calendar.startOfDay(for: $0.scheduledDate) <= todayStart
+        }
+        
+        var totalCount = 0
+        for session in pendingSessions {
+            totalCount += dictationEntries.filter { $0.sessionID == session.id }.count
+        }
+        return totalCount
     }
 
     private var latestDictationSession: DictationSession? {
@@ -221,40 +239,7 @@ struct HomeView: View {
                     todayTasksCard
 
                     // Stat grid
-                    let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: 3)
-
-                    LazyVGrid(columns: columns, spacing: 12) {
-                        Group {
-                            if reviewStyle == .batch {
-                                NavigationLink {
-                                    BatchReviewSessionView(items: dueItems)
-                                } label: {
-                                    StatGridCard(icon: "book.closed", title: "待复习", value: "\(dueItems.count)", tint: .orange)
-                                }
-                            } else {
-                                NavigationLink {
-                                    ReviewSessionView(items: dueItems)
-                                } label: {
-                                    StatGridCard(icon: "book.closed", title: "待复习", value: "\(dueItems.count)", tint: .orange)
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .allowsHitTesting(!dueItems.isEmpty)
-                        
-                        NavigationLink {
-                            DictationHomeView()
-                        } label: {
-                            StatGridCard(icon: "text.book.closed", title: "待听写", value: "\(pendingDictationCount)", tint: .teal)
-                        }
-                        .buttonStyle(.plain)
-
-                        
-                        StatGridCard(icon: "checkmark.circle", title: "今日完成", value: "\(todayCompletedCount)", tint: .green)
-                        StatGridCard(icon: "xmark.circle", title: "今日答错", value: "\(todayWrongCount)", tint: .red)
-                        StatGridCard(icon: "percent", title: "正确率", value: todayAccuracyText, tint: .blue)
-                        StatGridCard(icon: "star.fill", title: "已掌握", value: "\(reviewItems.filter(scheduler.isMastered).count)", tint: .mint)
-                    }
+                    statGridSection
 
                     if isWide {
                         HStack(spacing: 16) {
@@ -290,10 +275,20 @@ struct HomeView: View {
                     entries: dictationEntries.filter { $0.sessionID == session.id }.sorted { $0.sortOrder < $1.sortOrder }
                 )
             }
-        }
-        .task {
-            if settings.isEmpty {
-                modelContext.insert(AppSettings())
+            .navigationDestination(isPresented: $isReviewActive) {
+                if reviewStyle == .batch {
+                    BatchReviewSessionView(items: dueItems)
+                } else {
+                    ReviewSessionView(items: dueItems)
+                }
+            }
+            .sheet(isPresented: $showingReviewPreview) {
+                ReviewPreviewView(
+                    items: dueItems,
+                    onStartReview: {
+                        isReviewActive = true
+                    }
+                )
             }
         }
         .toolbar {
@@ -312,6 +307,44 @@ struct HomeView: View {
                     }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var statGridSection: some View {
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: 3)
+
+        LazyVGrid(columns: columns, spacing: 12) {
+            Group {
+                if reviewStyle == .batch {
+                    NavigationLink {
+                        BatchReviewSessionView(items: dueItems)
+                    } label: {
+                        StatGridCard(icon: "book.closed", title: "待复习", value: "\(dueItems.count)", tint: .orange)
+                    }
+                } else {
+                    NavigationLink {
+                        ReviewSessionView(items: dueItems)
+                    } label: {
+                        StatGridCard(icon: "book.closed", title: "待复习", value: "\(dueItems.count)", tint: .orange)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .allowsHitTesting(!dueItems.isEmpty)
+            
+            NavigationLink {
+                DictationHomeView()
+            } label: {
+                StatGridCard(icon: "text.book.closed", title: "待听写", value: "\(pendingDictationCount)", tint: .teal)
+            }
+            .buttonStyle(.plain)
+
+            
+            StatGridCard(icon: "checkmark.circle", title: "今日完成", value: "\(todayCompletedCount)", tint: .green)
+            StatGridCard(icon: "xmark.circle", title: "今日答错", value: "\(todayWrongCount)", tint: .red)
+            StatGridCard(icon: "percent", title: "正确率", value: todayAccuracyText, tint: .blue)
+            StatGridCard(icon: "star.fill", title: "已掌握", value: "\(reviewItems.filter(scheduler.isMastered).count)", tint: .mint)
         }
     }
 
@@ -369,37 +402,47 @@ struct HomeView: View {
     }
 
     private var reviewEntryButton: some View {
-        Group {
-            if reviewStyle == .batch {
-                NavigationLink {
-                    BatchReviewSessionView(items: dueItems)
-                } label: {
-                    reviewEntryLabel
-                }
-                .disabled(dueItems.isEmpty)
-            } else {
-                NavigationLink {
-                    ReviewSessionView(items: dueItems)
-                } label: {
-                    reviewEntryLabel
-                }
-                .disabled(dueItems.isEmpty)
-            }
+        Button {
+            isReviewActive = true
+        } label: {
+            reviewEntryLabel
         }
+        .buttonStyle(.plain)
+        .disabled(dueItems.isEmpty)
     }
 
     private var reviewEntryLabel: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Image(systemName: "play.fill")
-                Text("开始今天复习")
-            }
-            .font(.title3.weight(.semibold))
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Image(systemName: "play.fill")
+                    Text("开始今天复习")
+                }
+                .font(.title3.weight(.semibold))
 
-            Text(reviewStatusText)
-                .font(.subheadline)
-                .foregroundStyle(.white.opacity(0.9))
-                .lineLimit(1)
+                Text(reviewStatusText)
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.9))
+                    .lineLimit(1)
+            }
+            
+            Spacer()
+            
+            if !dueItems.isEmpty {
+                Button {
+                    showingReviewPreview = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "eye.fill")
+                        Text("预习内容")
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(.white.opacity(0.25), in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
@@ -480,30 +523,28 @@ struct HomeView: View {
 
     // MARK: - Today Tasks
 
+    private var todayTaskItems: [TodayTaskDisplayItem] {
+        TodayTaskListBuilder.build(from: allTasks, completions: taskCompletions)
+    }
+
     private var todayTasks: [TaskItem] {
-        allTasks.filter {
-            $0.shouldAppear(on: .now, completions: taskCompletions) ||
-            $0.isCompletedToday(completions: taskCompletions)
-        }
+        todayTaskItems.map(\.task)
     }
 
     private var todayPendingTasks: [TaskItem] {
-        todayTasks.filter { task in
-            !taskCompletions.contains { $0.taskID == task.id && Calendar.current.isDateInToday($0.completedDate) }
-        }
+        todayTaskItems.filter { !$0.isCompleted }.map(\.task)
     }
 
     private var todayCompletedTaskCount: Int {
-        let calendar = Calendar.current
-        return taskCompletions.filter { calendar.isDateInToday($0.completedDate) }.count
+        todayTaskItems.filter(\.isCompleted).count
     }
 
     @ViewBuilder
     private var todayTasksCard: some View {
-        let tasks = todayTasks
+        let taskItems = todayTaskItems
         let doneCount = todayCompletedTaskCount
         
-        if !tasks.isEmpty || !allTasks.isEmpty {
+        if !taskItems.isEmpty || !allTasks.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     Image(systemName: "checklist")
@@ -512,20 +553,22 @@ struct HomeView: View {
                     Text("今日任务")
                         .font(.headline)
                     Spacer()
-                    if !tasks.isEmpty {
-                        Text("\(doneCount)/\(tasks.count) 已完成")
+                    if !taskItems.isEmpty {
+                        Text("\(doneCount)/\(taskItems.count) 已完成")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(doneCount == tasks.count ? .green : .orange)
+                            .foregroundStyle(doneCount == taskItems.count ? .green : .orange)
                     }
                 }
 
-                if tasks.isEmpty && !allTasks.isEmpty {
+                if taskItems.isEmpty && !allTasks.isEmpty {
                     Text("今天没有待完成的任务。")
                         .foregroundStyle(.secondary)
                         .font(.subheadline)
                 } else {
-                    ForEach(tasks) { task in
-                        let isDone = taskCompletions.contains { $0.taskID == task.id && Calendar.current.isDateInToday($0.completedDate) }
+                    ForEach(taskItems) { item in
+                        let task = item.task
+                        let isDone = item.isCompleted
+                        let pendingOccurrenceCount = item.pendingOccurrenceCount
                         
                         HStack(spacing: 12) {
                             Button {
@@ -557,6 +600,12 @@ struct HomeView: View {
                                     }
                                 }
                                 .opacity(isDone ? 0.6 : 1.0)
+
+                                if task.skipPolicy == .unskippable && pendingOccurrenceCount > 1 && !isDone {
+                                    Text("已累计 \(pendingOccurrenceCount) 次未完成")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(.orange)
+                                }
                             }
 
                             Spacer()
@@ -582,7 +631,117 @@ struct HomeView: View {
             task.isArchived = true
         }
 
+        try? modelContext.save()
+        WidgetCenter.shared.reloadAllTimelines()
+
         let generator = UINotificationFeedbackGenerator()
         generator.notificationOccurred(.success)
+    }
+}
+
+// MARK: - Review Preview View
+
+struct ReviewPreviewView: View {
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var speaker = DictationSpeaker()
+    
+    let items: [ReviewItem]
+    var onStartReview: () -> Void
+    
+    var body: some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 20) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("今日待复习")
+                            .font(.system(.title2, design: .rounded, weight: .bold))
+                        
+                        Text("共 \(items.count) 项错题内容")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
+                    
+                    VStack(spacing: 12) {
+                        ForEach(items.indices, id: \.self) { index in
+                            let item = items[index]
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    HStack {
+                                        Text("\(index + 1)")
+                                            .font(.caption2.weight(.bold))
+                                            .foregroundStyle(.orange)
+                                            .frame(width: 22, height: 22)
+                                            .background(Color.orange.opacity(0.1), in: Circle())
+                                        
+                                        TypeBadge(type: item.type)
+                                        
+                                        Spacer()
+                                    }
+                                    
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(item.content)
+                                            .font(.system(.title3, design: .rounded, weight: .bold))
+                                            .foregroundStyle(.primary)
+                                        
+                                        if !item.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                            Text(item.prompt)
+                                                .font(.headline.weight(.medium))
+                                                .foregroundStyle(.orange)
+                                        }
+                                    }
+                                }
+                                
+                                Spacer()
+                                
+                                Button {
+                                    speaker.speak(content: item.content, type: item.type)
+                                } label: {
+                                    Image(systemName: "speaker.wave.2.circle.fill")
+                                        .font(.title2)
+                                        .foregroundStyle(.orange.opacity(0.6))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(16)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 20)
+                                    .strokeBorder(.secondary.opacity(0.1), lineWidth: 1)
+                            )
+                        }
+                    }
+                }
+                .padding(20)
+                .padding(.bottom, 100)
+            }
+            .navigationTitle("复习预习")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("关闭") {
+                        dismiss()
+                    }
+                }
+            }
+            .onDisappear {
+                speaker.stop()
+            }
+            .safeAreaInset(edge: .bottom) {
+                VStack {
+                    Button {
+                        dismiss()
+                        onStartReview()
+                    } label: {
+                        Text("开始复习")
+                    }
+                    .buttonStyle(ResultButtonStyle(color: .orange))
+                    .padding()
+                }
+                .background(.bar)
+            }
+        }
     }
 }

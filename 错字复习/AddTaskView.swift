@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import WidgetKit
 
 struct AddTaskView: View {
     @Environment(\.dismiss) private var dismiss
@@ -88,7 +89,7 @@ struct AddTaskView: View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 10) {
                 Label("任务名称", systemImage: "star.fill")
-                    .font(.caption.weight(.bold))
+                    .font(.subheadline.weight(.bold))
                     .foregroundStyle(.orange)
                 
                 TextField("例如：每天朗读课文 20 分钟", text: $title)
@@ -100,7 +101,7 @@ struct AddTaskView: View {
             
             VStack(alignment: .leading, spacing: 10) {
                 Label("备注 (可选)", systemImage: "tag.fill")
-                    .font(.caption.weight(.bold))
+                    .font(.subheadline.weight(.bold))
                     .foregroundStyle(.purple)
                 
                 TextField("补充说明", text: $note)
@@ -234,6 +235,8 @@ struct AddTaskView: View {
         withAnimation {
             showSaveToast = true
         }
+        try? modelContext.save()
+        WidgetCenter.shared.reloadAllTimelines()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
             dismiss()
         }

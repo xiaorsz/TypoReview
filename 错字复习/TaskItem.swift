@@ -92,35 +92,70 @@ final class TaskItem {
     }
 
     func isCompletedToday(completions: [TaskCompletion]) -> Bool {
+        isCompleted(on: .now, completions: completions)
+    }
+
+    func isCompleted(on date: Date, completions: [TaskCompletion]) -> Bool {
         let calendar = Calendar.current
         return completions.contains {
-            $0.taskID == id && calendar.isDateInToday($0.completedDate)
+            $0.taskID == id && calendar.isDate($0.completedDate, inSameDayAs: date)
         }
+    }
+
+    func pendingOccurrenceCount(on date: Date, completions: [TaskCompletion]) -> Int {
+        let scheduledCount = scheduledOccurrenceCount(upTo: date)
+        let completionCount = completionCount(upTo: date, completions: completions)
+        return max(0, scheduledCount - completionCount)
     }
 
     /// For weekly unskippable: check if any past scheduled weekday was missed.
     private func hasOverdueOccurrence(before date: Date, completions: [TaskCompletion]) -> Bool {
+        let dayBefore = Calendar.current.date(byAdding: .day, value: -1, to: date) ?? date
+        return pendingOccurrenceCount(on: dayBefore, completions: completions) > 0
+    }
+
+    private func scheduledOccurrenceCount(upTo date: Date) -> Int {
         let calendar = Calendar.current
         let start = calendar.startOfDay(for: startDate)
         let target = calendar.startOfDay(for: date)
 
-        // Look back up to 30 days
-        var checkDate = calendar.date(byAdding: .day, value: -1, to: target)!
-        let limit = calendar.date(byAdding: .day, value: -30, to: target)!
+        guard target >= start else { return 0 }
 
-        while checkDate >= start && checkDate >= limit {
-            let wd = calendar.component(.weekday, from: checkDate)
-            if recurrence.weekdays.contains(wd) {
-                let wasDone = completions.contains {
-                    $0.taskID == id && calendar.isDate($0.completedDate, inSameDayAs: checkDate)
+        switch recurrence.kind {
+        case .once:
+            return 1
+
+        case .daily:
+            let days = calendar.dateComponents([.day], from: start, to: target).day ?? 0
+            return days + 1
+
+        case .weekly:
+            var scheduledCount = 0
+            var checkDate = start
+            while checkDate <= target {
+                let weekday = calendar.component(.weekday, from: checkDate)
+                if recurrence.weekdays.contains(weekday) {
+                    scheduledCount += 1
                 }
-                if !wasDone {
-                    return true
+                guard let nextDate = calendar.date(byAdding: .day, value: 1, to: checkDate) else {
+                    break
                 }
+                checkDate = nextDate
             }
-            checkDate = calendar.date(byAdding: .day, value: -1, to: checkDate)!
+            return scheduledCount
         }
-        return false
+    }
+
+    private func completionCount(upTo date: Date, completions: [TaskCompletion]) -> Int {
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: startDate)
+        let target = calendar.startOfDay(for: date)
+
+        return completions.filter { completion in
+            guard completion.taskID == id else { return false }
+            let completionDay = calendar.startOfDay(for: completion.completedDate)
+            return completionDay >= start && completionDay <= target
+        }.count
     }
 
     // MARK: - Display Helpers
@@ -138,6 +173,33 @@ final class TaskItem {
                 return "周\(names[wd - 1])"
             }
             return "每周 \(days.joined(separator: "、"))"
+        }
+    }
+}
+
+struct TodayTaskDisplayItem: Identifiable {
+    let task: TaskItem
+    let isCompleted: Bool
+    let pendingOccurrenceCount: Int
+
+    var id: UUID { task.id }
+}
+
+enum TodayTaskListBuilder {
+    static func build(
+        from tasks: [TaskItem],
+        completions: [TaskCompletion],
+        on date: Date = .now
+    ) -> [TodayTaskDisplayItem] {
+        tasks.compactMap { task in
+            let isCompleted = task.isCompleted(on: date, completions: completions)
+            let shouldAppear = task.shouldAppear(on: date, completions: completions)
+            guard shouldAppear || isCompleted else { return nil }
+            return TodayTaskDisplayItem(
+                task: task,
+                isCompleted: isCompleted,
+                pendingOccurrenceCount: task.pendingOccurrenceCount(on: date, completions: completions)
+            )
         }
     }
 }

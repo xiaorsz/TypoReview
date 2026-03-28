@@ -5,10 +5,16 @@ struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(SyncStatusStore.self) private var syncStatusStore
     @Query private var settingsList: [AppSettings]
-    @AppStorage("reviewInteractionStyle") private var reviewStyle: ReviewInteractionStyle = .oneByOne
 
     private var settings: AppSettings? {
         settingsList.first
+    }
+
+    private var reviewStyle: Binding<ReviewInteractionStyle> {
+        Binding(
+            get: { settings?.reviewInteractionStyle ?? AppSettings.defaultReviewInteractionStyle },
+            set: { newValue in settings?.reviewInteractionStyle = newValue }
+        )
     }
 
     /// Binding for the reminder time as a Date
@@ -31,212 +37,222 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
-                // Child info card
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack {
-                        Image(systemName: "person.crop.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(.blue)
-                        Text("孩子信息")
-                            .font(.headline)
-                    }
-
-                    VStack(alignment: .leading, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("孩子名字")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                            TextField("孩子名字", text: bind(\.childName))
-                                .textFieldStyle(.roundedBorder)
-                        }
-
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("每日题量")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                            Stepper("每日 \(settings?.dailyLimit ?? 15) 题", value: bind(\.dailyLimit), in: 5...30, step: 5)
-                                .padding(12)
-                                .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12))
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(20)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
-
-                // Reminder card
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack {
-                        Image(systemName: "bell.badge.fill")
-                            .font(.title2)
-                            .foregroundStyle(.orange)
-                        Text("每日提醒")
-                            .font(.headline)
-                    }
-
-                    DatePicker("提醒时间", selection: reminderDate, displayedComponents: .hourAndMinute)
-                        .datePickerStyle(.compact)
-                        .padding(12)
-                        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12))
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(20)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
-
-                // Review rules card
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .font(.title2)
-                            .foregroundStyle(.green)
-                        Text("复习规则")
-                            .font(.headline)
-                    }
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("复习模式")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Picker("复习模式", selection: $reviewStyle) {
-                            ForEach(ReviewInteractionStyle.allCases) { style in
-                                Text(style.rawValue).tag(style)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        
-                        Text(reviewStyle == .oneByOne ? "每提示一题，家长立刻确认对错。" : "自动连续报听写，最后家长统一批改。")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                            .padding(.top, 4)
-                            .padding(.bottom, 8)
-                    }
-
-                    Text("同一条内容在当天只会复习一次，答对或答错都会安排到之后的日期。系统按照艾宾浩斯遗忘曲线自动安排复习间隔。")
-                        .foregroundStyle(.secondary)
-                        .font(.subheadline)
-
-                    // Review stages visual
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("复习阶段间隔")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-
-                        HStack(spacing: 6) {
-                            stageChip("20分", stage: 1)
-                            stageChip("1天", stage: 2)
-                            stageChip("2天", stage: 3)
-                            stageChip("4天", stage: 4)
-                            stageChip("7天", stage: 5)
-                            stageChip("15天", stage: 6)
-                            stageChip("30天", stage: 7)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(20)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
-
-                // Sync card
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Image(systemName: "icloud.fill")
-                            .font(.title2)
-                            .foregroundStyle(.cyan)
-                        Text("数据同步")
-                            .font(.headline)
-                    }
-
-                    Text("数据通过 iCloud 同步到同一 Apple ID 下的 iPhone 和 iPad。需要在两台设备上登录同一个 Apple ID。")
-                        .foregroundStyle(.secondary)
-                        .font(.subheadline)
-
-                    HStack {
-                        Text("当前状态")
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text(syncStatusStore.statusText)
-                            .fontWeight(.semibold)
-                    }
-                    .padding(12)
-                    .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12))
-
-                    Text(syncStatusStore.detailText)
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        diagnosticRow(title: "同步模式", value: syncStatusStore.cloudKitModeText)
-                        diagnosticRow(title: "容器 ID", value: syncStatusStore.containerIdentifier, monospaced: true)
-                        diagnosticRow(title: "iCloud 账户", value: syncStatusStore.cloudAccountState.title)
-                        Text(syncStatusStore.cloudAccountState.detail)
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                        diagnosticRow(title: "本地数据", value: syncStatusStore.localDataSummary)
-                        if !syncStatusStore.cloudKitInitializationError.isEmpty {
-                            diagnosticRow(title: "启动错误", value: syncStatusStore.cloudKitInitializationError, monospaced: true)
-                        }
-                    }
-                    .padding(12)
-                    .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12))
-
-                    Button {
-                        Task {
-                            await syncStatusStore.refresh(using: modelContext, trigger: .manual)
-                        }
-                    } label: {
-                        HStack {
-                            if syncStatusStore.isRefreshing {
-                                ProgressView()
-                                    .controlSize(.small)
-                                Text("同步检查中...")
-                            } else {
-                                Image(systemName: "arrow.clockwise.icloud")
-                                Text("立即检查同步")
-                            }
-                        }
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(syncStatusStore.isRefreshing)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(20)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
-
-                // About card
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Image(systemName: "info.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(.purple)
-                        Text("关于")
-                            .font(.headline)
-                    }
-
-                    Text("听写复习本 — 帮助孩子按遗忘曲线复习写错的词句和英语。")
-                        .foregroundStyle(.secondary)
-                        .font(.subheadline)
-
-                    Text("v1.0")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(20)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+                introCard
+                childInfoCard
+                reminderCard
+                reviewCard
+                syncCard
+                aboutCard
             }
             .padding(20)
             .frame(maxWidth: 780)
             .frame(maxWidth: .infinity)
         }
         .navigationTitle("设置")
-        .task {
-            if settings == nil {
-                modelContext.insert(AppSettings())
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var introCard: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("通用设置")
+                .font(.system(.title3, design: .rounded, weight: .bold))
+                .foregroundStyle(.white)
+
+            Text("调整复习偏好、通知以及数据同步状态。")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.85))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(
+                    LinearGradient(
+                        colors: [.gray.opacity(0.85), .secondary.opacity(0.65)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+        )
+    }
+
+    private var childInfoCard: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("孩子名字", systemImage: "person.fill")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.blue)
+                
+                TextField("输入孩子名字", text: bind(\.childName))
+                    .font(.title2.weight(.medium))
+                    .textFieldStyle(.plain)
+                    .padding(12)
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Label("每日题量", systemImage: "chart.bar.fill")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.purple)
+                
+                HStack {
+                    Text("\(settings?.dailyLimit ?? 15) 题")
+                        .font(.title2.weight(.medium))
+                    Spacer()
+                    Stepper("", value: bind(\.dailyLimit), in: 5...30, step: 5)
+                        .labelsHidden()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
             }
         }
+        .padding(20)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private var reminderCard: some View {
+        VStack(spacing: 14) {
+            HStack {
+                Text("每日提醒")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                DatePicker("", selection: reminderDate, displayedComponents: .hourAndMinute)
+                    .labelsHidden()
+                    .datePickerStyle(.compact)
+            }
+        }
+        .padding(20)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private var reviewCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("复习模式")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Picker("复习模式", selection: reviewStyle) {
+                    ForEach(ReviewInteractionStyle.allCases) { style in
+                        Text(style.rawValue).tag(style)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 180)
+            }
+
+            Text(reviewStyle.wrappedValue == .oneByOne ? "提示：每报一题，家长立刻确认对错。" : "提示：连续报听写，最后统一批改。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 12) {
+                Label("阶段复习间隔 (艾宾浩斯曲线)", systemImage: "chart.line.uptrend.xyaxis")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.green)
+
+                Text("同一题目当天只复习一次。答对或答错会自动安排后续复习。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 6) {
+                    stageChip("20分", stage: 1)
+                    stageChip("1天", stage: 2)
+                    stageChip("2天", stage: 3)
+                    stageChip("4天", stage: 4)
+                    stageChip("7天", stage: 5)
+                    stageChip("15天", stage: 6)
+                    stageChip("30天", stage: 7)
+                }
+                .padding(.top, 4)
+            }
+        }
+        .padding(20)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private var syncCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("数据同步")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(syncStatusStore.statusText)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.cyan)
+            }
+
+            Text("数据通过 iCloud 同步到同一 Apple ID 下的设备。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 12) {
+                Label("诊断信息", systemImage: "stethoscope")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.orange)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    diagnosticRow(title: "同步模式", value: syncStatusStore.cloudKitModeText)
+                    diagnosticRow(title: "容器 ID", value: syncStatusStore.containerIdentifier, monospaced: true)
+                    diagnosticRow(title: "本地数据", value: syncStatusStore.localDataSummary)
+                }
+                .padding(12)
+                .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+            }
+
+            Button {
+                Task {
+                    await syncStatusStore.refresh(using: modelContext, trigger: .manual)
+                }
+            } label: {
+                HStack {
+                    if syncStatusStore.isRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("检查中...")
+                    } else {
+                        Image(systemName: "arrow.clockwise.icloud")
+                        Text("立即检查")
+                    }
+                }
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+            }
+            .buttonStyle(.bordered)
+            .disabled(syncStatusStore.isRefreshing)
+        }
+        .padding(20)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private var aboutCard: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: "app.badge.fill")
+                .font(.title)
+                .foregroundStyle(.indigo)
+            
+            VStack(alignment: .leading, spacing: 6) {
+                Text("听写复习本")
+                    .font(.headline)
+                Text("结合艾宾浩斯遗忘曲线，帮助孩子高效攻克写错的词句和英语内容。")
+                    .foregroundStyle(.secondary)
+                    .font(.footnote)
+                Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1.0")")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(20)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
     }
 
     private func stageChip(_ text: String, stage: Int) -> some View {

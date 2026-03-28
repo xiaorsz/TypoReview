@@ -5,6 +5,7 @@ struct BatchReviewSessionView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var currentIndex = 0
     @State private var navigateToReview = false
+    @State private var isContentRevealed = false
     @StateObject private var speaker = BatchReviewSpeaker()
 
     let items: [ReviewItem]
@@ -66,6 +67,7 @@ struct BatchReviewSessionView: View {
             }
         }
         .onChange(of: currentIndex) {
+            isContentRevealed = false
             if let currentItem {
                 speaker.prepare(currentItem)
             }
@@ -109,8 +111,43 @@ struct BatchReviewSessionView: View {
     private func sessionCard(for item: ReviewItem, isWide: Bool) -> some View {
         VStack(alignment: .leading, spacing: 20) {
             cardHeader(for: item, isWide: isWide)
+            
             speakButton(for: item)
-            helperFooter(for: item)
+            
+            HStack(alignment: .top) {
+                helperFooter(for: item)
+                Spacer()
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isContentRevealed.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: isContentRevealed ? "eye.slash.fill" : "eye.fill")
+                        Text(isContentRevealed ? "隐藏文字" : "显示文字")
+                    }
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.blue)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 12)
+                    .background(Color.blue.opacity(0.1), in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+
+            if isContentRevealed {
+                VStack(alignment: .leading, spacing: 6) {
+                    Divider()
+                        .padding(.vertical, 8)
+                    Text("听写内容")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Text(item.content)
+                        .font(.system(isWide ? .title : .title2, design: .rounded, weight: .bold))
+                        .foregroundStyle(.blue)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(isWide ? 32 : 24)

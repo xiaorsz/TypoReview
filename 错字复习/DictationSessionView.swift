@@ -7,6 +7,7 @@ struct DictationSessionView: View {
 
     @State private var currentIndex = 0
     @State private var navigateToReview = false
+    @State private var isContentRevealed = false
     @StateObject private var speaker = DictationSpeaker()
 
     let session: DictationSession
@@ -60,6 +61,7 @@ struct DictationSessionView: View {
             }
         }
         .onChange(of: currentIndex) {
+            isContentRevealed = false
             if let currentEntry {
                 speaker.prepare(content: currentEntry.content, type: currentEntry.type)
             }
@@ -103,8 +105,43 @@ struct DictationSessionView: View {
     private func sessionCard(for entry: DictationEntry, isWide: Bool) -> some View {
         VStack(alignment: .leading, spacing: 20) {
             cardHeader(for: entry, isWide: isWide)
+            
             speakButton(for: entry)
-            helperFooter
+            
+            HStack(alignment: .top) {
+                helperFooter
+                Spacer()
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isContentRevealed.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: isContentRevealed ? "eye.slash.fill" : "eye.fill")
+                        Text(isContentRevealed ? "隐藏文字" : "显示文字")
+                    }
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.blue)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 12)
+                    .background(Color.blue.opacity(0.1), in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+
+            if isContentRevealed {
+                VStack(alignment: .leading, spacing: 8) {
+                    Divider()
+                        .padding(.vertical, 8)
+                    Text("听写内容")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Text(entry.content)
+                        .font(.system(isWide ? .title : .title2, design: .rounded, weight: .bold))
+                        .foregroundStyle(.blue)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(isWide ? 32 : 24)

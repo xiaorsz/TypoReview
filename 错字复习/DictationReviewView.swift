@@ -229,28 +229,49 @@ struct DictationReviewView: View {
             )
         }
 
-        for entry in entries where entry.result == .wrong {
-            if let existing = reviewItems.first(where: { $0.type == entry.type && $0.content == entry.content }) {
-                existing.prompt = entry.prompt
-                existing.note = entry.note
-                existing.source = entry.source
-                existing.nextReviewAt = now
-                existing.isPriority = true
-                existing.updatedAt = now
-                existing.stage = max(existing.stage, 1)
-            } else {
-                modelContext.insert(
-                    ReviewItem(
+        let scheduler = ReviewScheduler()
+        let nextReviewStart = scheduler.nextDayStart(from: now)
+
+        for entry in entries {
+            if entry.result == .wrong {
+                if let existing = reviewItems.first(where: { $0.type == entry.type && $0.content == entry.content }) {
+                    existing.prompt = entry.prompt
+                    existing.note = entry.note
+                    existing.source = entry.source
+                    existing.nextReviewAt = nextReviewStart
+                    existing.isPriority = true
+                    existing.updatedAt = now
+                    existing.isDictationPass = false
+                    existing.stage = max(existing.stage, 1)
+                } else {
+                    modelContext.insert(
+                        ReviewItem(
+                            type: entry.type,
+                            content: entry.content,
+                            prompt: entry.prompt,
+                            note: entry.note,
+                            source: entry.source,
+                            stage: 0,
+                            nextReviewAt: nextReviewStart,
+                            updatedAt: now
+                        )
+                    )
+                }
+            } else if entry.result == .correct {
+                if !reviewItems.contains(where: { $0.type == entry.type && $0.content == entry.content }) {
+                    let newItem = ReviewItem(
                         type: entry.type,
                         content: entry.content,
                         prompt: entry.prompt,
                         note: entry.note,
                         source: entry.source,
-                        stage: 0,
-                        nextReviewAt: now,
+                        stage: 2,
+                        nextReviewAt: scheduler.nextDate(for: 2, from: now),
+                        isDictationPass: true,
                         updatedAt: now
                     )
-                )
+                    modelContext.insert(newItem)
+                }
             }
         }
 
@@ -279,7 +300,7 @@ private struct DictationEntrySummary: Identifiable {
         case .correct:
             return "本次听写通过"
         case .wrong:
-            return "已加入错题复习"
+            return "已加入错题复习，明天开始待复习"
         case .pending:
             return "未判定"
         }
@@ -410,7 +431,7 @@ private struct DictationSummaryView: View {
             return "这次听写全部答对，本轮内容已经完成。"
         }
 
-        return "这次一共完成 \(totalCount) 条，其中答错 \(wrongCount) 条。答错内容已经加入错题复习。"
+        return "这次一共完成 \(totalCount) 条，其中答错 \(wrongCount) 条。答错内容会从明天开始进入待复习；如果第二天没复习，会继续保留在今日待复习中。"
     }
 
 }
