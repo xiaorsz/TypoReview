@@ -166,11 +166,9 @@ struct LibraryView: View {
 
     private var priorityBadge: some View {
         Label("重点复习", systemImage: "exclamationmark.triangle.fill")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.orange)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Color.orange.opacity(0.12), in: Capsule())
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+            .labelStyle(PriorityLabelStyle())
     }
 
     private var emptyIcon: String {
@@ -205,6 +203,16 @@ struct LibraryView: View {
             return "目前没有连续出错较多、需要重点盯住的内容。"
         case .mastered:
             return "再坚持复习几轮，掌握稳定后会出现在这里。"
+        }
+    }
+}
+
+private struct PriorityLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 4) {
+            configuration.icon
+                .foregroundStyle(.orange)
+            configuration.title
         }
     }
 }
