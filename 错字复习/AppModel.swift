@@ -62,6 +62,14 @@ enum TaskSkipPolicy: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum ScheduleRepeatRule: String, Codable, CaseIterable, Identifiable {
+    case once = "单次"
+    case daily = "每天"
+    case weekly = "每周"
+
+    var id: String { rawValue }
+}
+
 /// Recurrence rule encoded as JSON string for SwiftData storage.
 struct TaskRecurrence: Codable, Equatable {
     enum Kind: String, Codable, CaseIterable, Identifiable {

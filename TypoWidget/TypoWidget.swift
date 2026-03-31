@@ -34,18 +34,6 @@ struct Provider: TimelineProvider {
     
     @MainActor
     private func fetchEntry() -> SimpleEntry {
-        // Must use the App Group container URL to share data between target and main app!
-        guard let sharedContainerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.cc.xiaorsz.typo-review")?.appendingPathComponent("typo-review.store") else {
-            return SimpleEntry(
-                date: Date(),
-                todayTasks: [],
-                configuredTaskCount: 0,
-                completedTaskCount: 0,
-                pendingReviewCount: 0,
-                pendingDictationCount: 0
-            )
-        }
-        
         let schema = Schema([
             ReviewItem.self,
             ReviewRecord.self,
@@ -53,12 +41,11 @@ struct Provider: TimelineProvider {
             TaskCompletion.self,
             AppSettings.self,
             DictationSession.self,
-            DictationEntry.self
+            DictationEntry.self,
+            ScheduleItem.self
         ])
-        
-        let config = ModelConfiguration(url: sharedContainerURL, cloudKitDatabase: .none)
-        
-        guard let container = try? ModelContainer(for: schema, configurations: config) else {
+
+        guard let container = widgetModelContainer(for: schema) else {
             return SimpleEntry(
                 date: Date(),
                 todayTasks: [],
@@ -86,7 +73,7 @@ struct Provider: TimelineProvider {
                     id: $0.task.id,
                     title: $0.task.title,
                     isCompleted: $0.isCompleted,
-                    pendingOccurrenceCount: $0.pendingOccurrenceCount
+                    overdueOriginText: $0.overdueOriginText
                 )
             }
         }
@@ -119,6 +106,32 @@ struct Provider: TimelineProvider {
             pendingDictationCount: dictationsCount
         )
     }
+
+    private func widgetModelContainer(for schema: Schema) -> ModelContainer? {
+        let groupIdentifier = "group.cc.xiaorsz.typo-review"
+        let preferredConfig = ModelConfiguration(
+            schema: schema,
+            groupContainer: .identifier(groupIdentifier),
+            cloudKitDatabase: .none
+        )
+
+        if let container = try? ModelContainer(for: schema, configurations: preferredConfig) {
+            return container
+        }
+
+        guard let legacyURL = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: groupIdentifier)?
+            .appendingPathComponent("typo-review.store") else {
+            return nil
+        }
+
+        let legacyConfig = ModelConfiguration(
+            schema: schema,
+            url: legacyURL,
+            cloudKitDatabase: .none
+        )
+        return try? ModelContainer(for: schema, configurations: legacyConfig)
+    }
 }
 
 struct SimpleEntry: TimelineEntry {
@@ -134,7 +147,7 @@ struct WidgetTaskItem: Identifiable {
     let id: UUID
     let title: String
     let isCompleted: Bool
-    let pendingOccurrenceCount: Int
+    let overdueOriginText: String?
 }
 
 struct TypoWidgetEntryView : View {
@@ -220,17 +233,19 @@ struct TypoWidgetEntryView : View {
                                     Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
                                         .font(.headline.weight(.semibold))
                                         .foregroundStyle(task.isCompleted ? .green : .white.opacity(0.6))
-                                    VStack(alignment: .leading, spacing: 2) {
+                                    HStack(alignment: .firstTextBaseline, spacing: 6) {
                                         Text(task.title)
                                             .font(.headline.weight(.semibold))
                                             .lineLimit(1)
                                             .foregroundStyle(task.isCompleted ? .white.opacity(0.75) : .white)
-                                        if task.pendingOccurrenceCount > 1 && !task.isCompleted {
-                                            Text("累计 \(task.pendingOccurrenceCount) 次未完成")
-                                                .font(.caption2.weight(.semibold))
-                                                .foregroundStyle(.orange.opacity(0.95))
+                                        if let overdueOriginText = task.overdueOriginText, !task.isCompleted {
+                                            Text(overdueOriginText)
+                                                .font(.caption2.weight(.medium))
+                                                .foregroundStyle(.white.opacity(0.78))
+                                                .lineLimit(1)
                                         }
                                     }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                                 }
                             }
                         }
@@ -303,17 +318,19 @@ struct TypoWidgetEntryView : View {
                                 Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
                                     .font(.subheadline)
                                     .foregroundStyle(task.isCompleted ? .green : .white.opacity(0.6))
-                                VStack(alignment: .leading, spacing: 1) {
+                                HStack(alignment: .firstTextBaseline, spacing: 5) {
                                     Text(task.title)
                                         .font(.subheadline.weight(.medium))
                                         .lineLimit(1)
                                         .foregroundStyle(task.isCompleted ? .white.opacity(0.75) : .white)
-                                    if task.pendingOccurrenceCount > 1 && !task.isCompleted {
-                                        Text("累计 \(task.pendingOccurrenceCount) 次")
-                                            .font(.caption2.weight(.semibold))
-                                            .foregroundStyle(.orange.opacity(0.95))
+                                    if let overdueOriginText = task.overdueOriginText, !task.isCompleted {
+                                        Text(overdueOriginText)
+                                            .font(.caption2)
+                                            .foregroundStyle(.white.opacity(0.74))
+                                            .lineLimit(1)
                                     }
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
                     }
@@ -397,17 +414,19 @@ struct TypoWidgetEntryView : View {
                                 Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
                                     .font(.title3.weight(.bold))
                                     .foregroundStyle(task.isCompleted ? .green : .white.opacity(0.5))
-                                VStack(alignment: .leading, spacing: 2) {
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
                                     Text(task.title)
                                         .font(.title3.weight(.semibold))
                                         .lineLimit(1)
                                         .foregroundStyle(task.isCompleted ? .white.opacity(0.75) : .white)
-                                    if task.pendingOccurrenceCount > 1 && !task.isCompleted {
-                                        Text("已累计 \(task.pendingOccurrenceCount) 次未完成")
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(.orange.opacity(0.95))
+                                    if let overdueOriginText = task.overdueOriginText, !task.isCompleted {
+                                        Text(overdueOriginText)
+                                            .font(.caption.weight(.medium))
+                                            .foregroundStyle(.white.opacity(0.78))
+                                            .lineLimit(1)
                                     }
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
                     }

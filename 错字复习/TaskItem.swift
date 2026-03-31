@@ -6,9 +6,10 @@ final class TaskItem {
     var id: UUID = UUID()
     var title: String = ""
     var note: String = ""
-    var recurrenceJSON: String = "{}"
-    var skipPolicyRawValue: String = "可跳过"
+    var recurrenceJSON: String?
+    var skipPolicyRawValue: String?
     var startDate: Date = Date()
+    var endDate: Date?
     var isArchived: Bool = false
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
@@ -20,6 +21,7 @@ final class TaskItem {
         recurrence: TaskRecurrence = .once,
         skipPolicy: TaskSkipPolicy = .skippable,
         startDate: Date = .now,
+        endDate: Date? = nil,
         isArchived: Bool = false,
         createdAt: Date = .now,
         updatedAt: Date = .now
@@ -30,18 +32,25 @@ final class TaskItem {
         self.recurrenceJSON = recurrence.toJSON()
         self.skipPolicyRawValue = skipPolicy.rawValue
         self.startDate = startDate
+        self.endDate = endDate
         self.isArchived = isArchived
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
 
     var recurrence: TaskRecurrence {
-        get { TaskRecurrence.fromJSON(recurrenceJSON) }
+        get {
+            guard let json = recurrenceJSON else { return .once }
+            return TaskRecurrence.fromJSON(json)
+        }
         set { recurrenceJSON = newValue.toJSON() }
     }
 
     var skipPolicy: TaskSkipPolicy {
-        get { TaskSkipPolicy(rawValue: skipPolicyRawValue) ?? .skippable }
+        get {
+            guard let raw = skipPolicyRawValue else { return .skippable }
+            return TaskSkipPolicy(rawValue: raw) ?? .skippable
+        }
         set { skipPolicyRawValue = newValue.rawValue }
     }
 
@@ -54,40 +63,34 @@ final class TaskItem {
         let calendar = Calendar.current
         let targetDay = calendar.startOfDay(for: date)
         let start = calendar.startOfDay(for: startDate)
+        let effectiveEndDay = endDate.map { calendar.startOfDay(for: $0) }
 
         guard targetDay >= start else { return false }
-
-        // Already completed for this date?
-        let alreadyDone = completions.contains {
-            $0.taskID == id && calendar.isDate($0.completedDate, inSameDayAs: date)
-        }
-        if alreadyDone { return false }
+        if let effectiveEndDay, targetDay > effectiveEndDay { return false }
+        let completionsToday = completionCount(on: date, completions: completions)
 
         switch recurrence.kind {
         case .once:
-            // Single task: show on startDate. If unskippable and not done, keep showing.
-            let anyDone = completions.contains { $0.taskID == id }
-            if anyDone { return false }
-            if calendar.isDate(targetDay, inSameDayAs: start) {
-                return true
+            if skipPolicy == .unskippable {
+                return pendingOccurrenceCount(on: date, completions: completions) > 0
             }
-            // Past start date
-            return skipPolicy == .unskippable
+
+            let anyDone = completions.contains { $0.taskID == id }
+            return !anyDone && calendar.isDate(targetDay, inSameDayAs: start)
 
         case .daily:
-            // Daily: always appears
-            return true
+            if skipPolicy == .unskippable {
+                return pendingOccurrenceCount(on: date, completions: completions) > 0
+            }
+            return completionsToday == 0
 
         case .weekly:
-            let weekday = calendar.component(.weekday, from: date)
-            if recurrence.weekdays.contains(weekday) {
-                return true
-            }
-            // Check if there are overdue undone days for unskippable
             if skipPolicy == .unskippable {
-                return hasOverdueOccurrence(before: date, completions: completions)
+                return pendingOccurrenceCount(on: date, completions: completions) > 0
             }
-            return false
+
+            let weekday = calendar.component(.weekday, from: date)
+            return recurrence.weekdays.contains(weekday) && completionsToday == 0
         }
     }
 
@@ -96,10 +99,14 @@ final class TaskItem {
     }
 
     func isCompleted(on date: Date, completions: [TaskCompletion]) -> Bool {
-        let calendar = Calendar.current
-        return completions.contains {
-            $0.taskID == id && calendar.isDate($0.completedDate, inSameDayAs: date)
+        let completionsToday = completionCount(on: date, completions: completions)
+        guard completionsToday > 0 else { return false }
+
+        if skipPolicy == .unskippable {
+            return pendingOccurrenceCount(on: date, completions: completions) == 0
         }
+
+        return true
     }
 
     func pendingOccurrenceCount(on date: Date, completions: [TaskCompletion]) -> Int {
@@ -108,53 +115,87 @@ final class TaskItem {
         return max(0, scheduledCount - completionCount)
     }
 
-    /// For weekly unskippable: check if any past scheduled weekday was missed.
-    private func hasOverdueOccurrence(before date: Date, completions: [TaskCompletion]) -> Bool {
-        let dayBefore = Calendar.current.date(byAdding: .day, value: -1, to: date) ?? date
-        return pendingOccurrenceCount(on: dayBefore, completions: completions) > 0
+    func earliestPendingOccurrence(on date: Date, completions: [TaskCompletion]) -> Date? {
+        let scheduledDates = scheduledOccurrenceDates(upTo: date)
+        let completedCount = min(completionCount(upTo: date, completions: completions), scheduledDates.count)
+        guard completedCount < scheduledDates.count else { return nil }
+        return scheduledDates[completedCount]
+    }
+
+    func overdueOriginText(on date: Date, completions: [TaskCompletion]) -> String? {
+        guard skipPolicy == .unskippable else { return nil }
+
+        let calendar = Calendar.current
+        let targetDay = calendar.startOfDay(for: date)
+        guard let pendingDate = earliestPendingOccurrence(on: date, completions: completions),
+              pendingDate < targetDay else {
+            return nil
+        }
+
+        if calendar.isDate(pendingDate, equalTo: targetDay, toGranularity: .year) {
+            return "原定 \(pendingDate.formatted(.dateTime.month().day()))"
+        }
+        return "原定 \(pendingDate.formatted(.dateTime.year().month().day()))"
     }
 
     private func scheduledOccurrenceCount(upTo date: Date) -> Int {
+        scheduledOccurrenceDates(upTo: date).count
+    }
+
+    private func scheduledOccurrenceDates(upTo date: Date) -> [Date] {
         let calendar = Calendar.current
         let start = calendar.startOfDay(for: startDate)
-        let target = calendar.startOfDay(for: date)
+        let unclampedTarget = calendar.startOfDay(for: date)
+        let target = min(unclampedTarget, self.effectiveEndDay ?? unclampedTarget)
 
-        guard target >= start else { return 0 }
+        guard target >= start else { return [] }
 
         switch recurrence.kind {
         case .once:
-            return 1
+            return [start]
 
         case .daily:
             let days = calendar.dateComponents([.day], from: start, to: target).day ?? 0
-            return days + 1
+            return (0...days).compactMap { offset in
+                calendar.date(byAdding: .day, value: offset, to: start)
+            }
 
         case .weekly:
-            var scheduledCount = 0
+            var scheduledDates: [Date] = []
             var checkDate = start
             while checkDate <= target {
                 let weekday = calendar.component(.weekday, from: checkDate)
                 if recurrence.weekdays.contains(weekday) {
-                    scheduledCount += 1
+                    scheduledDates.append(checkDate)
                 }
                 guard let nextDate = calendar.date(byAdding: .day, value: 1, to: checkDate) else {
                     break
                 }
                 checkDate = nextDate
             }
-            return scheduledCount
+            return scheduledDates
         }
     }
 
     private func completionCount(upTo date: Date, completions: [TaskCompletion]) -> Int {
         let calendar = Calendar.current
         let start = calendar.startOfDay(for: startDate)
-        let target = calendar.startOfDay(for: date)
+        let unclampedTarget = calendar.startOfDay(for: date)
+        let target = min(unclampedTarget, effectiveEndDay ?? unclampedTarget)
+
+        guard target >= start else { return 0 }
 
         return completions.filter { completion in
             guard completion.taskID == id else { return false }
             let completionDay = calendar.startOfDay(for: completion.completedDate)
             return completionDay >= start && completionDay <= target
+        }.count
+    }
+
+    private func completionCount(on date: Date, completions: [TaskCompletion]) -> Int {
+        let calendar = Calendar.current
+        return completions.filter {
+            $0.taskID == id && calendar.isDate($0.completedDate, inSameDayAs: date)
         }.count
     }
 
@@ -175,12 +216,29 @@ final class TaskItem {
             return "每周 \(days.joined(separator: "、"))"
         }
     }
+
+    var effectiveDateRangeLabel: String? {
+        guard recurrence.kind != .once, let effectiveEndDay else { return nil }
+
+        let calendar = Calendar.current
+        let startDay = calendar.startOfDay(for: startDate)
+        if calendar.isDate(startDay, equalTo: effectiveEndDay, toGranularity: .year) {
+            return "\(startDay.formatted(.dateTime.month().day())) - \(effectiveEndDay.formatted(.dateTime.month().day()))"
+        }
+        return "\(startDay.formatted(.dateTime.year().month().day())) - \(effectiveEndDay.formatted(.dateTime.year().month().day()))"
+    }
+
+    private var effectiveEndDay: Date? {
+        guard let endDate else { return nil }
+        return Calendar.current.startOfDay(for: endDate)
+    }
 }
 
 struct TodayTaskDisplayItem: Identifiable {
     let task: TaskItem
     let isCompleted: Bool
     let pendingOccurrenceCount: Int
+    let overdueOriginText: String?
 
     var id: UUID { task.id }
 }
@@ -198,7 +256,8 @@ enum TodayTaskListBuilder {
             return TodayTaskDisplayItem(
                 task: task,
                 isCompleted: isCompleted,
-                pendingOccurrenceCount: task.pendingOccurrenceCount(on: date, completions: completions)
+                pendingOccurrenceCount: task.pendingOccurrenceCount(on: date, completions: completions),
+                overdueOriginText: task.overdueOriginText(on: date, completions: completions)
             )
         }
     }

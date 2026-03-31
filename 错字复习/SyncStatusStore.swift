@@ -66,11 +66,14 @@ final class SyncStatusStore {
     var cloudAccountState: CloudAccountState = .unknown
     var localDataSummary = "尚未检查本地数据"
     var cloudKitInitializationError = ""
+    var cloudKitEnvironment = "未检查"
+    var apsEnvironment = "未检查"
 
     func configure(cloudKitEnabled: Bool, containerIdentifier: String? = nil, initializationError: String = "") {
         self.cloudKitEnabled = cloudKitEnabled
         self.containerIdentifier = containerIdentifier ?? fallbackContainerIdentifier
         self.cloudKitInitializationError = initializationError
+        refreshBuildDiagnostics()
     }
 
     func refresh(using modelContext: ModelContext, trigger: Trigger) async {
@@ -90,11 +93,12 @@ final class SyncStatusStore {
             let reviewItemCount = try modelContext.fetchCount(FetchDescriptor<ReviewItem>())
             let reviewRecordCount = try modelContext.fetchCount(FetchDescriptor<ReviewRecord>())
             let taskCount = try modelContext.fetchCount(FetchDescriptor<TaskItem>())
+            let scheduleCount = try modelContext.fetchCount(FetchDescriptor<ScheduleItem>())
             let settingsCount = try modelContext.fetchCount(FetchDescriptor<AppSettings>())
             let dictationSessionCount = try modelContext.fetchCount(FetchDescriptor<DictationSession>())
             let dictationEntryCount = try modelContext.fetchCount(FetchDescriptor<DictationEntry>())
 
-            localDataSummary = "题库 \(reviewItemCount) 条，记录 \(reviewRecordCount) 条，待办 \(taskCount) 条，听写 \(dictationSessionCount) 组 / \(dictationEntryCount) 条，设置 \(settingsCount) 条"
+            localDataSummary = "题库 \(reviewItemCount) 条，记录 \(reviewRecordCount) 条，待办 \(taskCount) 条，日程 \(scheduleCount) 条，听写 \(dictationSessionCount) 组 / \(dictationEntryCount) 条，设置 \(settingsCount) 条"
             lastRefreshAt = .now
         } catch {
             lastErrorMessage = error.localizedDescription
@@ -165,5 +169,34 @@ final class SyncStatusStore {
 
     var cloudKitModeText: String {
         cloudKitEnabled ? "CloudKit 已启用" : "CloudKit 未启用"
+    }
+
+    var cloudAccountTitle: String {
+        cloudAccountState.title
+    }
+
+    var cloudAccountDetail: String {
+        cloudAccountState.detail
+    }
+
+    private func refreshBuildDiagnostics() {
+        if let receiptName = Bundle.main.appStoreReceiptURL?.lastPathComponent {
+            switch receiptName {
+            case "sandboxReceipt":
+                cloudKitEnvironment = "sandbox / development 倾向"
+            case "receipt":
+                cloudKitEnvironment = "production 倾向"
+            default:
+                cloudKitEnvironment = receiptName
+            }
+        } else {
+            cloudKitEnvironment = "未知"
+        }
+
+#if DEBUG
+        apsEnvironment = "Debug 构建"
+#else
+        apsEnvironment = "Release 构建"
+#endif
     }
 }

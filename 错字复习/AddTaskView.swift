@@ -14,6 +14,8 @@ struct AddTaskView: View {
     @State private var selectedWeekdays: Set<Int> = []
     @State private var skipPolicy: TaskSkipPolicy = .skippable
     @State private var startDate: Date = .now
+    @State private var endDate: Date = .now
+    @State private var hasEndDate = false
     @State private var showSaveToast = false
 
     init(task: TaskItem? = nil) {
@@ -25,6 +27,8 @@ struct AddTaskView: View {
             _selectedWeekdays = State(initialValue: Set(task.recurrence.weekdays))
             _skipPolicy = State(initialValue: task.skipPolicy)
             _startDate = State(initialValue: task.startDate)
+            _endDate = State(initialValue: task.endDate ?? task.startDate)
+            _hasEndDate = State(initialValue: task.endDate != nil)
         }
     }
 
@@ -196,11 +200,35 @@ struct AddTaskView: View {
             
             Divider()
 
-            DatePicker("生效日期", selection: $startDate, displayedComponents: .date)
-                .font(.subheadline.weight(.medium))
+            VStack(alignment: .leading, spacing: 12) {
+                if recurrenceKind == .once {
+                    DatePicker("生效日期", selection: $startDate, displayedComponents: .date)
+                        .font(.subheadline.weight(.medium))
+                } else {
+                    Label("生效范围", systemImage: "calendar")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.blue)
+
+                    DatePicker("开始日期", selection: $startDate, displayedComponents: .date)
+                        .font(.subheadline.weight(.medium))
+
+                    Toggle("设置结束日期", isOn: $hasEndDate.animation())
+                        .font(.subheadline.weight(.medium))
+
+                    if hasEndDate {
+                        DatePicker("结束日期", selection: $endDate, in: startDate..., displayedComponents: .date)
+                            .font(.subheadline.weight(.medium))
+                    }
+                }
+            }
         }
         .padding(20)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+        .onChange(of: startDate) { _, newStartDate in
+            if endDate < newStartDate {
+                endDate = newStartDate
+            }
+        }
     }
 
     private func save() {
@@ -220,6 +248,7 @@ struct AddTaskView: View {
             existingTask.recurrence = recurrence
             existingTask.skipPolicy = skipPolicy
             existingTask.startDate = startDate
+            existingTask.endDate = recurrenceKind == .once ? nil : (hasEndDate ? endDate : nil)
             existingTask.updatedAt = .now
         } else {
             let task = TaskItem(
@@ -227,7 +256,8 @@ struct AddTaskView: View {
                 note: note.trimmingCharacters(in: .whitespacesAndNewlines),
                 recurrence: recurrence,
                 skipPolicy: skipPolicy,
-                startDate: startDate
+                startDate: startDate,
+                endDate: recurrenceKind == .once ? nil : (hasEndDate ? endDate : nil)
             )
             modelContext.insert(task)
         }

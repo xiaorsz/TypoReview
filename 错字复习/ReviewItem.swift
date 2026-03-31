@@ -15,7 +15,7 @@ final class ReviewItem {
     var consecutiveCorrectCount: Int = 0
     var consecutiveWrongCount: Int = 0
     var isPriority: Bool = false
-    var isDictationPass: Bool = false
+    var isDictationPassRaw: Bool?
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
 
@@ -48,7 +48,7 @@ final class ReviewItem {
         self.consecutiveCorrectCount = consecutiveCorrectCount
         self.consecutiveWrongCount = consecutiveWrongCount
         self.isPriority = isPriority
-        self.isDictationPass = isDictationPass
+        self.isDictationPassRaw = isDictationPass
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -56,5 +56,10 @@ final class ReviewItem {
     var type: ReviewItemType {
         get { ReviewItemType(rawValue: typeRawValue) ?? .chineseCharacter }
         set { typeRawValue = newValue.rawValue }
+    }
+
+    var isDictationPass: Bool {
+        get { isDictationPassRaw ?? false }
+        set { isDictationPassRaw = newValue }
     }
 }

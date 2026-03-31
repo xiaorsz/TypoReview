@@ -6,66 +6,110 @@ struct TasksView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \TaskItem.createdAt, order: .reverse) private var allTasks: [TaskItem]
     @Query(sort: \TaskCompletion.completedAt, order: .reverse) private var completions: [TaskCompletion]
+    @Query(sort: \ScheduleItem.startTime) private var allSchedules: [ScheduleItem]
 
     private var activeTasks: [TaskItem] {
         allTasks.filter { !$0.isArchived }
     }
 
-    private var todayPending: [TaskItem] {
+    private var activeSchedules: [ScheduleItem] {
+        allSchedules.filter { !$0.isArchived }
+    }
+
+    private var todayPending: [TodayTaskDisplayItem] {
         TodayTaskListBuilder
             .build(from: activeTasks, completions: completions)
             .filter { !$0.isCompleted }
-            .map(\.task)
     }
 
-    private var todayDone: [TaskItem] {
+    private var todayDone: [TodayTaskDisplayItem] {
         TodayTaskListBuilder
             .build(from: activeTasks, completions: completions)
             .filter(\.isCompleted)
-            .map(\.task)
     }
 
     private var archivedTasks: [TaskItem] {
         allTasks.filter { $0.isArchived }
     }
 
+    private var archivedSchedules: [ScheduleItem] {
+        allSchedules.filter { $0.isArchived }
+    }
+
+    private var todaySchedules: [ScheduleItem] {
+        activeSchedules
+            .filter { $0.shouldAppear(on: .now) }
+            .sorted { $0.startTimeMinutes < $1.startTimeMinutes }
+    }
+
+    private var otherSchedules: [ScheduleItem] {
+        activeSchedules
+            .filter { schedule in
+                !todaySchedules.contains(where: { $0.id == schedule.id })
+            }
+            .sorted { lhs, rhs in
+                if lhs.repeatRule == .once, rhs.repeatRule == .once {
+                    return lhs.startTime < rhs.startTime
+                }
+                if lhs.repeatRule == .once { return true }
+                if rhs.repeatRule == .once { return false }
+                return lhs.title.localizedCompare(rhs.title) == .orderedAscending
+            }
+    }
+
     var body: some View {
         List {
-            if activeTasks.isEmpty && archivedTasks.isEmpty {
+            if activeTasks.isEmpty && archivedTasks.isEmpty && activeSchedules.isEmpty && archivedSchedules.isEmpty {
                 Section {
                     ContentUnavailableView {
-                        Label("还没有任务", systemImage: "checklist")
+                        Label("还没有任务和日程", systemImage: "checklist")
                     } description: {
-                        Text("点右上角添加每日任务、作业提醒等待办事项。")
+                        Text("点右上角添加每日任务、作业提醒和日程安排。")
                     }
                 }
             } else {
+                if !todaySchedules.isEmpty {
+                    Section("今日日程") {
+                        ForEach(todaySchedules) { schedule in
+                            scheduleRow(schedule)
+                        }
+                    }
+                }
+
                 if !todayPending.isEmpty {
                     Section("今日待完成") {
-                        ForEach(todayPending) { task in
-                            taskRow(task, isDone: false)
+                        ForEach(todayPending) { item in
+                            taskRow(item.task, isDone: false, overdueOriginText: item.overdueOriginText)
                         }
                     }
                 }
 
                 if !todayDone.isEmpty {
                     Section("今日已完成") {
-                        ForEach(todayDone) { task in
-                            taskRow(task, isDone: true)
+                        ForEach(todayDone) { item in
+                            taskRow(item.task, isDone: true, overdueOriginText: item.overdueOriginText)
                         }
                     }
                 }
 
                 // Show tasks that are not appearing today (future or non-scheduled today)
                 let otherTasks = activeTasks.filter { task in
-                    !todayPending.contains(where: { $0.id == task.id }) &&
-                    !todayDone.contains(where: { $0.id == task.id })
+                    !todayPending.contains(where: { $0.task.id == task.id }) &&
+                    !todayDone.contains(where: { $0.task.id == task.id })
                 }
 
                 if !otherTasks.isEmpty {
                     Section("其它任务") {
                         ForEach(otherTasks) { task in
                             taskRow(task, isDone: false, showActions: false)
+                        }
+                    }
+                }
+
+                if !otherSchedules.isEmpty {
+                    Section("其它日程") {
+                        ForEach(otherSchedules) { schedule in
+                            scheduleRow(schedule)
                         }
                     }
                 }
@@ -105,6 +149,14 @@ struct TasksView: View {
                         }
                     }
                 }
+
+                if !archivedSchedules.isEmpty {
+                    Section("已归档日程") {
+                        ForEach(archivedSchedules) { schedule in
+                            archivedScheduleRow(schedule)
+                        }
+                    }
+                }
             }
         }
         .scrollContentBackground(.hidden)
@@ -112,8 +164,18 @@ struct TasksView: View {
         .navigationTitle("任务管理")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                NavigationLink {
-                    AddTaskView()
+                Menu {
+                    NavigationLink {
+                        AddTaskView()
+                    } label: {
+                        Label("新增任务", systemImage: "checklist")
+                    }
+
+                    NavigationLink {
+                        AddScheduleView()
+                    } label: {
+                        Label("新增日程", systemImage: "calendar.badge.plus")
+                    }
                 } label: {
                     Image(systemName: "plus")
                 }
@@ -121,7 +183,7 @@ struct TasksView: View {
         }
     }
 
-    private func taskRow(_ task: TaskItem, isDone: Bool, showActions: Bool = true) -> some View {
+    private func taskRow(_ task: TaskItem, isDone: Bool, showActions: Bool = true, overdueOriginText: String? = nil) -> some View {
         HStack(spacing: 14) {
             if showActions {
                 Button {
@@ -149,18 +211,24 @@ struct TasksView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
+                        if let effectiveDateRangeLabel = task.effectiveDateRangeLabel {
+                            Text(effectiveDateRangeLabel)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
                         if task.skipPolicy == .unskippable {
                             Label("不可跳过", systemImage: "exclamationmark.triangle.fill")
                                 .font(.caption)
                                 .foregroundStyle(.orange)
                         }
-                    }
 
-                    let pendingOccurrenceCount = task.pendingOccurrenceCount(on: .now, completions: completions)
-                    if task.skipPolicy == .unskippable && pendingOccurrenceCount > 1 && !isDone {
-                        Text("已累计 \(pendingOccurrenceCount) 次未完成")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.orange)
+                        if let overdueOriginText, !isDone {
+                            Text(overdueOriginText)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.orange)
+                                .lineLimit(1)
+                        }
                     }
 
                     if !task.note.isEmpty {
@@ -173,7 +241,7 @@ struct TasksView: View {
             }
         }
         .padding(.vertical, 4)
-        .swipeActions(edge: .trailing) {
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button("归档", systemImage: "archivebox", role: .destructive) {
                 withAnimation {
                     task.isArchived = true
@@ -214,5 +282,103 @@ struct TasksView: View {
         }
         try? modelContext.save()
         WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    private func scheduleRow(_ schedule: ScheduleItem) -> some View {
+        NavigationLink {
+            AddScheduleView(schedule: schedule)
+        } label: {
+            HStack(spacing: 14) {
+                Image(systemName: "calendar")
+                    .font(.title2)
+                    .foregroundStyle(.indigo)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(schedule.title)
+                        .font(.headline)
+
+                    HStack(spacing: 8) {
+                        Text(schedule.timeRangeText(on: .now))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.indigo)
+
+                        Text(schedule.repeatRuleLabel)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        if let effectiveDateRangeLabel = schedule.effectiveDateRangeLabel {
+                            Text(effectiveDateRangeLabel)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    if !schedule.note.isEmpty {
+                        Text(schedule.note)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button("删除", systemImage: "trash", role: .destructive) {
+                modelContext.delete(schedule)
+                try? modelContext.save()
+                WidgetCenter.shared.reloadAllTimelines()
+            }
+
+            Button("归档", systemImage: "archivebox") {
+                withAnimation {
+                    schedule.isArchived = true
+                }
+                try? modelContext.save()
+                WidgetCenter.shared.reloadAllTimelines()
+            }
+            .tint(.orange)
+        }
+    }
+
+    private func archivedScheduleRow(_ schedule: ScheduleItem) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: "archivebox")
+                .font(.title2)
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(schedule.title)
+                    .font(.headline)
+                    .strikethrough()
+                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 8) {
+                    Text(schedule.repeatRule == .once ? schedule.startTime.formatted(.dateTime.year().month().day()) : schedule.repeatRuleLabel)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+
+                    if let effectiveDateRangeLabel = schedule.effectiveDateRangeLabel {
+                        Text(effectiveDateRangeLabel)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }
+        .swipeActions {
+            Button("恢复", systemImage: "arrow.uturn.backward") {
+                schedule.isArchived = false
+                try? modelContext.save()
+                WidgetCenter.shared.reloadAllTimelines()
+            }
+            .tint(.blue)
+
+            Button("彻底删除", systemImage: "trash", role: .destructive) {
+                modelContext.delete(schedule)
+                try? modelContext.save()
+                WidgetCenter.shared.reloadAllTimelines()
+            }
+        }
     }
 }

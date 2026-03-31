@@ -200,11 +200,44 @@ struct SettingsView: View {
 
                 VStack(alignment: .leading, spacing: 10) {
                     diagnosticRow(title: "同步模式", value: syncStatusStore.cloudKitModeText)
+                    diagnosticRow(title: "iCloud 账户", value: syncStatusStore.cloudAccountTitle)
+                    diagnosticRow(title: "CloudKit 环境", value: syncStatusStore.cloudKitEnvironment)
+                    diagnosticRow(title: "推送环境", value: syncStatusStore.apsEnvironment)
                     diagnosticRow(title: "容器 ID", value: syncStatusStore.containerIdentifier, monospaced: true)
                     diagnosticRow(title: "本地数据", value: syncStatusStore.localDataSummary)
                 }
                 .padding(12)
                 .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Label("同步说明", systemImage: "icloud.and.arrow.up")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.blue)
+
+                Text(syncStatusStore.cloudAccountDetail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if !syncStatusStore.cloudKitEnabled {
+                    Text("当前这台设备已经退回本地存储模式，所以它不会和其他设备互相同步。常见原因是 CloudKit schema 没同步到后台，或这台设备当前构建无法初始化 CloudKit。")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                if !syncStatusStore.cloudKitInitializationError.isEmpty {
+                    Text(syncStatusStore.cloudKitInitializationError)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                }
+
+                Text("如果 iPad 和 iPhone 里有一台是 Xcode 直接安装，另一台是 TestFlight / App Store 安装，它们会落在不同的 CloudKit 环境里，看起来就像一直同步不过来。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Button {

@@ -11,16 +11,34 @@ targets:
     dependencies:
       - target: TypoWidget
         embed: true
+    entitlements:
+      path: 错字复习/错字复习.entitlements
+      properties:
+        aps-environment: development
+        com.apple.developer.icloud-container-identifiers:
+          - iCloud.cc.xiaorsz.typo-review
+        com.apple.developer.icloud-services:
+          - CloudKit
+          - CloudDocuments
+        com.apple.developer.ubiquity-container-identifiers:
+          - iCloud.cc.xiaorsz.typo-review
+        com.apple.developer.ubiquity-kvstore-identifier: $(TeamIdentifierPrefix)$(CFBundleIdentifier)
+        com.apple.security.application-groups:
+          - group.cc.xiaorsz.typo-review
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cc.xiaorsz.typo-review
         MARKETING_VERSION: 1.1.0
         CURRENT_PROJECT_VERSION: 2
         TARGETED_DEVICE_FAMILY: "1,2"
+        DEVELOPMENT_TEAM: FCAW792CJD
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIBackgroundModes:
           - remote-notification
-        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         INFOPLIST_KEY_UISupportedInterfaceOrientations~ipad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_CFBundleDevelopmentRegion: zh_Hans
         INFOPLIST_KEY_CFBundleLocalizations:
@@ -49,14 +67,24 @@ targets:
         type: file
       - path: 错字复习/AppSettings.swift
         type: file
+      - path: 错字复习/ScheduleItem.swift
+        type: file
     info:
       path: TypoWidget/Info.plist
       properties:
+        CFBundleShortVersionString: "1.1.0"
+        CFBundleVersion: "2"
         CFBundleDisplayName: "听写复习本"
         NSExtension:
           NSExtensionPointIdentifier: "com.apple.widgetkit-extension"
+    entitlements:
+      path: TypoWidget/TypoWidget.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.cc.xiaorsz.typo-review
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cc.xiaorsz.typo-review.TypoWidget
+        DEVELOPMENT_TEAM: FCAW792CJD
         MARKETING_VERSION: 1.1.0
         CURRENT_PROJECT_VERSION: 2

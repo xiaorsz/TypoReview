@@ -5,6 +5,7 @@ import SwiftData
 struct TypoReviewApp: App {
     @State private var syncStatusStore = SyncStatusStore()
     private let cloudKitContainerIdentifier = "iCloud.cc.xiaorsz.typo-review"
+    private let appGroupIdentifier = "group.cc.xiaorsz.typo-review"
     private let sharedModelContainer: ModelContainer
 
     init() {
@@ -15,37 +16,47 @@ struct TypoReviewApp: App {
             TaskCompletion.self,
             AppSettings.self,
             DictationSession.self,
-            DictationEntry.self
+            DictationEntry.self,
+            ScheduleItem.self
         ])
-        
-        let sharedContainerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.cc.xiaorsz.typo-review")!
-            .appendingPathComponent("typo-review.store")
-            
-        let appSupportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let defaultStoreURL = appSupportDir.appendingPathComponent("default.store")
-        
-        if FileManager.default.fileExists(atPath: defaultStoreURL.path) && !FileManager.default.fileExists(atPath: sharedContainerURL.path) {
-            do {
-                try FileManager.default.moveItem(at: defaultStoreURL, to: sharedContainerURL)
-                let defaultWal = appSupportDir.appendingPathComponent("default.store-wal")
-                let sharedWal = URL(fileURLWithPath: sharedContainerURL.path + "-wal")
-                if FileManager.default.fileExists(atPath: defaultWal.path) {
-                    try FileManager.default.moveItem(at: defaultWal, to: sharedWal)
-                }
-                let defaultShm = appSupportDir.appendingPathComponent("default.store-shm")
-                let sharedShm = URL(fileURLWithPath: sharedContainerURL.path + "-shm")
-                if FileManager.default.fileExists(atPath: defaultShm.path) {
-                    try FileManager.default.moveItem(at: defaultShm, to: sharedShm)
-                }
-            } catch {
-                print("Migration to App Group failed: \(error)")
-            }
-        }
 
-        let cloudConfiguration = ModelConfiguration(
-            url: sharedContainerURL,
-            cloudKitDatabase: .automatic
-        )
+        let fileManager = FileManager.default
+        let appSupportDir = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? fileManager.temporaryDirectory
+        let defaultStoreURL = appSupportDir.appendingPathComponent("default.store")
+        let cloudConfiguration: ModelConfiguration
+        let fallbackConfiguration: ModelConfiguration
+
+        if let groupURL = fileManager.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier) {
+            cloudConfiguration = ModelConfiguration(
+                schema: schema,
+                groupContainer: .identifier(appGroupIdentifier),
+                cloudKitDatabase: .automatic
+            )
+            fallbackConfiguration = ModelConfiguration(
+                schema: schema,
+                groupContainer: .identifier(appGroupIdentifier),
+                cloudKitDatabase: .none
+            )
+
+            let legacyGroupStoreURL = groupURL.appendingPathComponent("typo-review.store")
+            Self.migrateLegacyStoreIfNeeded(
+                candidates: [defaultStoreURL, legacyGroupStoreURL],
+                targetStoreURL: cloudConfiguration.url,
+                fileManager: fileManager
+            )
+        } else {
+            print("WARNING: App Group container URL is nil. Falling back to default store URL.")
+            cloudConfiguration = ModelConfiguration(
+                schema: schema,
+                url: defaultStoreURL,
+                cloudKitDatabase: .automatic
+            )
+            fallbackConfiguration = ModelConfiguration(
+                schema: schema,
+                url: defaultStoreURL,
+                cloudKitDatabase: .none
+            )
+        }
 
         do {
             let container = try ModelContainer(for: schema, configurations: [cloudConfiguration])
@@ -60,19 +71,25 @@ struct TypoReviewApp: App {
                 return store
             }())
         } catch {
-            let fallbackConfiguration = ModelConfiguration(
-                url: sharedContainerURL,
-                cloudKitDatabase: .none
-            )
-            sharedModelContainer = try! ModelContainer(for: schema, configurations: [fallbackConfiguration])
-            let nsError = error as NSError
+            let nsError1 = error as NSError
+
+            let container: ModelContainer
+            do {
+                container = try ModelContainer(for: schema, configurations: [fallbackConfiguration])
+            } catch {
+                print("Fallback ModelContainer also failed: \(error)")
+                let inMemoryConfig = ModelConfiguration(isStoredInMemoryOnly: true)
+                container = try! ModelContainer(for: schema, configurations: [inMemoryConfig])
+            }
+            sharedModelContainer = container
+            
             let detailedError = [
-                "domain=\(nsError.domain)",
-                "code=\(nsError.code)",
-                "description=\(nsError.localizedDescription)",
-                "failureReason=\(nsError.localizedFailureReason ?? "nil")",
-                "recoverySuggestion=\(nsError.localizedRecoverySuggestion ?? "nil")",
-                "userInfo=\(nsError.userInfo)"
+                "domain=\(nsError1.domain)",
+                "code=\(nsError1.code)",
+                "description=\(nsError1.localizedDescription)",
+                "failureReason=\(nsError1.localizedFailureReason ?? "nil")",
+                "recoverySuggestion=\(nsError1.localizedRecoverySuggestion ?? "nil")",
+                "userInfo=\(nsError1.userInfo)"
             ].joined(separator: "\n")
 
             _syncStatusStore = State(initialValue: {
@@ -85,6 +102,48 @@ struct TypoReviewApp: App {
                 return store
             }())
         }
+    }
+
+    private static func migrateLegacyStoreIfNeeded(
+        candidates: [URL],
+        targetStoreURL: URL,
+        fileManager: FileManager
+    ) {
+        guard !fileManager.fileExists(atPath: targetStoreURL.path) else { return }
+
+        for candidate in candidates where fileManager.fileExists(atPath: candidate.path) {
+            do {
+                try moveStoreBundle(from: candidate, to: targetStoreURL, fileManager: fileManager)
+                print("Migrated legacy SwiftData store from \(candidate.path) to \(targetStoreURL.path)")
+                return
+            } catch {
+                print("Legacy store migration failed from \(candidate.path): \(error)")
+            }
+        }
+    }
+
+    private static func moveStoreBundle(
+        from sourceURL: URL,
+        to targetURL: URL,
+        fileManager: FileManager
+    ) throws {
+        try fileManager.createDirectory(
+            at: targetURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        for (source, target) in zip(storeBundleURLs(for: sourceURL), storeBundleURLs(for: targetURL)) {
+            guard fileManager.fileExists(atPath: source.path) else { continue }
+            try fileManager.moveItem(at: source, to: target)
+        }
+    }
+
+    private static func storeBundleURLs(for baseURL: URL) -> [URL] {
+        [
+            baseURL,
+            URL(fileURLWithPath: baseURL.path + "-wal"),
+            URL(fileURLWithPath: baseURL.path + "-shm")
+        ]
     }
 
     var body: some Scene {

@@ -4,6 +4,7 @@ import SwiftData
 import Observation
 import AVFoundation
 import WidgetKit
+import UIKit
 
 struct HomeView: View {
     @Environment(\.modelContext) private var modelContext
@@ -15,13 +16,16 @@ struct HomeView: View {
     @Query private var settings: [AppSettings]
     @Query(sort: \TaskItem.createdAt) private var allTasks: [TaskItem]
     @Query(sort: \TaskCompletion.completedAt, order: .reverse) private var taskCompletions: [TaskCompletion]
+    @Query(sort: \ScheduleItem.startTime) private var allSchedules: [ScheduleItem]
     
     @State private var showingReviewPreview = false
     @State private var isReviewActive = false
     @State private var previewSession: DictationSession?
     @State private var activeDictationSession: DictationSession?
+    @State private var showingDashboardBoard = false
 
     private let scheduler = ReviewScheduler()
+    private let isPad = UIDevice.current.userInterfaceIdiom == .pad
 
     private var allDueItems: [ReviewItem] {
         reviewItems
@@ -95,12 +99,19 @@ struct HomeView: View {
         }.min(by: { $0.scheduledDate > $1.scheduledDate })
     }
 
+    private var todaySchedules: [ScheduleItem] {
+        allSchedules
+            .filter { $0.shouldAppear(on: .now) && !$0.hasEnded(on: .now, reference: .now) }
+            .sorted { $0.startTimeMinutes < $1.startTimeMinutes }
+    }
+
     private var heroIconName: String {
         let tasksDone = todayPendingTasks.isEmpty && todayCompletedTaskCount > 0
         let reviewDone = dueItems.isEmpty
         let dictationDone = latestDictationSession?.isReviewed ?? true
+        let scheduleDone = todaySchedules.isEmpty
         
-        if tasksDone && reviewDone && dictationDone { return "checkmark.seal.fill" }
+        if tasksDone && reviewDone && dictationDone && scheduleDone { return "checkmark.seal.fill" }
         if reviewDone && dictationDone { return "sparkles" }
         if todayPendingTasks.isEmpty { return "book.fill" }
         return "figure.run"
@@ -124,6 +135,9 @@ struct HomeView: View {
         var parts: [String] = []
         if pendingTaskCount > 0 {
             parts.append("\(pendingTaskCount) 项任务")
+        }
+        if !todaySchedules.isEmpty {
+            parts.append("\(todaySchedules.count) 项日程")
         }
         if pendingReviewCount > 0 {
             parts.append("\(pendingReviewCount) 项复习")
@@ -236,6 +250,26 @@ struct HomeView: View {
                 VStack(spacing: 20) {
                     heroCard
 
+                    if !syncStatusStore.cloudKitInitializationError.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                Text("CloudKit 初始化失败详单")
+                                    .font(.headline)
+                            }
+                            .foregroundStyle(.red)
+
+                            Text(syncStatusStore.cloudKitInitializationError)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.red.opacity(0.8))
+                        }
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 16))
+                    }
+
+                    todayScheduleCard
+
                     todayTasksCard
 
                     // Stat grid
@@ -290,8 +324,19 @@ struct HomeView: View {
                     }
                 )
             }
+            .fullScreenCover(isPresented: $showingDashboardBoard) {
+                DashboardBoardView()
+            }
         }
         .toolbar {
+            if isPad {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("看板", systemImage: "rectangle.inset.filled.and.person.filled") {
+                        showingDashboardBoard = true
+                    }
+                }
+            }
+
             ToolbarItem(placement: .topBarTrailing) {
                 Menu("新增", systemImage: "plus") {
                     NavigationLink {
@@ -521,6 +566,64 @@ struct HomeView: View {
         return "\(latestDictationSession.title) · \(count) 条 · \(status)"
     }
 
+    // MARK: - Today Schedule
+
+    @ViewBuilder
+    private var todayScheduleCard: some View {
+        let schedules = todaySchedules
+
+        if !schedules.isEmpty {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Image(systemName: "calendar")
+                        .font(.title3)
+                        .foregroundStyle(.indigo)
+                    Text("今日日程")
+                        .font(.headline)
+                    Spacer()
+                    Text("\(schedules.count) 项")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.indigo)
+                }
+
+                ForEach(schedules) { schedule in
+                    HStack(spacing: 12) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(.indigo)
+                            .frame(width: 4, height: 32)
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(schedule.title)
+                                .fontWeight(.medium)
+
+                            HStack(spacing: 6) {
+                                Text(schedule.timeRangeText(on: .now))
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.indigo)
+
+                                Text(schedule.repeatRuleLabel)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+
+                                if let effectiveDateRangeLabel = schedule.effectiveDateRangeLabel {
+                                    Text(effectiveDateRangeLabel)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+
+                        Spacer()
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+        }
+    }
+
     // MARK: - Today Tasks
 
     private var todayTaskItems: [TodayTaskDisplayItem] {
@@ -568,7 +671,7 @@ struct HomeView: View {
                     ForEach(taskItems) { item in
                         let task = item.task
                         let isDone = item.isCompleted
-                        let pendingOccurrenceCount = item.pendingOccurrenceCount
+                        let overdueOriginText = item.overdueOriginText
                         
                         HStack(spacing: 12) {
                             Button {
@@ -593,19 +696,27 @@ struct HomeView: View {
                                     Text(task.recurrenceLabel)
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
+
+                                    if let effectiveDateRangeLabel = task.effectiveDateRangeLabel {
+                                        Text(effectiveDateRangeLabel)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+
                                     if task.skipPolicy == .unskippable {
                                         Text("不可跳过")
                                             .font(.caption2.weight(.bold))
                                             .foregroundStyle(.orange)
                                     }
+
+                                    if let overdueOriginText, !isDone {
+                                        Text(overdueOriginText)
+                                            .font(.caption2.weight(.semibold))
+                                            .foregroundStyle(.orange)
+                                            .lineLimit(1)
+                                    }
                                 }
                                 .opacity(isDone ? 0.6 : 1.0)
-
-                                if task.skipPolicy == .unskippable && pendingOccurrenceCount > 1 && !isDone {
-                                    Text("已累计 \(pendingOccurrenceCount) 次未完成")
-                                        .font(.caption2.weight(.semibold))
-                                        .foregroundStyle(.orange)
-                                }
                             }
 
                             Spacer()
@@ -742,6 +853,404 @@ struct ReviewPreviewView: View {
                 }
                 .background(.bar)
             }
+        }
+    }
+}
+
+struct DashboardBoardView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(SyncStatusStore.self) private var syncStatusStore
+    @Query(sort: \ReviewItem.nextReviewAt) private var reviewItems: [ReviewItem]
+    @Query(sort: \ReviewRecord.reviewedAt, order: .reverse) private var reviewRecords: [ReviewRecord]
+    @Query(sort: \DictationSession.createdAt, order: .reverse) private var dictationSessions: [DictationSession]
+    @Query(sort: \DictationEntry.sortOrder) private var dictationEntries: [DictationEntry]
+    @Query(sort: \TaskItem.createdAt) private var allTasks: [TaskItem]
+    @Query(sort: \TaskCompletion.completedAt, order: .reverse) private var taskCompletions: [TaskCompletion]
+    @Query(sort: \ScheduleItem.startTime) private var allSchedules: [ScheduleItem]
+    @Query private var settings: [AppSettings]
+
+    @State private var previousIdleTimerDisabled = false
+    @State private var boardNow = Date.now
+
+    private let scheduler = ReviewScheduler()
+
+    private var childName: String {
+        guard let settings = settings.first else { return "小朋友" }
+        return settings.childName.isEmpty ? "小朋友" : settings.childName
+    }
+
+    private var dueItems: [ReviewItem] {
+        reviewItems
+            .filter { $0.nextReviewAt <= boardNow }
+            .sorted { $0.nextReviewAt < $1.nextReviewAt }
+    }
+
+    private var pendingDictationSessions: [DictationSession] {
+        let calendar = Calendar.current
+        let todayStart = calendar.startOfDay(for: boardNow)
+        return dictationSessions
+            .filter { !$0.isReviewed && calendar.startOfDay(for: $0.scheduledDate) <= todayStart }
+            .sorted { $0.scheduledDate < $1.scheduledDate }
+    }
+
+    private var pendingDictationCount: Int {
+        pendingDictationSessions.reduce(into: 0) { result, session in
+            result += dictationEntries.filter { $0.sessionID == session.id }.count
+        }
+    }
+
+    private var pendingDictationBoardItems: [BoardTextItem] {
+        pendingDictationSessions.flatMap { session in
+            dictationEntries
+                .filter { $0.sessionID == session.id }
+                .sorted { $0.sortOrder < $1.sortOrder }
+                .map { entry in
+                    return BoardTextItem(id: entry.id, text: entry.content, detail: "")
+                }
+        }
+    }
+
+    private var todayTaskItems: [TodayTaskDisplayItem] {
+        TodayTaskListBuilder
+            .build(from: allTasks.filter { !$0.isArchived }, completions: taskCompletions, on: boardNow)
+    }
+
+    private var todayPendingTasks: [TodayTaskDisplayItem] {
+        todayTaskItems.filter { !$0.isCompleted }
+    }
+
+    private var todayCompletedTaskCount: Int {
+        todayTaskItems.filter(\.isCompleted).count
+    }
+
+    private var todaySchedules: [ScheduleItem] {
+        allSchedules
+            .filter { $0.shouldAppear(on: boardNow) && !$0.hasEnded(on: boardNow, reference: boardNow) }
+            .sorted { $0.startTimeMinutes < $1.startTimeMinutes }
+    }
+
+    private var todayCompletedCount: Int {
+        let calendar = Calendar.current
+        return reviewRecords.filter { calendar.isDate($0.reviewedAt, inSameDayAs: boardNow) }
+            .count
+    }
+
+    private var todayHeadline: String {
+        var parts: [String] = []
+        if !todayPendingTasks.isEmpty {
+            parts.append("\(todayPendingTasks.count) 项待办")
+        }
+        if !dueItems.isEmpty {
+            parts.append("\(dueItems.count) 项复习")
+        }
+        if pendingDictationCount > 0 {
+            parts.append("\(pendingDictationCount) 条听写")
+        }
+        return parts.isEmpty ? "\(childName) 今天都完成了" : "\(childName) 今天还有 \(parts.joined(separator: "、"))"
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.07, green: 0.12, blue: 0.22),
+                        Color(red: 0.04, green: 0.33, blue: 0.47),
+                        Color(red: 0.05, green: 0.52, blue: 0.48)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .ignoresSafeArea()
+
+                VStack(spacing: 28) {
+                    boardHeader
+                    boardStats
+                    boardContent
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .padding(.top, boardTopInset(for: proxy))
+                .padding(.horizontal, 36)
+                .padding(.bottom, 28)
+
+                exitBoardButton
+                    .padding(.top, topOverlayPadding(for: proxy))
+                    .padding(.trailing, 28)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            }
+        }
+        .onAppear(perform: activateIdleTimerOverride)
+        .onDisappear(perform: restoreIdleTimer)
+        .onReceive(boardRefreshTimer) { boardNow = $0 }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                boardNow = .now
+                activateIdleTimerOverride()
+            } else {
+                restoreIdleTimer()
+            }
+        }
+    }
+
+    private var boardHeader: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("听写复习看板")
+                    .font(.system(size: 38, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+
+                Text(todayHeadline)
+                    .font(.system(size: 22, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.9))
+
+                HStack(spacing: 10) {
+                    Label(syncStatusStore.statusText, systemImage: syncStatusStore.isRefreshing ? "arrow.triangle.2.circlepath" : "icloud")
+                        .symbolEffect(.rotate, isActive: syncStatusStore.isRefreshing)
+                        .font(.headline)
+                    Text("已掌握 \(reviewItems.filter(scheduler.isMastered).count) 项")
+                        .font(.headline)
+                }
+                .foregroundStyle(.white.opacity(0.8))
+            }
+
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 10) {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(context.date, format: .dateTime.hour().minute())
+                        .font(.system(size: 72, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .monospacedDigit()
+                }
+
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    Text(context.date.formatted(.dateTime.month().day().weekday(.wide)))
+                        .font(.system(size: 22, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.85))
+                }
+            }
+        }
+    }
+
+    private var boardStats: some View {
+        HStack(spacing: 18) {
+            BoardStatCard(title: "今日待办", value: "\(todayPendingTasks.count)", tint: .orange)
+            BoardStatCard(title: "待复习", value: "\(dueItems.count)", tint: .blue)
+            BoardStatCard(title: "待听写", value: "\(pendingDictationCount)", tint: .teal)
+            BoardScheduleStatCard(schedule: todaySchedules.first, tint: .green)
+        }
+    }
+
+    private var boardContent: some View {
+        HStack(alignment: .top, spacing: 18) {
+            boardColumn(
+                title: "今日任务",
+                icon: "checklist",
+                items: todayTaskItems,
+                emptyTitle: "今天没有任务",
+                itemText: { item in
+                    item.isCompleted ? "\(item.task.title) · 已完成" : item.task.title
+                }
+            )
+
+            boardColumn(
+                title: "待复习",
+                icon: "book.closed.fill",
+                items: dueItems,
+                emptyTitle: "今天没有待复习",
+                itemText: { item in
+                    let prompt = item.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return prompt.isEmpty ? item.content : "\(item.content) · \(prompt)"
+                }
+            )
+
+            boardColumn(
+                title: "待听写",
+                icon: "text.book.closed.fill",
+                items: pendingDictationBoardItems,
+                emptyTitle: "今天没有待听写",
+                itemText: { item in
+                    item.text
+                }
+            )
+        }
+    }
+
+    private func boardColumn<Item: Identifiable>(
+        title: String,
+        icon: String,
+        items: [Item],
+        emptyTitle: String,
+        itemText: @escaping (Item) -> String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                Text(title)
+            }
+            .font(.system(size: 24, weight: .bold, design: .rounded))
+            .foregroundStyle(.white)
+
+            if items.isEmpty {
+                VStack(spacing: 14) {
+                    Spacer(minLength: 0)
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 46))
+                        .foregroundStyle(.white.opacity(0.25))
+                    Text(emptyTitle)
+                        .font(.system(size: 24, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.9))
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, minHeight: 360)
+                .padding(24)
+                .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 28))
+            } else {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(Array(items.prefix(10))) { item in
+                        Text(itemText(item))
+                            .font(.system(size: 24, weight: .medium, design: .rounded))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 16)
+                            .background(.white.opacity(0.13), in: RoundedRectangle(cornerRadius: 20))
+                    }
+
+                    if items.count > 10 {
+                        Text("还有 \(items.count - 10) 项未展示")
+                            .font(.headline)
+                            .foregroundStyle(.white.opacity(0.8))
+                            .padding(.leading, 4)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func boardTopInset(for proxy: GeometryProxy) -> CGFloat {
+        let isLandscape = isLandscapeBoardLayout(fallbackSize: proxy.size)
+        let safeTop = isLandscape ? min(proxy.safeAreaInsets.top, 8) : max(proxy.safeAreaInsets.top, 12)
+        return safeTop + 18
+    }
+
+    private func isLandscapeBoardLayout(fallbackSize: CGSize) -> Bool {
+        let activeScene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+
+        if let activeScene {
+            return activeScene.interfaceOrientation.isLandscape
+        }
+        return fallbackSize.width > fallbackSize.height
+    }
+
+    private func topOverlayPadding(for proxy: GeometryProxy) -> CGFloat {
+        let isLandscape = isLandscapeBoardLayout(fallbackSize: proxy.size)
+        let safeTop = isLandscape ? min(proxy.safeAreaInsets.top, 8) : max(proxy.safeAreaInsets.top, 12)
+        return safeTop + 10
+    }
+
+    private var exitBoardButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.headline.weight(.bold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .background(.black.opacity(0.22), in: Circle())
+                .overlay {
+                    Circle()
+                        .stroke(.white.opacity(0.16), lineWidth: 1)
+                }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var boardRefreshTimer: Timer.TimerPublisher {
+        Timer.publish(every: 300, on: .main, in: .common)
+    }
+
+    private func activateIdleTimerOverride() {
+        let application = UIApplication.shared
+        previousIdleTimerDisabled = application.isIdleTimerDisabled
+        application.isIdleTimerDisabled = true
+    }
+
+    private func restoreIdleTimer() {
+        UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled
+    }
+}
+
+private struct BoardTextItem: Identifiable {
+    let id: UUID
+    let text: String
+    let detail: String
+}
+
+private struct BoardStatCard: View {
+    let title: String
+    let value: String
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.system(size: 20, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.92))
+
+            Text(value)
+                .font(.system(size: 44, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+        .background(tint.opacity(0.32), in: RoundedRectangle(cornerRadius: 24))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24)
+                .stroke(.white.opacity(0.08), lineWidth: 1)
+        }
+    }
+}
+
+private struct BoardScheduleStatCard: View {
+    let schedule: ScheduleItem?
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("今日日程")
+                .font(.system(size: 20, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.92))
+
+            if let schedule {
+                Text(schedule.title)
+                    .font(.system(size: 23, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+
+                Text(schedule.timeRangeText(on: .now))
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.82))
+                    .lineLimit(1)
+            } else {
+                Text("0")
+                    .font(.system(size: 44, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+        .background(tint.opacity(0.32), in: RoundedRectangle(cornerRadius: 24))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24)
+                .stroke(.white.opacity(0.08), lineWidth: 1)
         }
     }
 }
