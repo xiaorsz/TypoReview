@@ -13,6 +13,7 @@
 		1F5BBAEFD6C810FCEBCB7CBD /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 835499BE852352E7085C7083 /* LibraryView.swift */; };
 		231AA24240FC6FCBD6A369F2 /* BatchReviewSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA218905C6AD638CB04C774E /* BatchReviewSessionView.swift */; };
 		236146C126C23D9B6E5D5C5C /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B43E29B6728FBAA1D22D769 /* AppSettings.swift */; };
+		24F9C2B1A4D34E0987AB12CD /* DataBackup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24F9C2B1A4D34E0987AB12CE /* DataBackup.swift */; };
 		27CD033589B8502762E72EAE /* TaskCompletion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D7771FE4082F787A64A1D4D /* TaskCompletion.swift */; };
 		2A7CAA439DC94CE3F611031F /* DictationEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0F396BBF587A380BEE3F397 /* DictationEntry.swift */; };
 		2E1F7231B968C31E01B33689 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B43E29B6728FBAA1D22D769 /* AppSettings.swift */; };
@@ -106,6 +107,7 @@
 		7B43E29B6728FBAA1D22D769 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
 		7E8B64A4B415CF43C0F3EEDD /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		7EFCE1B1D4218D4C5A356E18 /* TypoWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypoWidget.swift; sourceTree = "<group>"; };
+		24F9C2B1A4D34E0987AB12CE /* DataBackup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataBackup.swift; sourceTree = "<group>"; };
 		82B57298A1B4CF7DFEF09CD9 /* TypoReviewApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypoReviewApp.swift; sourceTree = "<group>"; };
 		835499BE852352E7085C7083 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		86837560373D9A64F21BD7FB /* Contents.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = Contents.json; sourceTree = "<group>"; };
@@ -138,6 +140,7 @@
 				CF9F30993E7E3348AE59F070 /* AddTaskView.swift */,
 				7E8B64A4B415CF43C0F3EEDD /* AppModel.swift */,
 				7B43E29B6728FBAA1D22D769 /* AppSettings.swift */,
+				24F9C2B1A4D34E0987AB12CE /* DataBackup.swift */,
 				67CBEE4738C53CAF8BFD0E09 /* Assets.xcassets */,
 				0FFAF335CDD525B5AAB52CC1 /* BatchAddReviewItemsView.swift */,
 				BD3384CB49CD514C167C97AA /* BatchReviewGradingView.swift */,
@@ -339,6 +342,7 @@
 				CBE04FABF7F77F50A74027E2 /* AddTaskView.swift in Sources */,
 				DF19E9BF447813C14B3C0B4A /* AppModel.swift in Sources */,
 				2E1F7231B968C31E01B33689 /* AppSettings.swift in Sources */,
+				24F9C2B1A4D34E0987AB12CD /* DataBackup.swift in Sources */,
 				01634FB78D42C465212540EA /* BatchAddReviewItemsView.swift in Sources */,
 				932330CC5F580390519EA018 /* BatchReviewGradingView.swift in Sources */,
 				231AA24240FC6FCBD6A369F2 /* BatchReviewSessionView.swift in Sources */,

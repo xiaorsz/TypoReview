@@ -1,10 +1,20 @@
 import SwiftUI
 import SwiftData
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(SyncStatusStore.self) private var syncStatusStore
     @Query private var settingsList: [AppSettings]
+
+    @State private var exportDocument = DataBackupDocument.empty
+    @State private var exportFilename = DataBackupPayload.placeholder.defaultFilename
+    @State private var isExportingBackup = false
+    @State private var isImportingBackup = false
+    @State private var pendingImportPayload: DataBackupPayload?
+    @State private var pendingImportFilename = ""
+    @State private var backupAlert: BackupAlert?
+    @State private var isRestoringBackup = false
 
     private var settings: AppSettings? {
         settingsList.first
@@ -42,6 +52,7 @@ struct SettingsView: View {
                 reminderCard
                 reviewCard
                 syncCard
+                backupCard
                 aboutCard
             }
             .padding(20)
@@ -50,6 +61,45 @@ struct SettingsView: View {
         }
         .navigationTitle("设置")
         .navigationBarTitleDisplayMode(.inline)
+        .fileExporter(
+            isPresented: $isExportingBackup,
+            document: exportDocument,
+            contentType: .json,
+            defaultFilename: exportFilename
+        ) { result in
+            handleBackupExport(result)
+        }
+        .fileImporter(
+            isPresented: $isImportingBackup,
+            allowedContentTypes: [.json],
+            allowsMultipleSelection: false
+        ) { result in
+            handleBackupImport(result)
+        }
+        .confirmationDialog(
+            "恢复备份",
+            isPresented: Binding(
+                get: { pendingImportPayload != nil },
+                set: { if !$0 { clearPendingImport() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("覆盖当前数据", role: .destructive) {
+                restorePendingBackup()
+            }
+            Button("取消", role: .cancel) {
+                clearPendingImport()
+            }
+        } message: {
+            Text(importConfirmationMessage)
+        }
+        .alert(item: $backupAlert) { alert in
+            Alert(
+                title: Text(alert.title),
+                message: Text(alert.message),
+                dismissButton: .default(Text("知道了"))
+            )
+        }
     }
 
     private var introCard: some View {
@@ -266,6 +316,64 @@ struct SettingsView: View {
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
     }
 
+    private var backupCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("备份与恢复")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if isRestoringBackup {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("恢复中...")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+
+            Text("导出会生成一个 JSON 备份文件，包含题库、复习记录、任务、日程、听写计划和设置；导入恢复会用备份内容覆盖当前设备上的现有数据。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 12) {
+                Label("使用建议", systemImage: "externaldrive.badge.icloud")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.green)
+
+                Text("建议在更换设备、重装 App 或做大批量整理前，先手动导出一份备份。恢复后的数据仍会继续参与 iCloud 同步。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 12) {
+                Button {
+                    exportBackup()
+                } label: {
+                    Label("导出数据", systemImage: "square.and.arrow.up")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.blue)
+                .disabled(isRestoringBackup)
+
+                Button {
+                    isImportingBackup = true
+                } label: {
+                    Label("导入恢复", systemImage: "square.and.arrow.down")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(.orange)
+                .disabled(isRestoringBackup)
+            }
+        }
+        .padding(20)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+    }
+
     private var aboutCard: some View {
         HStack(alignment: .top, spacing: 14) {
             Image(systemName: "app.badge.fill")
@@ -319,4 +427,134 @@ struct SettingsView: View {
     private func defaultValue<Value>(for keyPath: ReferenceWritableKeyPath<AppSettings, Value>) -> Value {
         AppSettings()[keyPath: keyPath]
     }
+
+    private var importConfirmationMessage: String {
+        guard let pendingImportPayload else {
+            return ""
+        }
+
+        let exportedAt = pendingImportPayload.exportedAt.formatted(
+            .dateTime.year().month().day().hour().minute()
+        )
+
+        return """
+        文件：\(pendingImportFilename)
+        备份时间：\(exportedAt)
+        内容：\(pendingImportPayload.summaryText)
+
+        恢复后会覆盖当前这台设备上的现有数据，请确认已经完成导出备份。
+        """
+    }
+
+    private func exportBackup() {
+        do {
+            if modelContext.hasChanges {
+                try modelContext.save()
+            }
+
+            let document = try DataBackupService.makeDocument(from: modelContext)
+            exportDocument = document
+            exportFilename = document.payload.defaultFilename
+            isExportingBackup = true
+        } catch {
+            showBackupAlert(
+                title: "导出失败",
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    private func handleBackupExport(_ result: Result<URL, Error>) {
+        switch result {
+        case .success:
+            showBackupAlert(
+                title: "导出成功",
+                message: "备份文件已经导出完成，可以保存在 iCloud Drive 或本地文件夹中备用。"
+            )
+        case .failure(let error):
+            guard !isUserCancelled(error) else { return }
+            showBackupAlert(
+                title: "导出失败",
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    private func handleBackupImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            let granted = url.startAccessingSecurityScopedResource()
+            defer {
+                if granted {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+
+            do {
+                let data = try Data(contentsOf: url)
+                let document = try DataBackupDocument(data: data)
+                pendingImportPayload = document.payload
+                pendingImportFilename = url.lastPathComponent
+            } catch {
+                showBackupAlert(
+                    title: "导入失败",
+                    message: error.localizedDescription
+                )
+            }
+        case .failure(let error):
+            guard !isUserCancelled(error) else { return }
+            showBackupAlert(
+                title: "导入失败",
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    private func restorePendingBackup() {
+        guard let pendingImportPayload else { return }
+
+        isRestoringBackup = true
+        defer {
+            isRestoringBackup = false
+            clearPendingImport()
+        }
+
+        do {
+            try DataBackupService.restore(pendingImportPayload, into: modelContext)
+            showBackupAlert(
+                title: "恢复完成",
+                message: "已经根据备份文件恢复数据。\n\n\(pendingImportPayload.summaryText)"
+            )
+            Task {
+                await syncStatusStore.refresh(using: modelContext, trigger: .manual)
+            }
+        } catch {
+            showBackupAlert(
+                title: "恢复失败",
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    private func clearPendingImport() {
+        pendingImportPayload = nil
+        pendingImportFilename = ""
+    }
+
+    private func showBackupAlert(title: String, message: String) {
+        backupAlert = BackupAlert(title: title, message: message)
+    }
+
+    private func isUserCancelled(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return error is CancellationError
+            || (nsError.domain == NSCocoaErrorDomain && nsError.code == 3072)
+    }
+}
+
+private struct BackupAlert: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
 }

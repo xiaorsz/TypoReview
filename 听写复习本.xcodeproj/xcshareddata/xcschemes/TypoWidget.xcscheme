@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Scheme
-   LastUpgradeVersion = "2630"
+   LastUpgradeVersion = "2640"
    wasCreatedForAppExtension = "YES"
    version = "2.0">
    <BuildAction
@@ -16,9 +16,9 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "62B1C37C2F6E2F6D00566FFC"
-               BuildableName = "TypoWidgetExtension.appex"
-               BlueprintName = "TypoWidgetExtension"
+               BlueprintIdentifier = "E98A95C5C58C69D94F96DD52"
+               BuildableName = "TypoWidget.appex"
+               BlueprintName = "TypoWidget"
                ReferencedContainer = "container:&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -30,7 +30,7 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "A00000000000000000000041"
+               BlueprintIdentifier = "C9F798B0DD3D68A4D4F55662"
                BuildableName = "&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;.app"
                BlueprintName = "&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;"
                ReferencedContainer = "container:&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;.xcodeproj">
@@ -56,17 +56,28 @@
       debugDocumentVersioning = "YES"
       debugServiceExtension = "internal"
       allowLocationSimulation = "YES"
-      launchAutomaticallySubstyle = "2">
-      <BuildableProductRunnable
-         runnableDebuggingMode = "0">
+      launchAutomaticallySubstyle = "2"
+      queueDebuggingEnableBacktraceRecording = "Yes">
+      <RemoteRunnable
+         runnableDebuggingMode = "2"
+         BundleIdentifier = "com.apple.springboard">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "A00000000000000000000041"
+            BlueprintIdentifier = "E98A95C5C58C69D94F96DD52"
+            BuildableName = "TypoWidget.appex"
+            BlueprintName = "TypoWidget"
+            ReferencedContainer = "container:&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;.xcodeproj">
+         </BuildableReference>
+      </RemoteRunnable>
+      <MacroExpansion>
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "C9F798B0DD3D68A4D4F55662"
             BuildableName = "&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;.app"
             BlueprintName = "&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;"
             ReferencedContainer = "container:&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;.xcodeproj">
          </BuildableReference>
-      </BuildableProductRunnable>
+      </MacroExpansion>
       <EnvironmentVariables>
          <EnvironmentVariable
             key = "_XCWidgetKind"
@@ -97,7 +108,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "A00000000000000000000041"
+            BlueprintIdentifier = "C9F798B0DD3D68A4D4F55662"
             BuildableName = "&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;.app"
             BlueprintName = "&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;"
             ReferencedContainer = "container:&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;.xcodeproj">

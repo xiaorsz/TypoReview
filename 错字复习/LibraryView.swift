@@ -89,14 +89,21 @@ struct LibraryView: View {
                                     .font(.subheadline)
                                     .lineLimit(2)
 
-                                if !item.source.isEmpty {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "bookmark.fill")
-                                            .font(.caption2)
-                                        Text(item.source)
-                                            .font(.caption)
+                                HStack(spacing: 8) {
+                                    if !item.source.isEmpty {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "bookmark.fill")
+                                                .font(.caption2)
+                                            Text(item.source)
+                                                .font(.caption)
+                                                .lineLimit(1)
+                                        }
+                                        .foregroundStyle(.tertiary)
                                     }
-                                    .foregroundStyle(.tertiary)
+
+                                    if item.isPriority {
+                                        priorityBadge
+                                    }
                                 }
                             }
 
@@ -112,12 +119,6 @@ struct LibraryView: View {
                                     .foregroundStyle(.secondary)
                             }
                             .frame(width: 42)
-
-                            if item.isPriority {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(.orange)
-                                    .font(.caption)
-                            }
                         }
                     }
                     .padding(.vertical, 6)
@@ -161,6 +162,15 @@ struct LibraryView: View {
         }
 
         return "听写模式：直接朗读 \(item.type.displayName)"
+    }
+
+    private var priorityBadge: some View {
+        Label("重点复习", systemImage: "exclamationmark.triangle.fill")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.orange.opacity(0.12), in: Capsule())
     }
 
     private var emptyIcon: String {
