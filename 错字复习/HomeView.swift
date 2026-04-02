@@ -105,20 +105,24 @@ struct HomeView: View {
             .sorted { $0.startTimeMinutes < $1.startTimeMinutes }
     }
 
+    private var totalPendingTaskCount: Int {
+        todayPendingTasks.count + historicalPendingTaskItems.count
+    }
+
     private var heroIconName: String {
-        let tasksDone = todayPendingTasks.isEmpty && todayCompletedTaskCount > 0
+        let tasksDone = totalPendingTaskCount == 0 && (todayCompletedTaskCount > 0 || allTasks.isEmpty)
         let reviewDone = dueItems.isEmpty
         let dictationDone = latestDictationSession?.isReviewed ?? true
         let scheduleDone = todaySchedules.isEmpty
         
         if tasksDone && reviewDone && dictationDone && scheduleDone { return "checkmark.seal.fill" }
         if reviewDone && dictationDone { return "sparkles" }
-        if todayPendingTasks.isEmpty { return "book.fill" }
+        if totalPendingTaskCount == 0 { return "book.fill" }
         return "figure.run"
     }
 
     private var heroMessage: String {
-        let pendingTaskCount = todayPendingTasks.count
+        let pendingTaskCount = totalPendingTaskCount
         let pendingReviewCount = dueItems.count
         
         // Dictation is "pending" if it's not reviewed yet
@@ -153,7 +157,7 @@ struct HomeView: View {
     }
 
     private var heroSubtitle: String {
-        let pendingTaskCount = todayPendingTasks.count
+        let pendingTaskCount = totalPendingTaskCount
         let pendingReviewCount = dueItems.count
         let dictationSession = latestDictationSession
         
@@ -173,6 +177,9 @@ struct HomeView: View {
             }
         }
         
+        if !historicalPendingTaskItems.isEmpty && todayPendingTasks.isEmpty {
+            return "还有 \(historicalPendingTaskItems.count) 项历史待完成，先清一清积压吧。"
+        }
         if pendingTaskCount > 0 && pendingReviewCount > 0 {
             return "先完成今天的任务，再做错题复习。加油！"
         }
@@ -187,15 +194,15 @@ struct HomeView: View {
 
     /// Hero card gradient adapts to overall completion status
     private var heroGradientColors: [Color] {
-        let tasksDone = todayPendingTasks.isEmpty && todayCompletedTaskCount > 0
+        let tasksDone = totalPendingTaskCount == 0 && (todayCompletedTaskCount > 0 || allTasks.isEmpty)
         let reviewDone = dueItems.isEmpty
         let dictationDone = latestDictationSession?.isReviewed ?? true
         
         if tasksDone && reviewDone && dictationDone {
             return [.green.opacity(0.85), .mint.opacity(0.65)]
         }
-        if !todayPendingTasks.isEmpty || !dueItems.isEmpty || !(latestDictationSession?.isReviewed ?? true) {
-            if !todayPendingTasks.isEmpty && !dueItems.isEmpty {
+        if totalPendingTaskCount > 0 || !dueItems.isEmpty || !(latestDictationSession?.isReviewed ?? true) {
+            if totalPendingTaskCount > 0 && !dueItems.isEmpty {
                 return [.orange.opacity(0.9), .yellow.opacity(0.65)]
             }
             return [.blue.opacity(0.8), .cyan.opacity(0.6)]
@@ -250,22 +257,8 @@ struct HomeView: View {
                 VStack(spacing: 20) {
                     heroCard
 
-                    if !syncStatusStore.cloudKitInitializationError.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                Text("CloudKit 初始化失败详单")
-                                    .font(.headline)
-                            }
-                            .foregroundStyle(.red)
-
-                            Text(syncStatusStore.cloudKitInitializationError)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.red.opacity(0.8))
-                        }
-                        .padding(16)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 16))
+                    if syncStatusStore.syncNoticeKind != .ready {
+                        syncStatusSummaryCard
                     }
 
                     todayScheduleCard
@@ -395,8 +388,7 @@ struct HomeView: View {
 
     private var syncStatusBadge: some View {
         HStack(spacing: 8) {
-            Image(systemName: syncStatusStore.isRefreshing ? "arrow.triangle.2.circlepath" : "icloud")
-                .symbolEffect(.rotate, isActive: syncStatusStore.isRefreshing)
+            SyncStatusIconView(isRefreshing: syncStatusStore.isRefreshing)
             Text(syncStatusStore.statusText)
                 .lineLimit(1)
         }
@@ -630,24 +622,39 @@ struct HomeView: View {
         TodayTaskListBuilder.build(from: allTasks, completions: taskCompletions)
     }
 
-    private var todayTasks: [TaskItem] {
-        todayTaskItems.map(\.task)
+    private var todayPendingTasks: [TodayTaskDisplayItem] {
+        todayTaskItems.filter { $0.section == .todayPending }
     }
 
-    private var todayPendingTasks: [TaskItem] {
-        todayTaskItems.filter { !$0.isCompleted }.map(\.task)
+    private var historicalPendingTaskItems: [TodayTaskDisplayItem] {
+        todayTaskItems
+            .filter { $0.section == .historicalPending }
+            .sorted { lhs, rhs in
+                if lhs.occurrenceDate == rhs.occurrenceDate {
+                    return lhs.task.createdAt < rhs.task.createdAt
+                }
+                return lhs.occurrenceDate < rhs.occurrenceDate
+            }
+    }
+
+    private var todayCompletedTaskItems: [TodayTaskDisplayItem] {
+        todayTaskItems.filter { $0.section == .todayDone }
     }
 
     private var todayCompletedTaskCount: Int {
-        todayTaskItems.filter(\.isCompleted).count
+        todayCompletedTaskItems.count
     }
 
     @ViewBuilder
     private var todayTasksCard: some View {
-        let taskItems = todayTaskItems
+        let pendingItems = todayPendingTasks
+        let doneItems = todayCompletedTaskItems
+        let historicalItems = historicalPendingTaskItems
         let doneCount = todayCompletedTaskCount
+        let todayTaskCount = pendingItems.count + doneCount
+        let historyCount = historicalItems.count
         
-        if !taskItems.isEmpty || !allTasks.isEmpty {
+        if !pendingItems.isEmpty || !doneItems.isEmpty || !historicalItems.isEmpty || !allTasks.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     Image(systemName: "checklist")
@@ -656,72 +663,63 @@ struct HomeView: View {
                     Text("今日任务")
                         .font(.headline)
                     Spacer()
-                    if !taskItems.isEmpty {
-                        Text("\(doneCount)/\(taskItems.count) 已完成")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(doneCount == taskItems.count ? .green : .orange)
+
+                    VStack(alignment: .trailing, spacing: 4) {
+                        if historyCount > 0 {
+                            Text("另有 \(historyCount) 项历史待完成")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.orange)
+                        }
+
+                        if todayTaskCount > 0 {
+                            Text("\(doneCount)/\(todayTaskCount) 已完成")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(doneCount == todayTaskCount ? .green : .orange)
+                        }
                     }
                 }
 
-                if taskItems.isEmpty && !allTasks.isEmpty {
+                if pendingItems.isEmpty && historicalItems.isEmpty && !allTasks.isEmpty {
                     Text("今天没有待完成的任务。")
                         .foregroundStyle(.secondary)
                         .font(.subheadline)
                 } else {
-                    ForEach(taskItems) { item in
-                        let task = item.task
-                        let isDone = item.isCompleted
-                        let overdueOriginText = item.overdueOriginText
-                        
-                        HStack(spacing: 12) {
-                            Button {
-                                if !isDone {
-                                    completeTask(task)
-                                }
-                            } label: {
-                                Image(systemName: isDone ? "checkmark.circle.fill" : "circle")
-                                    .font(.title3)
-                                    .foregroundStyle(isDone ? .green : .secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(isDone)
+                    ForEach(pendingItems) { item in
+                        todayTaskRow(item)
+                    }
 
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(task.title)
-                                    .fontWeight(.medium)
-                                    .foregroundStyle(isDone ? .secondary : .primary)
-                                    .strikethrough(isDone)
-                                
-                                HStack(spacing: 6) {
-                                    Text(task.recurrenceLabel)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-
-                                    if let effectiveDateRangeLabel = task.effectiveDateRangeLabel {
-                                        Text(effectiveDateRangeLabel)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-
-                                    if task.skipPolicy == .unskippable {
-                                        Text("不可跳过")
-                                            .font(.caption2.weight(.bold))
-                                            .foregroundStyle(.orange)
-                                    }
-
-                                    if let overdueOriginText, !isDone {
-                                        Text(overdueOriginText)
-                                            .font(.caption2.weight(.semibold))
-                                            .foregroundStyle(.orange)
-                                            .lineLimit(1)
-                                    }
-                                }
-                                .opacity(isDone ? 0.6 : 1.0)
-                            }
-
-                            Spacer()
+                    if !historicalItems.isEmpty {
+                        if !pendingItems.isEmpty {
+                            Divider()
+                                .overlay(.white.opacity(0.1))
                         }
-                        .padding(.vertical, 2)
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("历史待完成")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.orange)
+
+                            ForEach(historicalItems) { item in
+                                todayTaskRow(item)
+                            }
+                        }
+                    }
+
+                    if !doneItems.isEmpty {
+                        if !pendingItems.isEmpty || !historicalItems.isEmpty {
+                            Divider()
+                                .overlay(.white.opacity(0.1))
+                        }
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("今日已完成")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.green)
+
+                            ForEach(doneItems) { item in
+                                todayTaskRow(item)
+                            }
+                        }
                     }
                 }
             }
@@ -729,6 +727,62 @@ struct HomeView: View {
             .padding(20)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
         }
+    }
+
+    private func todayTaskRow(_ item: TodayTaskDisplayItem) -> some View {
+        let task = item.task
+        let isDone = item.isCompleted
+        let occurrenceLabel = item.overdueOriginText
+
+        return HStack(spacing: 12) {
+            Button {
+                if !isDone {
+                    completeTask(task)
+                }
+            } label: {
+                Image(systemName: isDone ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isDone ? .green : .secondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(isDone)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(task.title)
+                    .fontWeight(.medium)
+                    .foregroundStyle(isDone ? .secondary : .primary)
+                    .strikethrough(isDone)
+
+                HStack(spacing: 6) {
+                    Text(task.recurrenceLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if let effectiveDateRangeLabel = task.effectiveDateRangeLabel {
+                        Text(effectiveDateRangeLabel)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if task.skipPolicy == .unskippable {
+                        Text("不可跳过")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.orange)
+                    }
+
+                    if let occurrenceLabel, !isDone {
+                        Text(occurrenceLabel)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.orange)
+                            .lineLimit(1)
+                    }
+                }
+                .opacity(isDone ? 0.6 : 1.0)
+            }
+
+            Spacer()
+        }
+        .padding(.vertical, 2)
     }
 
     private func completeTask(_ task: TaskItem) {
@@ -747,6 +801,56 @@ struct HomeView: View {
 
         let generator = UINotificationFeedbackGenerator()
         generator.notificationOccurred(.success)
+    }
+
+    private var syncStatusSummaryCard: some View {
+        let style = syncSummaryStyle
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: style.symbol)
+                    .foregroundStyle(style.tint)
+                Text(syncStatusStore.syncNoticeTitle)
+                    .font(.headline)
+                    .foregroundStyle(style.tint)
+            }
+
+            Text(syncStatusStore.syncNoticeMessage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                Image(systemName: syncStatusStore.isUsingLocalFallback ? "externaldrive.fill.badge.xmark" : "externaldrive.fill.badge.checkmark")
+                    .foregroundStyle(syncStatusStore.isUsingLocalFallback ? .red : .green)
+                Text(syncStatusStore.storageModeTitle)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(syncStatusStore.isUsingLocalFallback ? .red : .green)
+            }
+
+            if !syncStatusStore.cloudKitInitializationError.isEmpty {
+                Text(syncStatusStore.cloudKitInitializationError)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.red.opacity(0.82))
+                    .textSelection(.enabled)
+                    .padding(.top, 4)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(style.background, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var syncSummaryStyle: (symbol: String, tint: Color, background: Color) {
+        switch syncStatusStore.syncNoticeKind {
+        case .checking:
+            return ("arrow.triangle.2.circlepath", .cyan, .cyan.opacity(0.08))
+        case .ready:
+            return ("checkmark.icloud.fill", .green, .green.opacity(0.08))
+        case .caution:
+            return ("exclamationmark.icloud.fill", .orange, .orange.opacity(0.08))
+        case .blocked:
+            return ("icloud.slash.fill", .red, .red.opacity(0.08))
+        }
     }
 }
 
@@ -871,6 +975,9 @@ struct DashboardBoardView: View {
     @Query private var settings: [AppSettings]
 
     @State private var previousIdleTimerDisabled = false
+    @State private var previousScreenBrightness: CGFloat?
+    @State private var boardBaselineBrightness: Double = 0.6
+    @State private var boardBrightness: Double = 0.45
     @State private var boardNow = Date.now
 
     private let scheduler = ReviewScheduler()
@@ -917,11 +1024,34 @@ struct DashboardBoardView: View {
     }
 
     private var todayPendingTasks: [TodayTaskDisplayItem] {
-        todayTaskItems.filter { !$0.isCompleted }
+        todayTaskItems.filter { $0.section == .todayPending }
+    }
+
+    private var historicalPendingTasks: [TodayTaskDisplayItem] {
+        todayTaskItems
+            .filter { $0.section == .historicalPending }
+            .sorted { lhs, rhs in
+                if lhs.occurrenceDate == rhs.occurrenceDate {
+                    return lhs.task.createdAt < rhs.task.createdAt
+                }
+                return lhs.occurrenceDate < rhs.occurrenceDate
+            }
+    }
+
+    private var todayCompletedTasks: [TodayTaskDisplayItem] {
+        todayTaskItems.filter { $0.section == .todayDone }
+    }
+
+    private var boardTaskItems: [TodayTaskDisplayItem] {
+        todayPendingTasks + historicalPendingTasks + todayCompletedTasks
+    }
+
+    private var totalPendingTaskCount: Int {
+        todayPendingTasks.count + historicalPendingTasks.count
     }
 
     private var todayCompletedTaskCount: Int {
-        todayTaskItems.filter(\.isCompleted).count
+        todayCompletedTasks.count
     }
 
     private var todaySchedules: [ScheduleItem] {
@@ -939,7 +1069,10 @@ struct DashboardBoardView: View {
     private var todayHeadline: String {
         var parts: [String] = []
         if !todayPendingTasks.isEmpty {
-            parts.append("\(todayPendingTasks.count) 项待办")
+            parts.append("\(todayPendingTasks.count) 项今日待办")
+        }
+        if !historicalPendingTasks.isEmpty {
+            parts.append("\(historicalPendingTasks.count) 项历史待完成")
         }
         if !dueItems.isEmpty {
             parts.append("\(dueItems.count) 项复习")
@@ -982,7 +1115,10 @@ struct DashboardBoardView: View {
         }
         .onAppear(perform: activateIdleTimerOverride)
         .onDisappear(perform: restoreIdleTimer)
-        .onReceive(boardRefreshTimer) { boardNow = $0 }
+        .onReceive(boardRefreshTimer) {
+            boardNow = $0
+            applyScheduledBoardBrightness(for: $0)
+        }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 boardNow = .now
@@ -1003,15 +1139,6 @@ struct DashboardBoardView: View {
                 Text(todayHeadline)
                     .font(.system(size: 22, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.9))
-
-                HStack(spacing: 10) {
-                    Label(syncStatusStore.statusText, systemImage: syncStatusStore.isRefreshing ? "arrow.triangle.2.circlepath" : "icloud")
-                        .symbolEffect(.rotate, isActive: syncStatusStore.isRefreshing)
-                        .font(.headline)
-                    Text("已掌握 \(reviewItems.filter(scheduler.isMastered).count) 项")
-                        .font(.headline)
-                }
-                .foregroundStyle(.white.opacity(0.8))
             }
 
             Spacer()
@@ -1030,12 +1157,13 @@ struct DashboardBoardView: View {
                         .foregroundStyle(.white.opacity(0.85))
                 }
             }
+            .padding(.top, -6)
         }
     }
 
     private var boardStats: some View {
         HStack(spacing: 18) {
-            BoardStatCard(title: "今日待办", value: "\(todayPendingTasks.count)", tint: .orange)
+            BoardStatCard(title: "待办任务", value: "\(totalPendingTaskCount)", tint: .orange)
             BoardStatCard(title: "待复习", value: "\(dueItems.count)", tint: .blue)
             BoardStatCard(title: "待听写", value: "\(pendingDictationCount)", tint: .teal)
             BoardScheduleStatCard(schedule: todaySchedules.first, tint: .green)
@@ -1044,15 +1172,7 @@ struct DashboardBoardView: View {
 
     private var boardContent: some View {
         HStack(alignment: .top, spacing: 18) {
-            boardColumn(
-                title: "今日任务",
-                icon: "checklist",
-                items: todayTaskItems,
-                emptyTitle: "今天没有任务",
-                itemText: { item in
-                    item.isCompleted ? "\(item.task.title) · 已完成" : item.task.title
-                }
-            )
+            boardTaskColumn
 
             boardColumn(
                 title: "待复习",
@@ -1075,6 +1195,47 @@ struct DashboardBoardView: View {
                 }
             )
         }
+    }
+
+    private var boardTaskColumn: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 10) {
+                Image(systemName: "checklist")
+                Text("待办任务")
+            }
+            .font(.system(size: 24, weight: .bold, design: .rounded))
+            .foregroundStyle(.white)
+
+            if boardTaskItems.isEmpty {
+                VStack(spacing: 14) {
+                    Spacer(minLength: 0)
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 46))
+                        .foregroundStyle(.white.opacity(0.25))
+                    Text("今天没有任务")
+                        .font(.system(size: 24, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.9))
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, minHeight: 360)
+                .padding(24)
+                .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 28))
+            } else {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(Array(boardTaskItems.prefix(10))) { item in
+                        boardTaskRow(item)
+                    }
+
+                    if boardTaskItems.count > 10 {
+                        Text("还有 \(boardTaskItems.count - 10) 项未展示")
+                            .font(.headline)
+                            .foregroundStyle(.white.opacity(0.8))
+                            .padding(.leading, 4)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func boardColumn<Item: Identifiable>(
@@ -1131,6 +1292,55 @@ struct DashboardBoardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    private func boardTaskRow(_ item: TodayTaskDisplayItem) -> some View {
+        let isDone = item.isCompleted
+        let statusText: String? = switch item.section {
+        case .todayDone:
+            "已完成"
+        case .historicalPending:
+            item.overdueOriginText ?? "历史待完成"
+        case .todayPending:
+            nil
+        }
+
+        return HStack(spacing: 14) {
+            Image(systemName: isDone ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(isDone ? Color.green.opacity(0.95) : .white.opacity(0.72))
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(item.task.title)
+                    .font(.system(size: 24, weight: .medium, design: .rounded))
+                    .foregroundStyle(isDone ? .white.opacity(0.68) : .white)
+                    .strikethrough(isDone, color: .white.opacity(0.7))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let statusText {
+                    Text(statusText)
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundStyle(isDone ? Color.green.opacity(0.95) : Color.orange.opacity(0.95))
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+        .background(
+            (isDone ? Color.green.opacity(0.15) : Color.white.opacity(0.13)),
+            in: RoundedRectangle(cornerRadius: 20)
+        )
+        .overlay {
+            if isDone {
+                RoundedRectangle(cornerRadius: 20)
+                    .stroke(Color.green.opacity(0.22), lineWidth: 1)
+            }
+        }
+    }
+
     private func boardTopInset(for proxy: GeometryProxy) -> CGFloat {
         let isLandscape = isLandscapeBoardLayout(fallbackSize: proxy.size)
         let safeTop = isLandscape ? min(proxy.safeAreaInsets.top, 8) : max(proxy.safeAreaInsets.top, 12)
@@ -1172,17 +1382,73 @@ struct DashboardBoardView: View {
     }
 
     private var boardRefreshTimer: Timer.TimerPublisher {
-        Timer.publish(every: 300, on: .main, in: .common)
+        Timer.publish(every: 60, on: .main, in: .common)
     }
 
     private func activateIdleTimerOverride() {
         let application = UIApplication.shared
         previousIdleTimerDisabled = application.isIdleTimerDisabled
         application.isIdleTimerDisabled = true
+
+        if previousScreenBrightness == nil {
+            let currentBrightness = UIScreen.main.brightness
+            previousScreenBrightness = currentBrightness
+            boardBaselineBrightness = Double(currentBrightness)
+        }
+
+        applyScheduledBoardBrightness(for: boardNow)
     }
 
     private func restoreIdleTimer() {
         UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled
+
+        if let previousScreenBrightness {
+            UIScreen.main.brightness = previousScreenBrightness
+            self.previousScreenBrightness = nil
+        }
+    }
+
+    private func applyScheduledBoardBrightness(for date: Date) {
+        guard previousScreenBrightness != nil else { return }
+        boardBrightness = scheduledBoardBrightness(for: date)
+        UIScreen.main.brightness = CGFloat(boardBrightness)
+    }
+
+    private func scheduledBoardBrightness(for date: Date) -> Double {
+        switch brightnessMode(for: date) {
+        case .normal:
+            return max(min(boardBaselineBrightness, 1.0), 0.1)
+        case .dimmed:
+            return min(boardBaselineBrightness, 0.12)
+        }
+    }
+
+    private func brightnessMode(for date: Date) -> BoardBrightnessMode {
+        let hour = Calendar.current.component(.hour, from: date)
+        if (7..<8).contains(hour) || (16..<22).contains(hour) {
+            return .normal
+        }
+        return .dimmed
+    }
+}
+
+private enum BoardBrightnessMode {
+    case normal
+    case dimmed
+}
+
+private struct SyncStatusIconView: View {
+    let isRefreshing: Bool
+
+    var body: some View {
+        Image(systemName: isRefreshing ? "arrow.triangle.2.circlepath" : "icloud")
+            .rotationEffect(isRefreshing ? .degrees(360) : .zero)
+            .animation(
+                isRefreshing
+                ? .linear(duration: 1).repeatForever(autoreverses: false)
+                : .default,
+                value: isRefreshing
+            )
     }
 }
 

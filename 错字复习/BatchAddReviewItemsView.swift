@@ -6,6 +6,7 @@ struct BatchAddReviewItemsView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var reviewItems: [ReviewItem]
 
+    private let scheduler = ReviewScheduler()
     @State private var type: ReviewItemType?
     @State private var rawText = ""
     @State private var defaultSource = ""
@@ -347,7 +348,7 @@ struct BatchAddReviewItemsView: View {
                     note: "",
                     source: entry.source.isEmpty ? sourceFallback : entry.source,
                     stage: 0,
-                    nextReviewAt: .now
+                    nextReviewAt: scheduler.nextDayStart()
                 )
             )
             seenInThisBatch.insert(key)

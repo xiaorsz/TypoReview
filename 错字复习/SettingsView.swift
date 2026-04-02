@@ -241,6 +241,8 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            syncStatusNoticeCard
+
             Divider()
 
             VStack(alignment: .leading, spacing: 12) {
@@ -249,9 +251,10 @@ struct SettingsView: View {
                     .foregroundStyle(.orange)
 
                 VStack(alignment: .leading, spacing: 10) {
+                    diagnosticRow(title: "当前存储", value: syncStatusStore.storageModeTitle)
                     diagnosticRow(title: "同步模式", value: syncStatusStore.cloudKitModeText)
                     diagnosticRow(title: "iCloud 账户", value: syncStatusStore.cloudAccountTitle)
-                    diagnosticRow(title: "CloudKit 环境", value: syncStatusStore.cloudKitEnvironment)
+                    diagnosticRow(title: "安装线索", value: syncStatusStore.cloudKitEnvironment)
                     diagnosticRow(title: "推送环境", value: syncStatusStore.apsEnvironment)
                     diagnosticRow(title: "容器 ID", value: syncStatusStore.containerIdentifier, monospaced: true)
                     diagnosticRow(title: "本地数据", value: syncStatusStore.localDataSummary)
@@ -285,7 +288,7 @@ struct SettingsView: View {
                         .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
                 }
 
-                Text("如果 iPad 和 iPhone 里有一台是 Xcode 直接安装，另一台是 TestFlight / App Store 安装，它们会落在不同的 CloudKit 环境里，看起来就像一直同步不过来。")
+                Text("这里显示的是安装收据线索，不足以单独判断 CloudKit 一定在哪个环境。尤其 TestFlight 也可能显示 sandboxReceipt，所以请优先看“同步模式”和“iCloud 账户”这两项。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -314,6 +317,48 @@ struct SettingsView: View {
         }
         .padding(20)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private var syncStatusNoticeCard: some View {
+        let style = syncNoticeStyle
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: style.symbol)
+                    .foregroundStyle(style.tint)
+                Text(syncStatusStore.syncNoticeTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(style.tint)
+            }
+
+            Text(syncStatusStore.syncNoticeMessage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                Image(systemName: syncStatusStore.isUsingLocalFallback ? "externaldrive.fill.badge.xmark" : "externaldrive.fill.badge.checkmark")
+                    .foregroundStyle(syncStatusStore.isUsingLocalFallback ? .red : .green)
+                Text(syncStatusStore.storageModeTitle)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(syncStatusStore.isUsingLocalFallback ? .red : .green)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(style.background, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var syncNoticeStyle: (symbol: String, tint: Color, background: Color) {
+        switch syncStatusStore.syncNoticeKind {
+        case .checking:
+            return ("arrow.triangle.2.circlepath", .cyan, .cyan.opacity(0.08))
+        case .ready:
+            return ("checkmark.icloud.fill", .green, .green.opacity(0.08))
+        case .caution:
+            return ("exclamationmark.icloud.fill", .orange, .orange.opacity(0.08))
+        case .blocked:
+            return ("icloud.slash.fill", .red, .red.opacity(0.08))
+        }
     }
 
     private var backupCard: some View {
@@ -386,7 +431,7 @@ struct SettingsView: View {
                 Text("结合艾宾浩斯遗忘曲线，帮助孩子高效攻克写错的词句和英语内容。")
                     .foregroundStyle(.secondary)
                     .font(.footnote)
-                Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1.0")")
+                Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.2.0")")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }

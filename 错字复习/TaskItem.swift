@@ -115,11 +115,14 @@ final class TaskItem {
         return max(0, scheduledCount - completionCount)
     }
 
-    func earliestPendingOccurrence(on date: Date, completions: [TaskCompletion]) -> Date? {
+    func pendingOccurrenceDates(on date: Date, completions: [TaskCompletion]) -> [Date] {
         let scheduledDates = scheduledOccurrenceDates(upTo: date)
         let completedCount = min(completionCount(upTo: date, completions: completions), scheduledDates.count)
-        guard completedCount < scheduledDates.count else { return nil }
-        return scheduledDates[completedCount]
+        return Array(scheduledDates.dropFirst(completedCount))
+    }
+
+    func earliestPendingOccurrence(on date: Date, completions: [TaskCompletion]) -> Date? {
+        pendingOccurrenceDates(on: date, completions: completions).first
     }
 
     func overdueOriginText(on date: Date, completions: [TaskCompletion]) -> String? {
@@ -131,6 +134,13 @@ final class TaskItem {
               pendingDate < targetDay else {
             return nil
         }
+
+        return originText(for: pendingDate, relativeTo: targetDay)
+    }
+
+    func originText(for pendingDate: Date, relativeTo date: Date) -> String {
+        let calendar = Calendar.current
+        let targetDay = calendar.startOfDay(for: date)
 
         if calendar.isDate(pendingDate, equalTo: targetDay, toGranularity: .year) {
             return "原定 \(pendingDate.formatted(.dateTime.month().day()))"
@@ -234,13 +244,23 @@ final class TaskItem {
     }
 }
 
+enum TodayTaskDisplaySection {
+    case todayPending
+    case historicalPending
+    case todayDone
+}
+
 struct TodayTaskDisplayItem: Identifiable {
     let task: TaskItem
+    let section: TodayTaskDisplaySection
+    let occurrenceDate: Date
     let isCompleted: Bool
     let pendingOccurrenceCount: Int
     let overdueOriginText: String?
 
-    var id: UUID { task.id }
+    var id: String {
+        "\(task.id.uuidString)-\(section)-\(occurrenceDate.timeIntervalSince1970)"
+    }
 }
 
 enum TodayTaskListBuilder {
@@ -249,16 +269,53 @@ enum TodayTaskListBuilder {
         completions: [TaskCompletion],
         on date: Date = .now
     ) -> [TodayTaskDisplayItem] {
-        tasks.compactMap { task in
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: date)
+
+        return tasks.flatMap { task -> [TodayTaskDisplayItem] in
+            if task.skipPolicy == .unskippable {
+                var items = task.pendingOccurrenceDates(on: date, completions: completions).map { pendingDate in
+                    let isToday = calendar.isDate(pendingDate, inSameDayAs: today)
+                    return TodayTaskDisplayItem(
+                        task: task,
+                        section: isToday ? .todayPending : .historicalPending,
+                        occurrenceDate: pendingDate,
+                        isCompleted: false,
+                        pendingOccurrenceCount: task.pendingOccurrenceCount(on: date, completions: completions),
+                        overdueOriginText: isToday ? nil : task.originText(for: pendingDate, relativeTo: today)
+                    )
+                }
+
+                if task.isCompleted(on: date, completions: completions) {
+                    items.append(
+                        TodayTaskDisplayItem(
+                            task: task,
+                            section: .todayDone,
+                            occurrenceDate: today,
+                            isCompleted: true,
+                            pendingOccurrenceCount: 0,
+                            overdueOriginText: nil
+                        )
+                    )
+                }
+
+                return items
+            }
+
             let isCompleted = task.isCompleted(on: date, completions: completions)
             let shouldAppear = task.shouldAppear(on: date, completions: completions)
-            guard shouldAppear || isCompleted else { return nil }
-            return TodayTaskDisplayItem(
-                task: task,
-                isCompleted: isCompleted,
-                pendingOccurrenceCount: task.pendingOccurrenceCount(on: date, completions: completions),
-                overdueOriginText: task.overdueOriginText(on: date, completions: completions)
-            )
+            guard shouldAppear || isCompleted else { return [] }
+
+            return [
+                TodayTaskDisplayItem(
+                    task: task,
+                    section: isCompleted ? .todayDone : .todayPending,
+                    occurrenceDate: today,
+                    isCompleted: isCompleted,
+                    pendingOccurrenceCount: task.pendingOccurrenceCount(on: date, completions: completions),
+                    overdueOriginText: task.overdueOriginText(on: date, completions: completions)
+                )
+            ]
         }
     }
 }

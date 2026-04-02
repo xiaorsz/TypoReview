@@ -9,6 +9,7 @@ import AppIntents
 import SwiftUI
 import WidgetKit
 
+@available(iOSApplicationExtension 18.0, *)
 struct TypoWidgetControl: ControlWidget {
     static let kind: String = "cc.xiaorsz.typo-review.TypoWidget"
 
@@ -30,12 +31,15 @@ struct TypoWidgetControl: ControlWidget {
     }
 }
 
+@available(iOSApplicationExtension 18.0, *)
 extension TypoWidgetControl {
+    @available(iOSApplicationExtension 18.0, *)
     struct Value {
         var isRunning: Bool
         var name: String
     }
 
+    @available(iOSApplicationExtension 18.0, *)
     struct Provider: AppIntentControlValueProvider {
         func previewValue(configuration: TimerConfiguration) -> Value {
             TypoWidgetControl.Value(isRunning: false, name: configuration.timerName)
@@ -48,6 +52,7 @@ extension TypoWidgetControl {
     }
 }
 
+@available(iOSApplicationExtension 18.0, *)
 struct TimerConfiguration: ControlConfigurationIntent {
     static let title: LocalizedStringResource = "Timer Name Configuration"
 
@@ -55,6 +60,7 @@ struct TimerConfiguration: ControlConfigurationIntent {
     var timerName: String
 }
 
+@available(iOSApplicationExtension 18.0, *)
 struct StartTimerIntent: SetValueIntent {
     static let title: LocalizedStringResource = "Start a timer"
 

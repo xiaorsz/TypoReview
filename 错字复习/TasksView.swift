@@ -16,16 +16,30 @@ struct TasksView: View {
         allSchedules.filter { !$0.isArchived }
     }
 
-    private var todayPending: [TodayTaskDisplayItem] {
+    private var todayTaskItems: [TodayTaskDisplayItem] {
         TodayTaskListBuilder
             .build(from: activeTasks, completions: completions)
-            .filter { !$0.isCompleted }
+    }
+
+    private var todayPending: [TodayTaskDisplayItem] {
+        todayTaskItems
+            .filter { $0.section == .todayPending }
+    }
+
+    private var historicalPending: [TodayTaskDisplayItem] {
+        todayTaskItems
+            .filter { $0.section == .historicalPending }
+            .sorted { lhs, rhs in
+                if lhs.occurrenceDate == rhs.occurrenceDate {
+                    return lhs.task.createdAt < rhs.task.createdAt
+                }
+                return lhs.occurrenceDate < rhs.occurrenceDate
+            }
     }
 
     private var todayDone: [TodayTaskDisplayItem] {
-        TodayTaskListBuilder
-            .build(from: activeTasks, completions: completions)
-            .filter(\.isCompleted)
+        todayTaskItems
+            .filter { $0.section == .todayDone }
     }
 
     private var archivedTasks: [TaskItem] {
@@ -79,7 +93,15 @@ struct TasksView: View {
                 if !todayPending.isEmpty {
                     Section("今日待完成") {
                         ForEach(todayPending) { item in
-                            taskRow(item.task, isDone: false, overdueOriginText: item.overdueOriginText)
+                            taskRow(item)
+                        }
+                    }
+                }
+
+                if !historicalPending.isEmpty {
+                    Section("历史待完成") {
+                        ForEach(historicalPending) { item in
+                            taskRow(item)
                         }
                     }
                 }
@@ -87,15 +109,14 @@ struct TasksView: View {
                 if !todayDone.isEmpty {
                     Section("今日已完成") {
                         ForEach(todayDone) { item in
-                            taskRow(item.task, isDone: true, overdueOriginText: item.overdueOriginText)
+                            taskRow(item)
                         }
                     }
                 }
 
                 // Show tasks that are not appearing today (future or non-scheduled today)
                 let otherTasks = activeTasks.filter { task in
-                    !todayPending.contains(where: { $0.task.id == task.id }) &&
-                    !todayDone.contains(where: { $0.task.id == task.id })
+                    !todayTaskItems.contains(where: { $0.task.id == task.id })
                 }
 
                 if !otherTasks.isEmpty {
@@ -183,7 +204,16 @@ struct TasksView: View {
         }
     }
 
-    private func taskRow(_ task: TaskItem, isDone: Bool, showActions: Bool = true, overdueOriginText: String? = nil) -> some View {
+    private func taskRow(_ item: TodayTaskDisplayItem, showActions: Bool = true) -> some View {
+        taskRow(
+            item.task,
+            isDone: item.isCompleted,
+            showActions: showActions,
+            occurrenceLabel: item.overdueOriginText
+        )
+    }
+
+    private func taskRow(_ task: TaskItem, isDone: Bool, showActions: Bool = true, occurrenceLabel: String? = nil) -> some View {
         HStack(spacing: 14) {
             if showActions {
                 Button {
@@ -223,8 +253,8 @@ struct TasksView: View {
                                 .foregroundStyle(.orange)
                         }
 
-                        if let overdueOriginText, !isDone {
-                            Text(overdueOriginText)
+                        if let occurrenceLabel, !isDone {
+                            Text(occurrenceLabel)
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.orange)
                                 .lineLimit(1)

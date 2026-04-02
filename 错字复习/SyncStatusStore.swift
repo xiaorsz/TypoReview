@@ -6,6 +6,13 @@ import Observation
 @MainActor
 @Observable
 final class SyncStatusStore {
+    enum SyncNoticeKind {
+        case checking
+        case ready
+        case caution
+        case blocked
+    }
+
     enum CloudAccountState {
         case unknown
         case available
@@ -179,13 +186,81 @@ final class SyncStatusStore {
         cloudAccountState.detail
     }
 
+    var isUsingLocalFallback: Bool {
+        !cloudKitEnabled
+    }
+
+    var storageModeTitle: String {
+        isUsingLocalFallback ? "已退回本地存储" : "CloudKit 同步存储"
+    }
+
+    var storageModeDetail: String {
+        if isUsingLocalFallback {
+            return "这台设备当前只保存在本机，不会把改动同步到其他设备。"
+        }
+        return "这台设备当前使用 CloudKit 存储，具备参与多设备同步的前提。"
+    }
+
+    var syncNoticeKind: SyncNoticeKind {
+        if isRefreshing || lastRefreshAt == nil {
+            return .checking
+        }
+
+        if !cloudKitEnabled {
+            return .blocked
+        }
+
+        switch cloudAccountState {
+        case .available:
+            return .ready
+        case .temporarilyUnavailable, .unknown:
+            return .caution
+        case .noAccount, .restricted, .couldNotDetermine:
+            return .blocked
+        }
+    }
+
+    var syncNoticeTitle: String {
+        switch syncNoticeKind {
+        case .checking:
+            return "这台设备的同步状态还在检查中"
+        case .ready:
+            return "这台设备的同步前提看起来正常"
+        case .caution:
+            return "这台设备的同步现在不太稳定"
+        case .blocked:
+            return "这台设备当前不会和别的设备同步"
+        }
+    }
+
+    var syncNoticeMessage: String {
+        if !cloudKitEnabled {
+            return "当前已经退回本地存储模式。除非 CloudKit 初始化恢复成功，否则这台设备上的改动不会同步到 iPad 或 iPhone。"
+        }
+
+        switch cloudAccountState {
+        case .unknown:
+            return "请点一次“立即检查”，确认这台设备有没有真正连上 iCloud。"
+        case .available:
+            return "CloudKit 已启用，iCloud 账户也可用。这只说明同步前提正常，不代表最近的云端上传、下载已经成功完成。"
+        case .noAccount:
+            return "这台设备没有登录 iCloud，或者当前 Apple ID 没有开启 iCloud，所以它不会收到别的设备的数据。"
+        case .restricted:
+            return "系统限制了这台设备访问 iCloud，常见于家长控制、企业设备策略，或者系统层面的云服务限制。"
+        case .temporarilyUnavailable:
+            return "iCloud 当前暂时不可用。通常等一会儿、切一下网络，或者把 App 重新拉到前台后会恢复。"
+        case .couldNotDetermine(let message):
+            return "系统没能确认这台设备的 CloudKit 状态。\(message)"
+        }
+    }
+
     private func refreshBuildDiagnostics() {
         if let receiptName = Bundle.main.appStoreReceiptURL?.lastPathComponent {
             switch receiptName {
             case "sandboxReceipt":
-                cloudKitEnvironment = "sandbox / development 倾向"
+                cloudKitEnvironment = "sandboxReceipt（TestFlight 或开发安装都可能出现）"
             case "receipt":
-                cloudKitEnvironment = "production 倾向"
+                cloudKitEnvironment = "receipt（更像正式分发）"
             default:
                 cloudKitEnvironment = receiptName
             }

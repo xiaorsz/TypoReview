@@ -5,6 +5,7 @@ struct AddReviewItemView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
 
+    private let scheduler = ReviewScheduler()
     private let existingItem: ReviewItem?
     @State private var type: ReviewItemType?
     @State private var content = ""
@@ -278,7 +279,7 @@ struct AddReviewItemView: View {
                     note: trimmedNote,
                     source: trimmedSource,
                     stage: 0,
-                    nextReviewAt: .now
+                    nextReviewAt: scheduler.nextDayStart()
                 )
             )
         }

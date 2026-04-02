@@ -13,7 +13,6 @@ struct AddDictationSessionView: View {
     @State private var rawText = ""
     @State private var isSaving = false
     @State private var saveErrorMessage: String?
-    @State private var translationConfiguration: TranslationSession.Configuration?
     @State private var pendingSaveContext: PendingDictationSaveContext?
     @State private var showTypePickerAttention = false
     @State private var isTypeManuallyChosen: Bool
@@ -61,7 +60,7 @@ struct AddDictationSessionView: View {
         !entries.isEmpty
     }
 
-    var body: some View {
+    private var content: some View {
         ScrollView {
             VStack(spacing: 20) {
                 introCard
@@ -75,9 +74,6 @@ struct AddDictationSessionView: View {
         }
         .navigationTitle(editingSession != nil ? "编辑听写计划" : "新增今日听写")
         .navigationBarTitleDisplayMode(.inline)
-        .translationTask(translationConfiguration) { @Sendable session in
-            await handlePendingTranslation(using: session)
-        }
         .onChange(of: rawText) { _, newValue in
             guard !isTypeManuallyChosen else { return }
             type = ReviewItemTypeInference.infer(from: newValue)
@@ -126,6 +122,16 @@ struct AddDictationSessionView: View {
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
                 }
             }
+        }
+    }
+
+    var body: some View {
+        if #available(iOS 18.0, *) {
+            content.translationTask(activeTranslationConfiguration) { @Sendable session in
+                await handlePendingTranslation(using: session)
+            }
+        } else {
+            content
         }
     }
 
@@ -305,22 +311,24 @@ struct AddDictationSessionView: View {
         )
 
         let needsTranslation = selectedType == .englishWord && currentEntries.contains { $0.prompt.isEmpty }
-        if needsTranslation {
+        if needsTranslation, #available(iOS 18.0, *) {
             pendingSaveContext = context
-            if translationConfiguration == nil {
-                translationConfiguration = TranslationSession.Configuration(
-                    source: Locale.Language(identifier: "en"),
-                    target: Locale.Language(identifier: "zh-Hans")
-                )
-            } else {
-                translationConfiguration?.invalidate()
-            }
             return
         }
 
         await persist(context: context)
     }
 
+    @available(iOS 18.0, *)
+    private var activeTranslationConfiguration: TranslationSession.Configuration? {
+        guard pendingSaveContext != nil else { return nil }
+        return TranslationSession.Configuration(
+            source: Locale.Language(identifier: "en"),
+            target: Locale.Language(identifier: "zh-Hans")
+        )
+    }
+
+    @available(iOS 18.0, *)
     private func handlePendingTranslation(using session: TranslationSession) async {
         guard let context = pendingSaveContext else { return }
 
@@ -331,7 +339,6 @@ struct AddDictationSessionView: View {
         }
 
         guard !pendingRequests.isEmpty else {
-            translationConfiguration = nil
             pendingSaveContext = nil
             await persist(context: context)
             return
@@ -342,13 +349,13 @@ struct AddDictationSessionView: View {
             let responses = try await session.translations(from: pendingRequests)
             await applyTranslationResponses(responses, to: context)
         } catch {
-            translationConfiguration = nil
             pendingSaveContext = nil
             isSaving = false
             saveErrorMessage = "Apple 翻译暂时不可用。请确认设备已安装需要的翻译语言，或先手动填写中文释义后再保存。"
         }
     }
 
+    @available(iOS 18.0, *)
     private func applyTranslationResponses(
         _ responses: [TranslationSession.Response],
         to context: PendingDictationSaveContext
@@ -367,7 +374,6 @@ struct AddDictationSessionView: View {
             resolvedEntries[index] = resolvedEntries[index].settingPrompt(to: translated)
         }
 
-        translationConfiguration = nil
         pendingSaveContext = nil
 
         if resolvedEntries.contains(where: { $0.prompt.isEmpty }) {
