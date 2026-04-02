@@ -1,11 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Scheme
-   LastUpgradeVersion = "2640"
-   version = "1.7">
+   LastUpgradeVersion = "1430"
+   version = "1.3">
    <BuildAction
       parallelizeBuildables = "YES"
-      buildImplicitDependencies = "YES"
-      buildArchitectures = "Automatic">
+      buildImplicitDependencies = "YES">
       <BuildActionEntries>
          <BuildActionEntry
             buildForTesting = "YES"
@@ -16,22 +15,8 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "C9F798B0DD3D68A4D4F55662"
-               BuildableName = "&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;.app"
+               BuildableName = "TypoReview.app"
                BlueprintName = "&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;"
-               ReferencedContainer = "container:&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;.xcodeproj">
-            </BuildableReference>
-         </BuildActionEntry>
-         <BuildActionEntry
-            buildForTesting = "YES"
-            buildForRunning = "YES"
-            buildForProfiling = "YES"
-            buildForArchiving = "YES"
-            buildForAnalyzing = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "E98A95C5C58C69D94F96DD52"
-               BuildableName = "TypoWidget.appex"
-               BlueprintName = "TypoWidget"
                ReferencedContainer = "container:&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -41,8 +26,18 @@
       buildConfiguration = "Debug"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
-      shouldUseLaunchSchemeArgsEnv = "YES"
-      shouldAutocreateTestPlan = "YES">
+      shouldUseLaunchSchemeArgsEnv = "YES">
+      <MacroExpansion>
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "C9F798B0DD3D68A4D4F55662"
+            BuildableName = "TypoReview.app"
+            BlueprintName = "&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;"
+            ReferencedContainer = "container:&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;.xcodeproj">
+         </BuildableReference>
+      </MacroExpansion>
+      <Testables>
+      </Testables>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
@@ -59,7 +54,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "C9F798B0DD3D68A4D4F55662"
-            BuildableName = "&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;.app"
+            BuildableName = "TypoReview.app"
             BlueprintName = "&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;"
             ReferencedContainer = "container:&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;.xcodeproj">
          </BuildableReference>
@@ -76,7 +71,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "C9F798B0DD3D68A4D4F55662"
-            BuildableName = "&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;.app"
+            BuildableName = "TypoReview.app"
             BlueprintName = "&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;"
             ReferencedContainer = "container:&#x542c;&#x5199;&#x590d;&#x4e60;&#x672c;.xcodeproj">
          </BuildableReference>

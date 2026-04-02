@@ -1,0 +1,7 @@
+interface:
+  display_name: "iOS TestFlight Release"
+  short_description: "Archive and upload iOS apps to TestFlight."
+  default_prompt: "Use $ios-testflight-release to archive and upload this iOS app to TestFlight."
+
+policy:
+  allow_implicit_invocation: true

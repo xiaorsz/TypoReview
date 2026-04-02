@@ -1,6 +1,32 @@
 import Foundation
 import SwiftData
 
+struct BoardAutoplaySlot: Codable, Identifiable, Hashable {
+    var id: UUID = UUID()
+    var startHour: Int
+    var startMinute: Int
+    var durationMinutes: Int
+    var isEnabled: Bool = true
+
+    init(
+        id: UUID = UUID(),
+        startHour: Int,
+        startMinute: Int,
+        durationMinutes: Int,
+        isEnabled: Bool = true
+    ) {
+        self.id = id
+        self.startHour = min(max(startHour, 0), 23)
+        self.startMinute = min(max(startMinute, 0), 59)
+        self.durationMinutes = max(5, durationMinutes)
+        self.isEnabled = isEnabled
+    }
+
+    var startTimeText: String {
+        String(format: "%02d:%02d", startHour, startMinute)
+    }
+}
+
 enum BoardManualPlaybackOption: String, CaseIterable, Identifiable {
     case unlimited
     case minutes15 = "15m"
@@ -66,6 +92,7 @@ final class AppSettings {
     static let defaultBoardAutoplayEndHour = 7
     static let defaultBoardAutoplayEndMinute = 30
     static let defaultBoardAutoplayDurationMinutes = 30
+    static let defaultBoardAutoplaySlotsRawValue = ""
     static let defaultBoardManualPlaybackOption = BoardManualPlaybackOption.untilPlaylistEnds.rawValue
     static let defaultBoardAutoplaySkipWeekends = true
     static let defaultBoardAutoplaySkipChinaHolidays = true
@@ -84,6 +111,7 @@ final class AppSettings {
     var boardAutoplayEndHour: Int = AppSettings.defaultBoardAutoplayEndHour
     var boardAutoplayEndMinute: Int = AppSettings.defaultBoardAutoplayEndMinute
     var boardAutoplayDurationMinutes: Int = AppSettings.defaultBoardAutoplayDurationMinutes
+    var boardAutoplaySlotsRawValue: String = AppSettings.defaultBoardAutoplaySlotsRawValue
     var boardManualPlaybackOptionRawValue: String = AppSettings.defaultBoardManualPlaybackOption
     var boardAutoplaySkipWeekends: Bool = AppSettings.defaultBoardAutoplaySkipWeekends
     var boardAutoplaySkipChinaHolidays: Bool = AppSettings.defaultBoardAutoplaySkipChinaHolidays
@@ -101,6 +129,7 @@ final class AppSettings {
         boardAutoplayEndHour: Int = AppSettings.defaultBoardAutoplayEndHour,
         boardAutoplayEndMinute: Int = AppSettings.defaultBoardAutoplayEndMinute,
         boardAutoplayDurationMinutes: Int = AppSettings.defaultBoardAutoplayDurationMinutes,
+        boardAutoplaySlots: [BoardAutoplaySlot]? = nil,
         boardManualPlaybackOption: BoardManualPlaybackOption = .untilPlaylistEnds,
         boardAutoplaySkipWeekends: Bool = AppSettings.defaultBoardAutoplaySkipWeekends,
         boardAutoplaySkipChinaHolidays: Bool = AppSettings.defaultBoardAutoplaySkipChinaHolidays
@@ -117,6 +146,7 @@ final class AppSettings {
         self.boardAutoplayEndHour = boardAutoplayEndHour
         self.boardAutoplayEndMinute = boardAutoplayEndMinute
         self.boardAutoplayDurationMinutes = boardAutoplayDurationMinutes
+        self.boardAutoplaySlotsRawValue = Self.encodeBoardAutoplaySlots(boardAutoplaySlots ?? [])
         self.boardManualPlaybackOptionRawValue = boardManualPlaybackOption.rawValue
         self.boardAutoplaySkipWeekends = boardAutoplaySkipWeekends
         self.boardAutoplaySkipChinaHolidays = boardAutoplaySkipChinaHolidays
@@ -139,6 +169,7 @@ final class AppSettings {
 
         canonical.migrateLegacyReviewInteractionStyleIfNeeded()
         canonical.migrateLegacyBoardAutoplayDurationIfNeeded()
+        canonical.migrateLegacyBoardAutoplaySlotsIfNeeded()
 
         if modelContext.hasChanges {
             try modelContext.save()
@@ -183,9 +214,7 @@ final class AppSettings {
             score += 1
         }
 
-        if boardAutoplayStartHour != AppSettings.defaultBoardAutoplayStartHour
-            || boardAutoplayStartMinute != AppSettings.defaultBoardAutoplayStartMinute
-            || boardAutoplayDurationMinutes != AppSettings.defaultBoardAutoplayDurationMinutes {
+        if normalizedBoardAutoplaySlots != Self.defaultBoardAutoplaySlots {
             score += 2
         }
 
@@ -211,6 +240,21 @@ final class AppSettings {
         set { boardManualPlaybackOptionRawValue = newValue.rawValue }
     }
 
+    var boardAutoplaySlots: [BoardAutoplaySlot] {
+        get {
+            if boardAutoplaySlotsRawValue.isEmpty {
+                return [legacyBoardAutoplaySlot]
+            }
+
+            return Self.decodeBoardAutoplaySlots(boardAutoplaySlotsRawValue)
+        }
+        set {
+            let normalized = Self.normalizeBoardAutoplaySlots(newValue)
+            boardAutoplaySlotsRawValue = Self.encodeBoardAutoplaySlots(normalized)
+            synchronizeLegacyBoardAutoplayFields(with: normalized.first)
+        }
+    }
+
     private func migrateLegacyReviewInteractionStyleIfNeeded() {
         guard reviewInteractionStyle == AppSettings.defaultReviewInteractionStyle else { return }
         guard let legacyValue = UserDefaults.standard.string(forKey: AppSettings.legacyReviewInteractionStyleKey) else { return }
@@ -230,16 +274,36 @@ final class AppSettings {
         synchronizeLegacyBoardAutoplayEndTime()
     }
 
-    var boardAutoplayTimeSummary: String {
-        guard let window = boardAutoplayWindow(on: .now) else {
-            return "\(formattedTime(hour: boardAutoplayStartHour, minute: boardAutoplayStartMinute)) · \(boardAutoplayDurationSummary)"
+    private func migrateLegacyBoardAutoplaySlotsIfNeeded() {
+        guard boardAutoplaySlotsRawValue.isEmpty else {
+            synchronizeLegacyBoardAutoplayFields(with: normalizedBoardAutoplaySlots.first)
+            return
         }
 
-        return "\(formattedTime(from: window.start)) - \(formattedTime(from: window.end))"
+        boardAutoplaySlots = [legacyBoardAutoplaySlot]
+    }
+
+    var boardAutoplayTimeSummary: String {
+        let summaries = normalizedBoardAutoplaySlots.map { slot in
+            let start = formattedTime(hour: slot.startHour, minute: slot.startMinute)
+            let end = formattedTime(totalMinutes: slot.startHour * 60 + slot.startMinute + slot.durationMinutes)
+            return "\(start) - \(end)"
+        }
+
+        switch summaries.count {
+        case 0:
+            return "未设置时间段"
+        case 1:
+            return summaries[0]
+        case 2:
+            return summaries.joined(separator: " · ")
+        default:
+            return summaries.prefix(2).joined(separator: " · ") + " · +\(summaries.count - 2)"
+        }
     }
 
     var boardAutoplayDurationSummary: String {
-        formattedDuration(minutes: normalizedBoardAutoplayDurationMinutes)
+        formattedDuration(minutes: normalizedBoardAutoplaySlots.first?.durationMinutes ?? normalizedBoardAutoplayDurationMinutes)
     }
 
     var boardManualPlaybackOptionSummary: String {
@@ -258,37 +322,52 @@ final class AppSettings {
     }
 
     var hasValidBoardAutoplayWindow: Bool {
-        guard let window = boardAutoplayWindow(on: .now) else { return false }
-        return window.end > window.start
+        !normalizedBoardAutoplaySlots.isEmpty
     }
 
     func boardAutoplayWindow(on date: Date) -> (start: Date, end: Date)? {
+        currentBoardAutoplayWindow(on: date) ?? nextBoardAutoplayWindow(on: date)
+    }
+
+    func boardAutoplayWindows(on date: Date) -> [(start: Date, end: Date)] {
         let calendar = Calendar.current
         let day = calendar.startOfDay(for: date)
 
-        guard let start = calendar.date(
-            bySettingHour: boardAutoplayStartHour,
-            minute: boardAutoplayStartMinute,
-            second: 0,
-            of: day
-        ) else {
-            return nil
-        }
+        return normalizedBoardAutoplaySlots.compactMap { slot in
+            guard let start = calendar.date(
+                bySettingHour: slot.startHour,
+                minute: slot.startMinute,
+                second: 0,
+                of: day
+            ) else {
+                return nil
+            }
 
-        guard let end = calendar.date(byAdding: .minute, value: normalizedBoardAutoplayDurationMinutes, to: start),
-              end > start else {
-            return nil
-        }
+            guard let end = calendar.date(byAdding: .minute, value: slot.durationMinutes, to: start),
+                  end > start else {
+                return nil
+            }
 
-        return (start, end)
+            return (start, end)
+        }
+    }
+
+    func currentBoardAutoplayWindow(on date: Date) -> (start: Date, end: Date)? {
+        boardAutoplayWindows(on: date).first { window in
+            date >= window.start && date < window.end
+        }
+    }
+
+    func nextBoardAutoplayWindow(on date: Date) -> (start: Date, end: Date)? {
+        boardAutoplayWindows(on: date).first { $0.start > date }
     }
 
     func isBoardAutoplayActive(on date: Date) -> Bool {
-        guard boardAutoplayEnabled, isBoardAutoplayAllowed(on: date), let window = boardAutoplayWindow(on: date) else {
+        guard boardAutoplayEnabled, isBoardAutoplayAllowed(on: date) else {
             return false
         }
 
-        return date >= window.start && date < window.end
+        return currentBoardAutoplayWindow(on: date) != nil
     }
 
     func isBoardAutoplayAllowed(on date: Date) -> Bool {
@@ -313,22 +392,64 @@ final class AppSettings {
         boardAutoplayStartHour = hour
         boardAutoplayStartMinute = minute
         synchronizeLegacyBoardAutoplayEndTime()
+        replaceFirstBoardAutoplaySlot(
+            startHour: hour,
+            startMinute: minute,
+            durationMinutes: normalizedBoardAutoplayDurationMinutes
+        )
     }
 
     func setBoardAutoplayDuration(minutes: Int) {
         boardAutoplayDurationMinutes = minutes
         synchronizeLegacyBoardAutoplayEndTime()
+        replaceFirstBoardAutoplaySlot(
+            startHour: boardAutoplayStartHour,
+            startMinute: boardAutoplayStartMinute,
+            durationMinutes: max(5, minutes)
+        )
+    }
+
+    func addBoardAutoplaySlot() {
+        var slots = normalizedBoardAutoplaySlots
+        let last = slots.last
+        slots.append(
+            BoardAutoplaySlot(
+                startHour: last?.startHour ?? AppSettings.defaultBoardAutoplayStartHour,
+                startMinute: last?.startMinute ?? AppSettings.defaultBoardAutoplayStartMinute,
+                durationMinutes: last?.durationMinutes ?? AppSettings.defaultBoardAutoplayDurationMinutes
+            )
+        )
+        boardAutoplaySlots = slots
+    }
+
+    func updateBoardAutoplaySlot(id: UUID, _ update: (inout BoardAutoplaySlot) -> Void) {
+        var slots = normalizedBoardAutoplaySlots
+        guard let index = slots.firstIndex(where: { $0.id == id }) else { return }
+        update(&slots[index])
+        slots[index].durationMinutes = max(5, slots[index].durationMinutes)
+        boardAutoplaySlots = slots
+    }
+
+    func removeBoardAutoplaySlot(id: UUID) {
+        var slots = normalizedBoardAutoplaySlots
+        slots.removeAll { $0.id == id }
+        boardAutoplaySlots = slots
     }
 
     func synchronizeLegacyBoardAutoplayEndTime() {
-        guard let window = boardAutoplayWindow(on: .now) else { return }
-        let components = Calendar.current.dateComponents([.hour, .minute], from: window.end)
-        boardAutoplayEndHour = components.hour ?? AppSettings.defaultBoardAutoplayEndHour
-        boardAutoplayEndMinute = components.minute ?? AppSettings.defaultBoardAutoplayEndMinute
+        guard let firstSlot = normalizedBoardAutoplaySlots.first else { return }
+        let endMinutes = firstSlot.startHour * 60 + firstSlot.startMinute + firstSlot.durationMinutes
+        let normalizedEndMinutes = ((endMinutes % (24 * 60)) + (24 * 60)) % (24 * 60)
+        boardAutoplayEndHour = normalizedEndMinutes / 60
+        boardAutoplayEndMinute = normalizedEndMinutes % 60
     }
 
     private var normalizedBoardAutoplayDurationMinutes: Int {
         max(5, boardAutoplayDurationMinutes)
+    }
+
+    private var normalizedBoardAutoplaySlots: [BoardAutoplaySlot] {
+        Self.normalizeBoardAutoplaySlots(boardAutoplaySlots)
     }
 
     private func legacyBoardAutoplayDurationMinutes() -> Int {
@@ -368,11 +489,100 @@ final class AppSettings {
         return formatter.string(from: date)
     }
 
+    private func formattedTime(totalMinutes: Int) -> String {
+        let normalized = ((totalMinutes % (24 * 60)) + (24 * 60)) % (24 * 60)
+        return formattedTime(hour: normalized / 60, minute: normalized % 60)
+    }
+
     private func formattedDuration(minutes: Int) -> String {
         if minutes % 60 == 0 {
             return "\(minutes / 60) 小时"
         }
         return "\(minutes) 分钟"
+    }
+
+    private var legacyBoardAutoplaySlot: BoardAutoplaySlot {
+        BoardAutoplaySlot(
+            startHour: boardAutoplayStartHour,
+            startMinute: boardAutoplayStartMinute,
+            durationMinutes: legacyBoardAutoplayDurationMinutes()
+        )
+    }
+
+    private func replaceFirstBoardAutoplaySlot(
+        startHour: Int,
+        startMinute: Int,
+        durationMinutes: Int
+    ) {
+        var slots = normalizedBoardAutoplaySlots
+        if slots.isEmpty {
+            slots = [
+                BoardAutoplaySlot(
+                    startHour: startHour,
+                    startMinute: startMinute,
+                    durationMinutes: durationMinutes
+                )
+            ]
+        } else {
+            slots[0].startHour = min(max(startHour, 0), 23)
+            slots[0].startMinute = min(max(startMinute, 0), 59)
+            slots[0].durationMinutes = max(5, durationMinutes)
+        }
+        boardAutoplaySlots = slots
+    }
+
+    private func synchronizeLegacyBoardAutoplayFields(with firstSlot: BoardAutoplaySlot?) {
+        guard let firstSlot else { return }
+        boardAutoplayStartHour = firstSlot.startHour
+        boardAutoplayStartMinute = firstSlot.startMinute
+        boardAutoplayDurationMinutes = firstSlot.durationMinutes
+        synchronizeLegacyBoardAutoplayEndTime()
+    }
+
+    private static var defaultBoardAutoplaySlots: [BoardAutoplaySlot] {
+        [
+            BoardAutoplaySlot(
+                startHour: defaultBoardAutoplayStartHour,
+                startMinute: defaultBoardAutoplayStartMinute,
+                durationMinutes: defaultBoardAutoplayDurationMinutes
+            )
+        ]
+    }
+
+    private static func normalizeBoardAutoplaySlots(_ slots: [BoardAutoplaySlot]) -> [BoardAutoplaySlot] {
+        slots
+            .map {
+                BoardAutoplaySlot(
+                    id: $0.id,
+                    startHour: $0.startHour,
+                    startMinute: $0.startMinute,
+                    durationMinutes: max(5, $0.durationMinutes),
+                    isEnabled: $0.isEnabled
+                )
+            }
+            .filter(\.isEnabled)
+            .sorted {
+                ($0.startHour, $0.startMinute, $0.durationMinutes, $0.id.uuidString)
+                    < ($1.startHour, $1.startMinute, $1.durationMinutes, $1.id.uuidString)
+            }
+    }
+
+    private static func decodeBoardAutoplaySlots(_ rawValue: String) -> [BoardAutoplaySlot] {
+        guard let data = rawValue.data(using: .utf8),
+              let slots = try? JSONDecoder().decode([BoardAutoplaySlot].self, from: data) else {
+            return []
+        }
+
+        return normalizeBoardAutoplaySlots(slots)
+    }
+
+    private static func encodeBoardAutoplaySlots(_ slots: [BoardAutoplaySlot]) -> String {
+        guard let data = try? JSONEncoder().encode(normalizeBoardAutoplaySlots(slots)),
+              let string = String(data: data, encoding: .utf8) else {
+            return "[]"
+        }
+
+        return string
     }
 
     private enum ChinaHolidayCalendar {

@@ -24,196 +24,169 @@ struct HomeView: View {
     @State private var previewSession: DictationSession?
     @State private var activeDictationSession: DictationSession?
     @State private var showingDashboardBoard = false
+    @State private var showQuickEntryHint = false
 
     private let scheduler = ReviewScheduler()
     private let isPad = UIDevice.current.userInterfaceIdiom == .pad
 
-    private var allDueItems: [ReviewItem] {
-        reviewItems
-            .filter { $0.nextReviewAt <= .now }
-            .sorted { $0.nextReviewAt < $1.nextReviewAt }
-    }
-
     private var dailyLimit: Int {
         settings.first?.dailyLimit ?? 15
-    }
-
-    /// Items capped to dailyLimit for today's session
-    private var dueItems: [ReviewItem] {
-        Array(allDueItems.prefix(dailyLimit))
-    }
-
-    private var childName: String {
-        guard let settings = settings.first else { return "小朋友" }
-        return settings.childName.isEmpty ? "小朋友" : settings.childName
     }
 
     private var reviewStyle: ReviewInteractionStyle {
         settings.first?.reviewInteractionStyle ?? AppSettings.defaultReviewInteractionStyle
     }
 
-    private var todayRecords: [ReviewRecord] {
-        let calendar = Calendar.current
-        return reviewRecords.filter { calendar.isDateInToday($0.reviewedAt) }
+    private struct DashboardSnapshot {
+        let childName: String
+        let dueItems: [ReviewItem]
+        let allDueCount: Int
+        let todayCompletedCount: Int
+        let todayWrongCount: Int
+        let todayCorrectCount: Int
+        let todayAccuracyText: String
+        let pendingDictationCount: Int
+        let latestDictationSession: DictationSession?
+        let todaySchedules: [ScheduleItem]
+        let todayPendingTasks: [TodayTaskDisplayItem]
+        let historicalPendingTasks: [TodayTaskDisplayItem]
+        let todayCompletedTasks: [TodayTaskDisplayItem]
+        let todayCompletedTaskCount: Int
+        let totalPendingTaskCount: Int
+        let heroIconName: String
+        let heroMessage: String
+        let heroSubtitle: String
+        let heroGradientColors: [Color]
     }
 
-    private var todayCompletedCount: Int { todayRecords.count }
-    private var todayWrongCount: Int { todayRecords.filter { $0.result == .wrong }.count }
-    private var todayCorrectCount: Int { todayRecords.filter { $0.result == .correct }.count }
-
-    private var todayAccuracyText: String {
-        guard todayCompletedCount > 0 else { return "--" }
-        let accuracy = Int((Double(todayCorrectCount) / Double(todayCompletedCount) * 100).rounded())
-        return "\(accuracy)%"
-    }
-
-    private var pendingDictationCount: Int {
+    private func makeSnapshot() -> DashboardSnapshot {
+        let name = settings.first?.childName.isEmpty ?? true ? "小朋友" : (settings.first?.childName ?? "小朋友")
+        
+        let allDue = reviewItems
+            .filter { $0.nextReviewAt <= .now }
+            .sorted { $0.nextReviewAt < $1.nextReviewAt }
+        
+        let limit = settings.first?.dailyLimit ?? 15
+        let cappedDueContent = Array(allDue.prefix(limit))
+        
         let calendar = Calendar.current
+        let todayRecs = reviewRecords.filter { calendar.isDateInToday($0.reviewedAt) }
+        let tCompleted = todayRecs.count
+        let tWrong = todayRecs.filter { $0.result == .wrong }.count
+        let tCorrect = todayRecs.filter { $0.result == .correct }.count
+        
+        var tAccuracy = "--"
+        if tCompleted > 0 {
+            let accuracy = Int((Double(tCorrect) / Double(tCompleted) * 100).rounded())
+            tAccuracy = "\(accuracy)%"
+        }
+        
         let todayStart = calendar.startOfDay(for: .now)
+        
+        // Optimize Dictation count: build entry map once
+        let entryMap = Dictionary(grouping: dictationEntries, by: { $0.sessionID })
         let pendingSessions = dictationSessions.filter {
             !$0.isReviewed && calendar.startOfDay(for: $0.scheduledDate) <= todayStart
         }
+        let pDictationCount = pendingSessions.reduce(0) { $0 + (entryMap[$1.id]?.count ?? 0) }
         
-        var totalCount = 0
-        for session in pendingSessions {
-            totalCount += dictationEntries.filter { $0.sessionID == session.id }.count
-        }
-        return totalCount
-    }
-
-    private var latestDictationSession: DictationSession? {
-        let calendar = Calendar.current
-        let todayStart = calendar.startOfDay(for: .now)
+        let latestDS: DictationSession? = {
+            if let firstPending = pendingSessions.sorted(by: { $0.scheduledDate < $1.scheduledDate }).first {
+                return firstPending
+            }
+            return dictationSessions.filter {
+                calendar.startOfDay(for: $0.scheduledDate) <= todayStart
+            }.min(by: { $0.scheduledDate > $1.scheduledDate })
+        }()
         
-        // First look for any pending/unfinished sessions scheduled for today or earlier
-        let pending = dictationSessions.filter { 
-            !$0.isReviewed && calendar.startOfDay(for: $0.scheduledDate) <= todayStart 
-        }
-        
-        if let firstPending = pending.sorted(by: { $0.scheduledDate < $1.scheduledDate }).first {
-            return firstPending
-        }
-        
-        // If no pending ones, show the most recent session that wasn't scheduled in the future
-        return dictationSessions.filter {
-            calendar.startOfDay(for: $0.scheduledDate) <= todayStart
-        }.min(by: { $0.scheduledDate > $1.scheduledDate })
-    }
-
-    private var todaySchedules: [ScheduleItem] {
-        allSchedules
+        let tSchedules = allSchedules
             .filter { $0.shouldAppear(on: .now) && !$0.hasEnded(on: .now, reference: .now) }
             .sorted { $0.startTimeMinutes < $1.startTimeMinutes }
-    }
-
-    private var totalPendingTaskCount: Int {
-        todayPendingTasks.count + historicalPendingTaskItems.count
-    }
-
-    private var heroIconName: String {
-        let tasksDone = totalPendingTaskCount == 0 && (todayCompletedTaskCount > 0 || allTasks.isEmpty)
-        let reviewDone = dueItems.isEmpty
-        let dictationDone = latestDictationSession?.isReviewed ?? true
-        let scheduleDone = todaySchedules.isEmpty
         
-        if tasksDone && reviewDone && dictationDone && scheduleDone { return "checkmark.seal.fill" }
-        if reviewDone && dictationDone { return "sparkles" }
-        if totalPendingTaskCount == 0 { return "book.fill" }
-        return "figure.run"
-    }
-
-    private var heroMessage: String {
-        let pendingTaskCount = totalPendingTaskCount
-        let pendingReviewCount = dueItems.count
-        
-        // Dictation is "pending" if it's not reviewed yet
-        let dictationPending = latestDictationSession != nil && !latestDictationSession!.isReviewed
-        
-        let tasksDone = pendingTaskCount == 0 && todayCompletedTaskCount > 0
-        let reviewDone = pendingReviewCount == 0
-        let dictationDone = !dictationPending
-
-        if tasksDone && reviewDone && dictationDone {
-            return "今天的任务、复习和听写全部完成了！"
-        }
-
-        var parts: [String] = []
-        if pendingTaskCount > 0 {
-            parts.append("\(pendingTaskCount) 项任务")
-        }
-        if !todaySchedules.isEmpty {
-            parts.append("\(todaySchedules.count) 项日程")
-        }
-        if pendingReviewCount > 0 {
-            parts.append("\(pendingReviewCount) 项复习")
-        }
-        if dictationPending {
-            parts.append("1 场听写")
-        }
-
-        if parts.isEmpty {
-            return "\(childName)，今天没有待办事项"
-        }
-        return "\(childName) 今天还有 \(parts.joined(separator: "、"))"
-    }
-
-    private var heroSubtitle: String {
-        let pendingTaskCount = totalPendingTaskCount
-        let pendingReviewCount = dueItems.count
-        let dictationSession = latestDictationSession
-        
-        let tasksDone = pendingTaskCount == 0 && todayCompletedTaskCount > 0
-        let reviewDone = pendingReviewCount == 0
-        let dictationDone = dictationSession?.isReviewed ?? true
-
-        if tasksDone && reviewDone && dictationDone {
-            return "表现太棒了！录入新错题或休息一下吧。明天见！"
-        }
-        
-        if let session = dictationSession, !session.isReviewed {
-            if session.isFinished {
-                return "今天听写已完成，快让家长点击「统一判卷」吧！"
-            } else {
-                return "别忘了还有一场「\(session.title)」听写在进行中。"
+        let taskItems = TodayTaskListBuilder.build(from: allTasks, completions: taskCompletions)
+        let tPendingTasks = taskItems.filter { $0.section == .todayPending }
+        let hPendingTasks = taskItems.filter { $0.section == .historicalPending }
+            .sorted { lhs, rhs in
+                if lhs.occurrenceDate == rhs.occurrenceDate {
+                    return lhs.task.createdAt < rhs.task.createdAt
+                }
+                return lhs.occurrenceDate < rhs.occurrenceDate
             }
-        }
+        let tCompletedTasks = taskItems.filter { $0.section == .todayDone }
+        let tCompletedTaskCount = tCompletedTasks.count
+        let totPendingTaskCount = tPendingTasks.count + hPendingTasks.count
         
-        if !historicalPendingTaskItems.isEmpty && todayPendingTasks.isEmpty {
-            return "还有 \(historicalPendingTaskItems.count) 项历史待完成，先清一清积压吧。"
-        }
-        if pendingTaskCount > 0 && pendingReviewCount > 0 {
-            return "先完成今天的任务，再做错题复习。加油！"
-        }
-        if pendingTaskCount > 0 {
-            return "先把今天的任务完成吧！"
-        }
-        if allDueItems.count > dailyLimit {
-            return "今天共有 \(allDueItems.count) 项到期，推荐先练 \(dailyLimit) 项。"
-        }
-        return "孩子在纸上写，家长判定对错，同一题当天只练一次。"
-    }
-
-    /// Hero card gradient adapts to overall completion status
-    private var heroGradientColors: [Color] {
-        let tasksDone = totalPendingTaskCount == 0 && (todayCompletedTaskCount > 0 || allTasks.isEmpty)
-        let reviewDone = dueItems.isEmpty
-        let dictationDone = latestDictationSession?.isReviewed ?? true
+        // Hero logic (single pass)
+        let tasksDone = totPendingTaskCount == 0 && (tCompletedTaskCount > 0 || allTasks.isEmpty)
+        let reviewDone = cappedDueContent.isEmpty
+        let dictationDone = latestDS?.isReviewed ?? true
+        let scheduleDone = tSchedules.isEmpty
         
-        if tasksDone && reviewDone && dictationDone {
-            return [.green.opacity(0.85), .mint.opacity(0.65)]
-        }
-        if totalPendingTaskCount > 0 || !dueItems.isEmpty || !(latestDictationSession?.isReviewed ?? true) {
-            if totalPendingTaskCount > 0 && !dueItems.isEmpty {
-                return [.orange.opacity(0.9), .yellow.opacity(0.65)]
+        let hIcon: String = {
+            if tasksDone && reviewDone && dictationDone && scheduleDone { return "checkmark.seal.fill" }
+            if reviewDone && dictationDone { return "sparkles" }
+            if totPendingTaskCount == 0 { return "book.fill" }
+            return "figure.run"
+        }()
+        
+        let hMessage: String = {
+            if tasksDone && reviewDone && dictationDone { return "今天的任务、复习和听写全部完成了！" }
+            var parts: [String] = []
+            if totPendingTaskCount > 0 { parts.append("\(totPendingTaskCount) 项任务") }
+            if !tSchedules.isEmpty { parts.append("\(tSchedules.count) 项日程") }
+            if !cappedDueContent.isEmpty { parts.append("\(cappedDueContent.count) 项复习") }
+            if let session = latestDS, !session.isReviewed { parts.append("1 场听写") }
+            if parts.isEmpty { return "\(name)，今天没有待办事项" }
+            return "\(name) 今天还有 \(parts.joined(separator: "、"))"
+        }()
+        
+        let hSubtitle: String = {
+            if tasksDone && reviewDone && dictationDone { return "表现太棒了！录入新错题或休息一下吧。明天见！" }
+            if let session = latestDS, !session.isReviewed {
+                return session.isFinished ? "今天听写已完成，快让家长点击「统一判卷」吧！" : "别忘了还有一场「\(session.title)」听写在进行中。"
+            }
+            if !hPendingTasks.isEmpty && tPendingTasks.isEmpty { return "还有 \(hPendingTasks.count) 项历史待完成，先清一清积压吧。" }
+            if totPendingTaskCount > 0 && !cappedDueContent.isEmpty { return "先完成今天的任务，再做错题复习。加油！" }
+            if totPendingTaskCount > 0 { return "先把今天的任务完成吧！" }
+            if allDue.count > limit { return "今天共有 \(allDue.count) 项到期，推荐先练 \(limit) 项。" }
+            return "孩子在纸上写，家长判定对错，同一题当天只练一次。"
+        }()
+        
+        let hGradient: [Color] = {
+            if tasksDone && reviewDone && dictationDone { return [.green.opacity(0.85), .mint.opacity(0.65)] }
+            if totPendingTaskCount > 0 || !cappedDueContent.isEmpty || !(latestDS?.isReviewed ?? true) {
+                if totPendingTaskCount > 0 && !cappedDueContent.isEmpty { return [.orange.opacity(0.9), .yellow.opacity(0.65)] }
+                return [.blue.opacity(0.8), .cyan.opacity(0.6)]
             }
             return [.blue.opacity(0.8), .cyan.opacity(0.6)]
-        }
-        return [.blue.opacity(0.8), .cyan.opacity(0.6)]
+        }()
+
+        return DashboardSnapshot(
+            childName: name,
+            dueItems: cappedDueContent,
+            allDueCount: allDue.count,
+            todayCompletedCount: tCompleted,
+            todayWrongCount: tWrong,
+            todayCorrectCount: tCorrect,
+            todayAccuracyText: tAccuracy,
+            pendingDictationCount: pDictationCount,
+            latestDictationSession: latestDS,
+            todaySchedules: tSchedules,
+            todayPendingTasks: tPendingTasks,
+            historicalPendingTasks: hPendingTasks,
+            todayCompletedTasks: tCompletedTasks,
+            todayCompletedTaskCount: tCompletedTaskCount,
+            totalPendingTaskCount: totPendingTaskCount,
+            heroIconName: hIcon,
+            heroMessage: hMessage,
+            heroSubtitle: hSubtitle,
+            heroGradientColors: hGradient
+        )
     }
 
-    private var heroCard: some View {
+    private func heroCard(_ snapshot: DashboardSnapshot) -> some View {
         HStack(alignment: .center, spacing: 16) {
-            Image(systemName: heroIconName)
+            Image(systemName: snapshot.heroIconName)
                 .font(.system(size: 32))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(.white)
@@ -222,12 +195,12 @@ struct HomeView: View {
                 .background(.white.opacity(0.15), in: Circle())
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(heroMessage)
+                Text(snapshot.heroMessage)
                     .font(.system(.title3, design: .rounded, weight: .bold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
 
-                Text(heroSubtitle)
+                Text(snapshot.heroSubtitle)
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.85))
                     .lineLimit(2)
@@ -242,7 +215,7 @@ struct HomeView: View {
             RoundedRectangle(cornerRadius: 24)
                 .fill(
                     LinearGradient(
-                        colors: heroGradientColors,
+                        colors: snapshot.heroGradientColors,
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
@@ -250,34 +223,49 @@ struct HomeView: View {
         )
     }
 
+    private var syncStatusBadge: some View {
+        HStack(spacing: 8) {
+            SyncStatusIconView(isRefreshing: syncStatusStore.isRefreshing)
+            Text(syncStatusStore.statusText)
+                .lineLimit(1)
+        }
+        .font(.system(size: 10, weight: .medium))
+        .foregroundStyle(.white.opacity(0.9))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(.white.opacity(0.15), in: Capsule())
+    }
+
     var body: some View {
+        let snapshot = makeSnapshot()
+        
         GeometryReader { proxy in
             ScrollView {
                 let isWide = proxy.size.width >= 700
 
                 VStack(spacing: 20) {
-                    heroCard
+                    heroCard(snapshot)
 
                     if syncStatusStore.syncNoticeKind != .ready {
                         syncStatusSummaryCard
                     }
 
-                    todayScheduleCard
+                    todayScheduleCard(snapshot)
 
-                    todayTasksCard
+                    todayTasksCard(snapshot)
 
                     // Stat grid
-                    statGridSection
+                    statGridSection(snapshot)
 
                     if isWide {
                         HStack(spacing: 16) {
-                            reviewEntryButton
-                            dictationEntryButton
+                            reviewEntryButton(snapshot)
+                            dictationEntryButton(snapshot)
                         }
                     } else {
                         VStack(spacing: 12) {
-                            reviewEntryButton
-                            dictationEntryButton
+                            reviewEntryButton(snapshot)
+                            dictationEntryButton(snapshot)
                         }
                     }
 
@@ -287,7 +275,9 @@ struct HomeView: View {
                 .frame(maxWidth: 960, alignment: .center)
                 .frame(maxWidth: .infinity)
             }
+            .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("首页")
+            .navigationBarTitleDisplayMode(.large)
             .sheet(item: $previewSession) { session in
                 DictationPreviewView(
                     session: session,
@@ -305,14 +295,14 @@ struct HomeView: View {
             }
             .navigationDestination(isPresented: $isReviewActive) {
                 if reviewStyle == .batch {
-                    BatchReviewSessionView(items: dueItems)
+                    BatchReviewSessionView(items: snapshot.dueItems)
                 } else {
-                    ReviewSessionView(items: dueItems)
+                    ReviewSessionView(items: snapshot.dueItems)
                 }
             }
             .sheet(isPresented: $showingReviewPreview) {
                 ReviewPreviewView(
-                    items: dueItems,
+                    items: snapshot.dueItems,
                     onStartReview: {
                         isReviewActive = true
                     }
@@ -350,54 +340,41 @@ struct HomeView: View {
     }
 
     @ViewBuilder
-    private var statGridSection: some View {
+    private func statGridSection(_ snapshot: DashboardSnapshot) -> some View {
         let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: 3)
 
         LazyVGrid(columns: columns, spacing: 12) {
             Group {
                 if reviewStyle == .batch {
                     NavigationLink {
-                        BatchReviewSessionView(items: dueItems)
+                        BatchReviewSessionView(items: snapshot.dueItems)
                     } label: {
-                        StatGridCard(icon: "book.closed", title: "待复习", value: "\(dueItems.count)", tint: .orange)
+                        StatGridCard(icon: "book.closed", title: "待复习", value: "\(snapshot.dueItems.count)", tint: .orange)
                     }
                 } else {
                     NavigationLink {
-                        ReviewSessionView(items: dueItems)
+                        ReviewSessionView(items: snapshot.dueItems)
                     } label: {
-                        StatGridCard(icon: "book.closed", title: "待复习", value: "\(dueItems.count)", tint: .orange)
+                        StatGridCard(icon: "book.closed", title: "待复习", value: "\(snapshot.dueItems.count)", tint: .orange)
                     }
                 }
             }
             .buttonStyle(.plain)
-            .allowsHitTesting(!dueItems.isEmpty)
+            .allowsHitTesting(!snapshot.dueItems.isEmpty)
             
             NavigationLink {
                 DictationHomeView()
             } label: {
-                StatGridCard(icon: "text.book.closed", title: "待听写", value: "\(pendingDictationCount)", tint: .teal)
+                StatGridCard(icon: "text.book.closed", title: "待听写", value: "\(snapshot.pendingDictationCount)", tint: .teal)
             }
             .buttonStyle(.plain)
 
             
-            StatGridCard(icon: "checkmark.circle", title: "今日完成", value: "\(todayCompletedCount)", tint: .green)
-            StatGridCard(icon: "xmark.circle", title: "今日答错", value: "\(todayWrongCount)", tint: .red)
-            StatGridCard(icon: "percent", title: "正确率", value: todayAccuracyText, tint: .blue)
+            StatGridCard(icon: "checkmark.circle", title: "今日完成", value: "\(snapshot.todayCompletedCount)", tint: .green)
+            StatGridCard(icon: "xmark.circle", title: "今日答错", value: "\(snapshot.todayWrongCount)", tint: .red)
+            StatGridCard(icon: "percent", title: "正确率", value: snapshot.todayAccuracyText, tint: .blue)
             StatGridCard(icon: "star.fill", title: "已掌握", value: "\(reviewItems.filter(scheduler.isMastered).count)", tint: .mint)
         }
-    }
-
-    private var syncStatusBadge: some View {
-        HStack(spacing: 8) {
-            SyncStatusIconView(isRefreshing: syncStatusStore.isRefreshing)
-            Text(syncStatusStore.statusText)
-                .lineLimit(1)
-        }
-        .font(.system(size: 10, weight: .medium))
-        .foregroundStyle(.white.opacity(0.9))
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background(.white.opacity(0.15), in: Capsule())
     }
 
     private var quickEntryCard: some View {
@@ -408,11 +385,19 @@ struct HomeView: View {
                     .foregroundStyle(.blue)
                 Text("快速录入")
                     .font(.headline)
+                Spacer()
+                Button {
+                    showQuickEntryHint = true
+                } label: {
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(.blue)
+                }
             }
-
-            Text("把当天写错的词句或英语录进来，保存后直接进入今天待复习。")
-                .foregroundStyle(.secondary)
-                .font(.subheadline)
+            .alert("提示", isPresented: $showQuickEntryHint) {
+                Button("知道了", role: .cancel) { }
+            } message: {
+                Text("把当天写错的词句或英语录进来，保存后直接进入今天待复习。")
+            }
 
             NavigationLink {
                 AddReviewItemView()
@@ -436,20 +421,20 @@ struct HomeView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(20)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24))
     }
 
-    private var reviewEntryButton: some View {
+    private func reviewEntryButton(_ snapshot: DashboardSnapshot) -> some View {
         Button {
             isReviewActive = true
         } label: {
-            reviewEntryLabel
+            reviewEntryLabel(snapshot)
         }
         .buttonStyle(.plain)
-        .disabled(dueItems.isEmpty)
+        .disabled(snapshot.dueItems.isEmpty)
     }
 
-    private var reviewEntryLabel: some View {
+    private func reviewEntryLabel(_ snapshot: DashboardSnapshot) -> some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
@@ -458,7 +443,7 @@ struct HomeView: View {
                 }
                 .font(.title3.weight(.semibold))
 
-                Text(reviewStatusText)
+                Text(snapshot.dueItems.isEmpty ? "今天复习已经全部完成了" : "还有 \(snapshot.dueItems.count) 项待复习")
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.9))
                     .lineLimit(1)
@@ -466,7 +451,7 @@ struct HomeView: View {
             
             Spacer()
             
-            if !dueItems.isEmpty {
+            if !snapshot.dueItems.isEmpty {
                 Button {
                     showingReviewPreview = true
                 } label: {
@@ -484,19 +469,12 @@ struct HomeView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
-        .background(dueItems.isEmpty ? Color.gray : Color.accentColor)
+        .background(snapshot.dueItems.isEmpty ? Color.gray : Color.accentColor)
         .foregroundStyle(.white)
         .clipShape(RoundedRectangle(cornerRadius: 18))
     }
 
-    private var reviewStatusText: String {
-        if dueItems.isEmpty {
-            return "今天复习已经全部完成了"
-        }
-        return "还有 \(dueItems.count) 项待复习"
-    }
-
-    private var dictationEntryButton: some View {
+    private func dictationEntryButton(_ snapshot: DashboardSnapshot) -> some View {
         NavigationLink {
             DictationHomeView()
         } label: {
@@ -508,7 +486,7 @@ struct HomeView: View {
                     }
                     .font(.title3.weight(.semibold))
 
-                    Text(dictationStatusText)
+                    Text(dictationStatusText(snapshot))
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.9))
                         .lineLimit(1)
@@ -516,7 +494,7 @@ struct HomeView: View {
                 
                 Spacer()
                 
-                if let session = latestDictationSession, !session.isFinished && !session.isReviewed {
+                if let session = snapshot.latestDictationSession, !session.isFinished && !session.isReviewed {
                     Button {
                         previewSession = session
                     } label: {
@@ -541,8 +519,8 @@ struct HomeView: View {
         .buttonStyle(.plain)
     }
 
-    private var dictationStatusText: String {
-        guard let latestDictationSession else {
+    private func dictationStatusText(_ snapshot: DashboardSnapshot) -> String {
+        guard let latestDictationSession = snapshot.latestDictationSession else {
             return "今天还没有新增听写内容"
         }
 
@@ -562,8 +540,8 @@ struct HomeView: View {
     // MARK: - Today Schedule
 
     @ViewBuilder
-    private var todayScheduleCard: some View {
-        let schedules = todaySchedules
+    private func todayScheduleCard(_ snapshot: DashboardSnapshot) -> some View {
+        let schedules = snapshot.todaySchedules
 
         if !schedules.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
@@ -613,49 +591,21 @@ struct HomeView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(20)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24))
         }
     }
 
     // MARK: - Today Tasks
 
-    private var todayTaskItems: [TodayTaskDisplayItem] {
-        TodayTaskListBuilder.build(from: allTasks, completions: taskCompletions)
-    }
-
-    private var todayPendingTasks: [TodayTaskDisplayItem] {
-        todayTaskItems.filter { $0.section == .todayPending }
-    }
-
-    private var historicalPendingTaskItems: [TodayTaskDisplayItem] {
-        todayTaskItems
-            .filter { $0.section == .historicalPending }
-            .sorted { lhs, rhs in
-                if lhs.occurrenceDate == rhs.occurrenceDate {
-                    return lhs.task.createdAt < rhs.task.createdAt
-                }
-                return lhs.occurrenceDate < rhs.occurrenceDate
-            }
-    }
-
-    private var todayCompletedTaskItems: [TodayTaskDisplayItem] {
-        todayTaskItems.filter { $0.section == .todayDone }
-    }
-
-    private var todayCompletedTaskCount: Int {
-        todayCompletedTaskItems.count
-    }
-
     @ViewBuilder
-    private var todayTasksCard: some View {
-        let pendingItems = todayPendingTasks
-        let doneItems = todayCompletedTaskItems
-        let historicalItems = historicalPendingTaskItems
-        let doneCount = todayCompletedTaskCount
+    private func todayTasksCard(_ snapshot: DashboardSnapshot) -> some View {
+        let pendingItems = snapshot.todayPendingTasks
+        let historicalItems = snapshot.historicalPendingTasks
+        let doneCount = snapshot.todayCompletedTaskCount
         let todayTaskCount = pendingItems.count + doneCount
         let historyCount = historicalItems.count
         
-        if !pendingItems.isEmpty || !doneItems.isEmpty || !historicalItems.isEmpty || !allTasks.isEmpty {
+        if !pendingItems.isEmpty || doneCount > 0 || !historicalItems.isEmpty || !allTasks.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     Image(systemName: "checklist")
@@ -688,36 +638,32 @@ struct HomeView: View {
                     ForEach(pendingItems) { item in
                         todayTaskRow(item)
                     }
-
+                    
                     if !historicalItems.isEmpty {
-                        if !pendingItems.isEmpty {
-                            Divider()
-                                .overlay(.white.opacity(0.1))
-                        }
-
+                        Divider()
+                            .padding(.vertical, 8)
+                        
                         VStack(alignment: .leading, spacing: 10) {
                             Text("历史待完成")
-                                .font(.subheadline.weight(.semibold))
+                                .font(.subheadline.weight(.bold))
                                 .foregroundStyle(.orange)
-
+                            
                             ForEach(historicalItems) { item in
                                 todayTaskRow(item)
                             }
                         }
                     }
-
-                    if !doneItems.isEmpty {
-                        if !pendingItems.isEmpty || !historicalItems.isEmpty {
-                            Divider()
-                                .overlay(.white.opacity(0.1))
-                        }
-
+                    
+                    if !snapshot.todayCompletedTasks.isEmpty {
+                        Divider()
+                            .padding(.vertical, 8)
+                        
                         VStack(alignment: .leading, spacing: 10) {
                             Text("今日已完成")
-                                .font(.subheadline.weight(.semibold))
+                                .font(.subheadline.weight(.bold))
                                 .foregroundStyle(.green)
-
-                            ForEach(doneItems) { item in
+                            
+                            ForEach(snapshot.todayCompletedTasks) { item in
                                 todayTaskRow(item)
                             }
                         }
@@ -726,7 +672,7 @@ struct HomeView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(20)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24))
         }
     }
 

@@ -53,6 +53,7 @@ struct StatGridCard: View {
                     .foregroundStyle(tint)
                 Text(title)
                     .font(.subheadline)
+                    .lineLimit(1)
                     .foregroundStyle(.secondary)
             }
             Text(value)
@@ -61,7 +62,18 @@ struct StatGridCard: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .background(
+            ZStack {
+                Color(uiColor: .secondarySystemGroupedBackground)
+                tint.opacity(0.1)
+            }
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(tint.opacity(0.2), lineWidth: 1)
+        )
+        .shadow(color: tint.opacity(0.06), radius: 8, x: 0, y: 4)
     }
 }
 

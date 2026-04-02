@@ -58,8 +58,9 @@ struct DictationHomeView: View {
             }
         }
         .scrollContentBackground(.hidden)
-        .background(Color(uiColor: .systemBackground))
+        .background(Color(uiColor: .systemGroupedBackground))
         .navigationTitle("听写安排")
+        .navigationBarTitleDisplayMode(.large)
         .sheet(item: $previewSession) { session in
             DictationPreviewView(
                 session: session,

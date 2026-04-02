@@ -1,0 +1,6 @@
+[testflight]
+project = "听写复习本.xcodeproj"
+scheme = "听写复习本"
+team_id = "FCAW792CJD"
+configuration = "Release"
+xcodegen_command = "/Users/xiaorsz/bin/xcodegen generate"

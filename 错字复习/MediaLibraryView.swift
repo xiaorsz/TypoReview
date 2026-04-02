@@ -87,155 +87,227 @@ struct MediaLibraryView: View {
     }
 
     private func mediaRow(for asset: MediaLibraryAsset) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: asset.mediaType.systemImage)
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(asset.mediaType == .video ? .orange : .blue)
-                    .frame(width: 34, height: 34)
-                    .background(
-                        (asset.mediaType == .video ? Color.orange : Color.blue).opacity(0.12),
-                        in: RoundedRectangle(cornerRadius: 10)
-                    )
-
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
-                        Text(asset.title)
-                            .font(.headline)
-
-                        Text("#\(asset.playlistOrder + 1)")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color(uiColor: .secondarySystemBackground), in: Capsule())
-                    }
-
-                    Text(asset.originalFilename)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-
-                    Text(asset.mediaType.rawValue)
-                        .font(.caption.weight(.semibold))
+        let isPlaying = self.isPlaying(asset)
+        let syncStatus = MediaLibraryStorage.syncStatusText(for: asset.storedFilename, storageScope: asset.storageScope)
+        
+        return VStack(spacing: 0) {
+            HStack(alignment: .center, spacing: 14) {
+                // Media Icon / Thumbnail Placeholder
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill((asset.mediaType == .video ? Color.orange : Color.blue).opacity(0.1))
+                    
+                    Image(systemName: asset.mediaType.systemImage)
+                        .font(.title2.weight(.bold))
                         .foregroundStyle(asset.mediaType == .video ? .orange : .blue)
-
-                    HStack(spacing: 8) {
-                        Text(asset.storageScope.rawValue)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(asset.storageScope == .iCloud ? .cyan : .secondary)
-
-                        Text(MediaLibraryStorage.syncStatusText(for: asset.storedFilename, storageScope: asset.storageScope))
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(syncStatusColor(for: asset))
+                        .symbolEffect(.bounce, value: isPlaying)
+                }
+                .frame(width: 52, height: 52)
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(asset.title)
+                            .font(.system(.headline, design: .rounded))
+                            .lineLimit(1)
+                        
+                        if isPlaying {
+                            Image(systemName: "waveform")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                                .symbolEffect(.variableColor.iterative.reversing)
+                        }
                     }
-
-                    Text("添加于 \(asset.createdAt.formatted(date: .numeric, time: .shortened))")
+                    
+                    Text(asset.originalFilename)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    
+                    HStack(spacing: 8) {
+                        // Type & Index Badge
+                        HStack(spacing: 4) {
+                            Image(systemName: asset.mediaType == .video ? "video.fill" : "headphones")
+                                .font(.system(size: 8, weight: .bold))
+                            Text("#\(asset.playlistOrder + 1)")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        }
+                        .foregroundStyle(asset.mediaType == .video ? .orange : .blue)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background((asset.mediaType == .video ? Color.orange : Color.blue).opacity(0.15), in: Capsule())
+                        
+                        // Storage & Sync Badge
+                        HStack(spacing: 4) {
+                            Image(systemName: asset.storageScope == .iCloud ? "icloud.fill" : "iphone")
+                                .font(.system(size: 8))
+                            Text(syncStatus)
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        .foregroundStyle(syncStatusColor(for: asset))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(syncStatusColor(for: asset).opacity(0.12), in: Capsule())
+                    }
+                    .padding(.top, 2)
                 }
-
+                
                 Spacer()
-
-                Button {
-                    handlePreviewTap(for: asset)
-                } label: {
-                    Image(systemName: isPlaying(asset) ? "pause.fill" : "play.fill")
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 36, height: 36)
-                        .background(isPlaying(asset) ? Color.orange : Color.accentColor, in: Circle())
+                
+                // Active Controls
+                HStack(spacing: 10) {
+                    Button {
+                        startRenaming(asset)
+                    } label: {
+                        Image(systemName: "pencil.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.secondary.opacity(0.5))
+                    }
+                    .buttonStyle(.plain)
+                    
+                    Button {
+                        handlePreviewTap(for: asset)
+                    } label: {
+                        ZStack {
+                            Circle()
+                                .fill(isPlaying ? Color.orange : Color.accentColor)
+                                .frame(width: 32, height: 32)
+                            
+                            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(.white)
+                        }
+                        .shadow(color: (isPlaying ? Color.orange : Color.accentColor).opacity(0.3), radius: 4, x: 0, y: 2)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isPlaying(asset) ? "暂停试听" : "开始试听")
-
-                Button {
-                    startRenaming(asset)
-                } label: {
-                    Image(systemName: "pencil")
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(.primary)
-                        .frame(width: 36, height: 36)
-                        .background(Color(uiColor: .secondarySystemBackground), in: Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("修改资源标题")
             }
+            .padding(.vertical, 12)
             .contentShape(Rectangle())
             .onTapGesture {
                 handlePreviewTap(for: asset)
             }
 
-            Toggle("加入播放列表", isOn: Binding(
-                get: { asset.isIncludedInPlaylist },
-                set: { newValue in
-                    do {
-                        try mediaLibraryStore.updateInclusion(for: asset.id, isIncludedInPlaylist: newValue)
-                    } catch {
-                        showError(error, title: "保存失败")
-                    }
+            HStack {
+                Label {
+                    Text("加入晨读播放列表")
+                        .font(.subheadline)
+                        .foregroundStyle(.primary.opacity(0.8))
+                } icon: {
+                    Image(systemName: asset.isIncludedInPlaylist ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(asset.isIncludedInPlaylist ? .green : .secondary)
                 }
-            ))
-            .toggleStyle(.switch)
+                
+                Spacer()
+                
+                Toggle("", isOn: Binding(
+                    get: { asset.isIncludedInPlaylist },
+                    set: { newValue in
+                        do {
+                            try mediaLibraryStore.updateInclusion(for: asset.id, isIncludedInPlaylist: newValue)
+                        } catch {
+                            showError(error, title: "保存失败")
+                        }
+                    }
+                ))
+                .labelsHidden()
+                .toggleStyle(SwitchToggleStyle(tint: .green))
+                .scaleEffect(0.8)
+            }
+            .padding(.bottom, 8)
         }
-        .padding(.vertical, 6)
+        .padding(.horizontal, 14)
+        .padding(.top, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemGroupedBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
+        .listRowBackground(Color.clear)
     }
 
     @ViewBuilder
     private var previewSection: some View {
         if playbackCoordinator.isWaitingForDownload {
-            VStack(alignment: .leading, spacing: 10) {
-                Label(
-                    playbackCoordinator.pendingAssetTitle.map { "“\($0)” 正在准备试听" } ?? "资源正在准备试听",
-                    systemImage: "icloud.and.arrow.down"
-                )
-                .font(.headline)
-
-                Text("文件下载完成后会自动开始播放。")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+            HStack(spacing: 16) {
+                ProgressView()
+                    .controlSize(.small)
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(playbackCoordinator.pendingAssetTitle.map { "正在准备 “\($0)”" } ?? "资源准备中")
+                        .font(.subheadline.weight(.bold))
+                    
+                    Text("文件下载完成后会自动开始播放")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
-            .padding(.vertical, 6)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 4)
         } else if let currentAsset = playbackCoordinator.currentAsset {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    Label("正在试听", systemImage: currentAsset.mediaType.systemImage)
-                        .font(.headline)
+                    Label {
+                        Text("正在试听")
+                            .font(.subheadline.weight(.bold))
+                    } icon: {
+                        Image(systemName: currentAsset.mediaType.systemImage)
+                            .foregroundStyle(currentAsset.mediaType == .video ? .orange : .blue)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background((currentAsset.mediaType == .video ? Color.orange : Color.blue).opacity(0.1), in: Capsule())
 
                     Spacer()
 
-                    Button("停止") {
+                    Button {
                         playbackCoordinator.stop()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.plain)
                 }
 
                 if currentAsset.mediaType == .video {
                     VideoPlayer(player: playbackCoordinator.player)
-                        .frame(height: 220)
-                        .clipShape(RoundedRectangle(cornerRadius: 18))
+                        .frame(height: 200)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .shadow(color: .black.opacity(0.1), radius: 10, x: 0, y: 5)
                 } else {
-                    HStack(spacing: 14) {
-                        Image(systemName: "waveform.circle.fill")
-                            .font(.system(size: 40))
-                            .foregroundStyle(.blue)
+                    HStack(spacing: 16) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.blue.gradient)
+                                .frame(width: 44, height: 44)
+                            
+                            Image(systemName: "waveform")
+                                .font(.system(size: 20))
+                                .foregroundStyle(.white)
+                                .symbolEffect(.variableColor.iterative.reversing)
+                        }
 
                         VStack(alignment: .leading, spacing: 4) {
                             Text(currentAsset.title)
-                                .font(.title3.weight(.bold))
+                                .font(.headline)
                             Text(currentAsset.originalFilename)
-                                .font(.subheadline)
+                                .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
 
                         Spacer()
                     }
-                    .padding(16)
-                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
+                    .padding(14)
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
                 }
             }
-            .padding(.vertical, 6)
+            .padding(.vertical, 8)
         }
     }
 

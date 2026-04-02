@@ -276,6 +276,7 @@ struct AppSettingsSnapshot: Codable {
     let boardAutoplayEndHour: Int
     let boardAutoplayEndMinute: Int
     let boardAutoplayDurationMinutes: Int
+    let boardAutoplaySlotsRawValue: String
     let boardManualPlaybackOptionRawValue: String
     let boardAutoplaySkipWeekends: Bool
     let boardAutoplaySkipChinaHolidays: Bool
@@ -293,6 +294,7 @@ struct AppSettingsSnapshot: Codable {
         case boardAutoplayEndHour
         case boardAutoplayEndMinute
         case boardAutoplayDurationMinutes
+        case boardAutoplaySlotsRawValue
         case boardManualPlaybackOptionRawValue
         case boardAutoplaySkipWeekends
         case boardAutoplaySkipChinaHolidays
@@ -311,6 +313,7 @@ struct AppSettingsSnapshot: Codable {
         boardAutoplayEndHour = settings.boardAutoplayEndHour
         boardAutoplayEndMinute = settings.boardAutoplayEndMinute
         boardAutoplayDurationMinutes = settings.boardAutoplayDurationMinutes
+        boardAutoplaySlotsRawValue = settings.boardAutoplaySlotsRawValue
         boardManualPlaybackOptionRawValue = settings.boardManualPlaybackOptionRawValue
         boardAutoplaySkipWeekends = settings.boardAutoplaySkipWeekends
         boardAutoplaySkipChinaHolidays = settings.boardAutoplaySkipChinaHolidays
@@ -340,6 +343,8 @@ struct AppSettingsSnapshot: Codable {
         )
         boardAutoplayDurationMinutes = try container.decodeIfPresent(Int.self, forKey: .boardAutoplayDurationMinutes)
             ?? legacyDuration
+        boardAutoplaySlotsRawValue = try container.decodeIfPresent(String.self, forKey: .boardAutoplaySlotsRawValue)
+            ?? ""
         boardManualPlaybackOptionRawValue = try container.decodeIfPresent(String.self, forKey: .boardManualPlaybackOptionRawValue)
             ?? AppSettings.defaultBoardManualPlaybackOption
         boardAutoplaySkipWeekends = try container.decodeIfPresent(Bool.self, forKey: .boardAutoplaySkipWeekends)
@@ -362,11 +367,13 @@ struct AppSettingsSnapshot: Codable {
             boardAutoplayEndHour: boardAutoplayEndHour,
             boardAutoplayEndMinute: boardAutoplayEndMinute,
             boardAutoplayDurationMinutes: boardAutoplayDurationMinutes,
+            boardAutoplaySlots: nil,
             boardManualPlaybackOption: BoardManualPlaybackOption(rawValue: boardManualPlaybackOptionRawValue) ?? .untilPlaylistEnds,
             boardAutoplaySkipWeekends: boardAutoplaySkipWeekends,
             boardAutoplaySkipChinaHolidays: boardAutoplaySkipChinaHolidays
         )
         settings.reviewInteractionStyleRawValue = reviewInteractionStyleRawValue
+        settings.boardAutoplaySlotsRawValue = boardAutoplaySlotsRawValue
         return settings
     }
 }

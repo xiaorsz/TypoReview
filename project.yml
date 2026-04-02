@@ -1,11 +1,24 @@
 name: 听写复习本
 options:
   minimumXcodeGenVersion: 2.38.0
+schemes:
+  听写复习本:
+    build:
+      targets:
+        听写复习本: all
+    run:
+      config: Debug
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+    profile:
+      config: Release
 targets:
   听写复习本:
     type: application
     platform: iOS
-    deploymentTarget: "18.0"
+    deploymentTarget: "17.0"
     sources:
       - 错字复习
     dependencies:
@@ -27,13 +40,16 @@ targets:
           - group.cc.xiaorsz.typo-review
     settings:
       base:
+        SWIFT_VERSION: "5.0"
+        PRODUCT_NAME: TypoReview
         PRODUCT_BUNDLE_IDENTIFIER: cc.xiaorsz.typo-review
-        MARKETING_VERSION: 1.1.0
+        MARKETING_VERSION: 1.2.1
         CURRENT_PROJECT_VERSION: 2
         TARGETED_DEVICE_FAMILY: "1,2"
         DEVELOPMENT_TEAM: FCAW792CJD
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: 听写复习本
         INFOPLIST_KEY_UIBackgroundModes:
           - remote-notification
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
@@ -48,7 +64,7 @@ targets:
   TypoWidget:
     type: app-extension
     platform: iOS
-    deploymentTarget: "18.0"
+    deploymentTarget: "17.0"
     sources:
       - TypoWidget
       - path: 错字复习/AppModel.swift
@@ -72,7 +88,7 @@ targets:
     info:
       path: TypoWidget/Info.plist
       properties:
-        CFBundleShortVersionString: "1.1.0"
+        CFBundleShortVersionString: "1.2.1"
         CFBundleVersion: "2"
         CFBundleDisplayName: "听写复习本"
         NSExtension:
@@ -84,7 +100,9 @@ targets:
           - group.cc.xiaorsz.typo-review
     settings:
       base:
+        SWIFT_VERSION: "5.0"
+        PRODUCT_NAME: TypoWidget
         PRODUCT_BUNDLE_IDENTIFIER: cc.xiaorsz.typo-review.TypoWidget
         DEVELOPMENT_TEAM: FCAW792CJD
-        MARKETING_VERSION: 1.1.0
+        MARKETING_VERSION: 1.2.1
         CURRENT_PROJECT_VERSION: 2

@@ -33,17 +33,17 @@ struct LibraryView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("筛选", selection: $filter) {
-                ForEach(LibraryFilter.allCases) { item in
-                    Text(item.rawValue).tag(item)
+        List {
+            Section {
+                Picker("筛选", selection: $filter) {
+                    ForEach(LibraryFilter.allCases) { item in
+                        Text(item.rawValue).tag(item)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 4, trailing: 16))
             }
-            .pickerStyle(.segmented)
-            .padding(.horizontal)
-            .padding(.top, 20)
-            .padding(.bottom, 16)
-            .background(Color(uiColor: .systemBackground))
 
             if filteredItems.isEmpty {
                 ContentUnavailableView {
@@ -68,7 +68,7 @@ struct LibraryView: View {
                     }
                 }
             } else {
-                List(filteredItems) { item in
+                ForEach(filteredItems) { item in
                     NavigationLink {
                         AddReviewItemView(item: item)
                     } label: {
@@ -130,34 +130,26 @@ struct LibraryView: View {
                         }
                     }
                 }
-                .scrollContentBackground(.hidden)
             }
         }
-        .background(Color(uiColor: .systemBackground))
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Color(uiColor: .systemGroupedBackground))
         .searchable(text: $searchText, prompt: "搜索词句或英语")
         .navigationTitle("题库")
+        .navigationBarTitleDisplayMode(.large)
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
+            Menu("新增", systemImage: "plus") {
                 NavigationLink {
-                    MediaLibraryView()
+                    AddReviewItemView()
                 } label: {
-                    Label("晨读资源", systemImage: "music.note.list")
+                    Label("单条录入", systemImage: "square.and.pencil")
                 }
-            }
 
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu("新增", systemImage: "plus") {
-                    NavigationLink {
-                        AddReviewItemView()
-                    } label: {
-                        Label("单条录入", systemImage: "square.and.pencil")
-                    }
-
-                    NavigationLink {
-                        BatchAddReviewItemsView()
-                    } label: {
-                        Label("批量录入", systemImage: "text.badge.plus")
-                    }
+                NavigationLink {
+                    BatchAddReviewItemsView()
+                } label: {
+                    Label("批量录入", systemImage: "text.badge.plus")
                 }
             }
         }

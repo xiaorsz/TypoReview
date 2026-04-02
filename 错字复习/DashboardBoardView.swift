@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 import AVKit
 import UIKit
+import Combine
 
 struct DashboardBoardView: View {
     @Environment(\.dismiss) private var dismiss
@@ -134,7 +135,7 @@ struct DashboardBoardView: View {
     private var mediaAutoplayStatusText: String {
         guard let boardSettings else { return "未配置" }
         guard boardSettings.boardAutoplayEnabled else { return "已关闭" }
-        guard boardSettings.hasValidBoardAutoplayWindow else { return "时间无效" }
+        guard boardSettings.hasValidBoardAutoplayWindow else { return "未配置时间段" }
         guard !enabledMediaAssets.isEmpty else { return "播放列表为空" }
 
         if let manualStatusText = playbackCoordinator.boardManualStatusText {
@@ -161,7 +162,7 @@ struct DashboardBoardView: View {
             return "准备播放"
         }
 
-        if let window = boardSettings.boardAutoplayWindow(on: boardNow), boardNow < window.start {
+        if let window = boardSettings.nextBoardAutoplayWindow(on: boardNow), boardNow < window.start {
             return "等待开始"
         }
 
@@ -734,12 +735,14 @@ struct DashboardBoardView: View {
         .buttonStyle(.plain)
     }
 
-    private var boardRefreshTimer: Timer.TimerPublisher {
+    private var boardRefreshTimer: Publishers.Autoconnect<Timer.TimerPublisher> {
         Timer.publish(every: 5, on: .main, in: .common)
+            .autoconnect()
     }
 
-    private var boardInactivityTimer: Timer.TimerPublisher {
+    private var boardInactivityTimer: Publishers.Autoconnect<Timer.TimerPublisher> {
         Timer.publish(every: 1, on: .main, in: .common)
+            .autoconnect()
     }
 
     private func activateIdleTimerOverride() {

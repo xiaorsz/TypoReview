@@ -8,12 +8,13 @@
 
 /* Begin PBXBuildFile section */
 		01634FB78D42C465212540EA /* BatchAddReviewItemsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FFAF335CDD525B5AAB52CC1 /* BatchAddReviewItemsView.swift */; };
+		02170754DD292DCFA5C74304 /* MediaLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCF86A62DB2A1AA848434BAC /* MediaLibraryStore.swift */; };
+		05D5B2F072C304A399E4A4F8 /* MediaLibraryStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = F77C7D3F87D5519E83569CA0 /* MediaLibraryStorage.swift */; };
 		0CF6EA9D83611EC51A035122 /* ReviewRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ACD58BD800639DC62AB3988 /* ReviewRecord.swift */; };
 		1BE60DD7F25B825A3006B512 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 53A5B91D2CA89AF3672C96CD /* Assets.xcassets */; };
 		1F5BBAEFD6C810FCEBCB7CBD /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 835499BE852352E7085C7083 /* LibraryView.swift */; };
 		231AA24240FC6FCBD6A369F2 /* BatchReviewSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA218905C6AD638CB04C774E /* BatchReviewSessionView.swift */; };
 		236146C126C23D9B6E5D5C5C /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B43E29B6728FBAA1D22D769 /* AppSettings.swift */; };
-		24F9C2B1A4D34E0987AB12CD /* DataBackup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24F9C2B1A4D34E0987AB12CE /* DataBackup.swift */; };
 		27CD033589B8502762E72EAE /* TaskCompletion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D7771FE4082F787A64A1D4D /* TaskCompletion.swift */; };
 		2A7CAA439DC94CE3F611031F /* DictationEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0F396BBF587A380BEE3F397 /* DictationEntry.swift */; };
 		2E1F7231B968C31E01B33689 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B43E29B6728FBAA1D22D769 /* AppSettings.swift */; };
@@ -22,6 +23,7 @@
 		3691366ACBA76922B16B1786 /* TaskCompletion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D7771FE4082F787A64A1D4D /* TaskCompletion.swift */; };
 		38BD7003450DFB87BFB47732 /* TypoWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EFCE1B1D4218D4C5A356E18 /* TypoWidget.swift */; };
 		3AF15FAED92D5ED817ABE383 /* ReviewItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F447BB1A692AD23B681C92C /* ReviewItem.swift */; };
+		3B1FE29B5A75D2743576EB5E /* AdvancedSyncDiagnosticView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9428563BD9F0F854A49B690F /* AdvancedSyncDiagnosticView.swift */; };
 		49CCE52D144C3A48092DD4FE /* SharedUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = D475A66F00FA0F89DB5D4410 /* SharedUI.swift */; };
 		49F46D567B3A573F4FD1D62F /* DictationSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9408EBC5E29D4004352C8DC2 /* DictationSession.swift */; };
 		4A62774D722D1EF6EE0B35CB /* ReviewSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73337980C30B8D19A0BB0A00 /* ReviewSessionView.swift */; };
@@ -29,6 +31,8 @@
 		52C80639956553686BF9E68F /* DictationSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9408EBC5E29D4004352C8DC2 /* DictationSession.swift */; };
 		54DF6B78B07A19D666591EA1 /* TypoWidgetControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7493E1855BFD5AE60AD8CA2 /* TypoWidgetControl.swift */; };
 		591AC7542BF73D4D646BF4F6 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D26E9C053301EB77882FCB38 /* SettingsView.swift */; };
+		5C69CE3AE0ADF0F4CEA24B3E /* MediaLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3516E8E0523A9A64606E534 /* MediaLibraryView.swift */; };
+		5FCF0E1D826394BF87A3A0AE /* DashboardBoardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DAC45C1C6C9D73CED4CF57E /* DashboardBoardView.swift */; };
 		62551E570E2047731260F22B /* TypoReviewApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82B57298A1B4CF7DFEF09CD9 /* TypoReviewApp.swift */; };
 		67A2899B1980619FFDC0A3D3 /* ReviewItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F447BB1A692AD23B681C92C /* ReviewItem.swift */; };
 		67A2D2AB90E5C98ED3ACD524 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A320D12ED2C802E15DB792C0 /* HomeView.swift */; };
@@ -37,11 +41,14 @@
 		72A0AD1C9ECE14013C08D6DA /* AppIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC0219F9D579B8E10D54BCAE /* AppIntent.swift */; };
 		7350AF86868396BB77881B4A /* AddReviewItemView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFFC43C9FF7768E732522AE5 /* AddReviewItemView.swift */; };
 		7C846FEEA034B97E5EA18910 /* ScheduleItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0A42DE1DFCACBAA52B4531 /* ScheduleItem.swift */; };
+		8101EFDBFE693CE7C0CEF6CE /* DataBackup.swift in Sources */ = {isa = PBXBuildFile; fileRef = D52668595FD4C40411DDCF20 /* DataBackup.swift */; };
 		8B58527C28E31748BB6A27C5 /* AddDictationSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35B9623148B3E1F3AF728F7B /* AddDictationSessionView.swift */; };
 		8DD0DB1825D5A2A8FBA4F3AD /* Contents.json in Resources */ = {isa = PBXBuildFile; fileRef = 86837560373D9A64F21BD7FB /* Contents.json */; };
 		932330CC5F580390519EA018 /* BatchReviewGradingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD3384CB49CD514C167C97AA /* BatchReviewGradingView.swift */; };
 		963D00C473C8F1621AA6A93C /* TypoWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9902D09D4660DE61317DFEBD /* TypoWidgetBundle.swift */; };
+		999D5660FD952DBD59907F07 /* MediaPlaybackCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8826455F72FA5B533C0554E /* MediaPlaybackCoordinator.swift */; };
 		9B3748AF8610AB9DAEDC55A3 /* DictationReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54E7E4D3A83E8BB53D0F1DBA /* DictationReviewView.swift */; };
+		9D1ADDEC791C0E72883CA9F1 /* MediaAsset.swift in Sources */ = {isa = PBXBuildFile; fileRef = D462982FDCF82CEE1F04B828 /* MediaAsset.swift */; };
 		A046BF33825080EEED7D2285 /* TaskItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6A74373962C3C4C62923384 /* TaskItem.swift */; };
 		B7EB4DA6A822CF40AB65AFB9 /* SpeechAudioSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B6BED7625915F1CA069DAB6 /* SpeechAudioSession.swift */; };
 		BA3B7C0964D938CF4B19305E /* DictationEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0F396BBF587A380BEE3F397 /* DictationEntry.swift */; };
@@ -53,12 +60,6 @@
 		DDCF8DA830A19662393BA8B3 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E8B64A4B415CF43C0F3EEDD /* AppModel.swift */; };
 		DF19E9BF447813C14B3C0B4A /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E8B64A4B415CF43C0F3EEDD /* AppModel.swift */; };
 		E1FDCFE5F33348BCFA5FBB7F /* ScheduleItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0A42DE1DFCACBAA52B4531 /* ScheduleItem.swift */; };
-		MDA000000000000000000011 /* MediaAsset.swift in Sources */ = {isa = PBXBuildFile; fileRef = MDA000000000000000000001 /* MediaAsset.swift */; };
-		MDA000000000000000000012 /* MediaLibraryStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = MDA000000000000000000002 /* MediaLibraryStorage.swift */; };
-		MDA000000000000000000013 /* MediaPlaybackCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = MDA000000000000000000003 /* MediaPlaybackCoordinator.swift */; };
-		MDA000000000000000000014 /* MediaLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = MDA000000000000000000004 /* MediaLibraryView.swift */; };
-		MDA000000000000000000015 /* MediaLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = MDA000000000000000000005 /* MediaLibraryStore.swift */; };
-		MDA000000000000000000017 /* DashboardBoardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = MDA000000000000000000016 /* DashboardBoardView.swift */; };
 		F24EAA2C2EDFBE490535AC3E /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BED107080E55F2BD20BBDA2 /* RootTabView.swift */; };
 		F2639B6BCE88ED5084EADFDB /* AddScheduleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A4D0019865BF5BEADD017D9 /* AddScheduleView.swift */; };
 		F57CFB6F0C8C4D236FB6878D /* TypoWidgetLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0719D37F7BD0FEE00156CFFB /* TypoWidgetLiveActivity.swift */; };
@@ -103,8 +104,10 @@
 		31BDBB729EB669636A559549 /* DictationHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationHomeView.swift; sourceTree = "<group>"; };
 		35B9623148B3E1F3AF728F7B /* AddDictationSessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddDictationSessionView.swift; sourceTree = "<group>"; };
 		3B6BED7625915F1CA069DAB6 /* SpeechAudioSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechAudioSession.swift; sourceTree = "<group>"; };
+		4DAC45C1C6C9D73CED4CF57E /* DashboardBoardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardBoardView.swift; sourceTree = "<group>"; };
 		53A5B91D2CA89AF3672C96CD /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		54E7E4D3A83E8BB53D0F1DBA /* DictationReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationReviewView.swift; sourceTree = "<group>"; };
+		639EFA48907D78F1554913B1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		67CBEE4738C53CAF8BFD0E09 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		6A4D0019865BF5BEADD017D9 /* AddScheduleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddScheduleView.swift; sourceTree = "<group>"; };
 		6BED107080E55F2BD20BBDA2 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
@@ -113,14 +116,15 @@
 		7B43E29B6728FBAA1D22D769 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
 		7E8B64A4B415CF43C0F3EEDD /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		7EFCE1B1D4218D4C5A356E18 /* TypoWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypoWidget.swift; sourceTree = "<group>"; };
-		24F9C2B1A4D34E0987AB12CE /* DataBackup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataBackup.swift; sourceTree = "<group>"; };
 		82B57298A1B4CF7DFEF09CD9 /* TypoReviewApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypoReviewApp.swift; sourceTree = "<group>"; };
 		835499BE852352E7085C7083 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		86837560373D9A64F21BD7FB /* Contents.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = Contents.json; sourceTree = "<group>"; };
 		93612859EE32BD2213438A48 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		9408EBC5E29D4004352C8DC2 /* DictationSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationSession.swift; sourceTree = "<group>"; };
+		9428563BD9F0F854A49B690F /* AdvancedSyncDiagnosticView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdvancedSyncDiagnosticView.swift; sourceTree = "<group>"; };
 		9902D09D4660DE61317DFEBD /* TypoWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypoWidgetBundle.swift; sourceTree = "<group>"; };
 		A320D12ED2C802E15DB792C0 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		A3516E8E0523A9A64606E534 /* MediaLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryView.swift; sourceTree = "<group>"; };
 		AFFC43C9FF7768E732522AE5 /* AddReviewItemView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddReviewItemView.swift; sourceTree = "<group>"; };
 		B6A74373962C3C4C62923384 /* TaskItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskItem.swift; sourceTree = "<group>"; };
 		BD3384CB49CD514C167C97AA /* BatchReviewGradingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchReviewGradingView.swift; sourceTree = "<group>"; };
@@ -130,15 +134,14 @@
 		CF9F30993E7E3348AE59F070 /* AddTaskView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddTaskView.swift; sourceTree = "<group>"; };
 		D0F396BBF587A380BEE3F397 /* DictationEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationEntry.swift; sourceTree = "<group>"; };
 		D26E9C053301EB77882FCB38 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		D462982FDCF82CEE1F04B828 /* MediaAsset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaAsset.swift; sourceTree = "<group>"; };
 		D475A66F00FA0F89DB5D4410 /* SharedUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedUI.swift; sourceTree = "<group>"; };
+		D52668595FD4C40411DDCF20 /* DataBackup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataBackup.swift; sourceTree = "<group>"; };
+		DCF86A62DB2A1AA848434BAC /* MediaLibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryStore.swift; sourceTree = "<group>"; };
 		E981311286FBC45F0EFB2166 /* TypoWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TypoWidget.entitlements; sourceTree = "<group>"; };
 		EC0219F9D579B8E10D54BCAE /* AppIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIntent.swift; sourceTree = "<group>"; };
-		MDA000000000000000000001 /* MediaAsset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaAsset.swift; sourceTree = "<group>"; };
-		MDA000000000000000000002 /* MediaLibraryStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryStorage.swift; sourceTree = "<group>"; };
-		MDA000000000000000000003 /* MediaPlaybackCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaPlaybackCoordinator.swift; sourceTree = "<group>"; };
-		MDA000000000000000000004 /* MediaLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryView.swift; sourceTree = "<group>"; };
-		MDA000000000000000000005 /* MediaLibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryStore.swift; sourceTree = "<group>"; };
-		MDA000000000000000000016 /* DashboardBoardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardBoardView.swift; sourceTree = "<group>"; };
+		F77C7D3F87D5519E83569CA0 /* MediaLibraryStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryStorage.swift; sourceTree = "<group>"; };
+		F8826455F72FA5B533C0554E /* MediaPlaybackCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaPlaybackCoordinator.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -150,26 +153,28 @@
 				AFFC43C9FF7768E732522AE5 /* AddReviewItemView.swift */,
 				6A4D0019865BF5BEADD017D9 /* AddScheduleView.swift */,
 				CF9F30993E7E3348AE59F070 /* AddTaskView.swift */,
+				9428563BD9F0F854A49B690F /* AdvancedSyncDiagnosticView.swift */,
 				7E8B64A4B415CF43C0F3EEDD /* AppModel.swift */,
 				7B43E29B6728FBAA1D22D769 /* AppSettings.swift */,
-				24F9C2B1A4D34E0987AB12CE /* DataBackup.swift */,
-				MDA000000000000000000016 /* DashboardBoardView.swift */,
 				67CBEE4738C53CAF8BFD0E09 /* Assets.xcassets */,
 				0FFAF335CDD525B5AAB52CC1 /* BatchAddReviewItemsView.swift */,
 				BD3384CB49CD514C167C97AA /* BatchReviewGradingView.swift */,
 				CA218905C6AD638CB04C774E /* BatchReviewSessionView.swift */,
+				4DAC45C1C6C9D73CED4CF57E /* DashboardBoardView.swift */,
+				D52668595FD4C40411DDCF20 /* DataBackup.swift */,
 				D0F396BBF587A380BEE3F397 /* DictationEntry.swift */,
 				31BDBB729EB669636A559549 /* DictationHomeView.swift */,
 				54E7E4D3A83E8BB53D0F1DBA /* DictationReviewView.swift */,
 				9408EBC5E29D4004352C8DC2 /* DictationSession.swift */,
 				784F6272A4455A0B3B474874 /* DictationSessionView.swift */,
 				A320D12ED2C802E15DB792C0 /* HomeView.swift */,
+				639EFA48907D78F1554913B1 /* Info.plist */,
 				835499BE852352E7085C7083 /* LibraryView.swift */,
-				MDA000000000000000000001 /* MediaAsset.swift */,
-				MDA000000000000000000005 /* MediaLibraryStore.swift */,
-				MDA000000000000000000004 /* MediaLibraryView.swift */,
-				MDA000000000000000000002 /* MediaLibraryStorage.swift */,
-				MDA000000000000000000003 /* MediaPlaybackCoordinator.swift */,
+				D462982FDCF82CEE1F04B828 /* MediaAsset.swift */,
+				F77C7D3F87D5519E83569CA0 /* MediaLibraryStorage.swift */,
+				DCF86A62DB2A1AA848434BAC /* MediaLibraryStore.swift */,
+				A3516E8E0523A9A64606E534 /* MediaLibraryView.swift */,
+				F8826455F72FA5B533C0554E /* MediaPlaybackCoordinator.swift */,
 				1F447BB1A692AD23B681C92C /* ReviewItem.swift */,
 				0ACD58BD800639DC62AB3988 /* ReviewRecord.swift */,
 				C78706DDBA19DB8AE3305527 /* ReviewScheduler.swift */,
@@ -358,13 +363,14 @@
 				7350AF86868396BB77881B4A /* AddReviewItemView.swift in Sources */,
 				F2639B6BCE88ED5084EADFDB /* AddScheduleView.swift in Sources */,
 				CBE04FABF7F77F50A74027E2 /* AddTaskView.swift in Sources */,
+				3B1FE29B5A75D2743576EB5E /* AdvancedSyncDiagnosticView.swift in Sources */,
 				DF19E9BF447813C14B3C0B4A /* AppModel.swift in Sources */,
 				2E1F7231B968C31E01B33689 /* AppSettings.swift in Sources */,
-				24F9C2B1A4D34E0987AB12CD /* DataBackup.swift in Sources */,
-				MDA000000000000000000017 /* DashboardBoardView.swift in Sources */,
 				01634FB78D42C465212540EA /* BatchAddReviewItemsView.swift in Sources */,
 				932330CC5F580390519EA018 /* BatchReviewGradingView.swift in Sources */,
 				231AA24240FC6FCBD6A369F2 /* BatchReviewSessionView.swift in Sources */,
+				5FCF0E1D826394BF87A3A0AE /* DashboardBoardView.swift in Sources */,
+				8101EFDBFE693CE7C0CEF6CE /* DataBackup.swift in Sources */,
 				2A7CAA439DC94CE3F611031F /* DictationEntry.swift in Sources */,
 				33ABD76890827A3B0D6FB67D /* DictationHomeView.swift in Sources */,
 				9B3748AF8610AB9DAEDC55A3 /* DictationReviewView.swift in Sources */,
@@ -372,11 +378,11 @@
 				C4A164C2713F7EBDE40E4E17 /* DictationSessionView.swift in Sources */,
 				67A2D2AB90E5C98ED3ACD524 /* HomeView.swift in Sources */,
 				1F5BBAEFD6C810FCEBCB7CBD /* LibraryView.swift in Sources */,
-				MDA000000000000000000011 /* MediaAsset.swift in Sources */,
-				MDA000000000000000000015 /* MediaLibraryStore.swift in Sources */,
-				MDA000000000000000000014 /* MediaLibraryView.swift in Sources */,
-				MDA000000000000000000012 /* MediaLibraryStorage.swift in Sources */,
-				MDA000000000000000000013 /* MediaPlaybackCoordinator.swift in Sources */,
+				9D1ADDEC791C0E72883CA9F1 /* MediaAsset.swift in Sources */,
+				05D5B2F072C304A399E4A4F8 /* MediaLibraryStorage.swift in Sources */,
+				02170754DD292DCFA5C74304 /* MediaLibraryStore.swift in Sources */,
+				5C69CE3AE0ADF0F4CEA24B3E /* MediaLibraryView.swift in Sources */,
+				999D5660FD952DBD59907F07 /* MediaPlaybackCoordinator.swift in Sources */,
 				67A2899B1980619FFDC0A3D3 /* ReviewItem.swift in Sources */,
 				0CF6EA9D83611EC51A035122 /* ReviewRecord.swift in Sources */,
 				BB05FCD5CE7DA8AFAA98C5BD /* ReviewScheduler.swift in Sources */,
@@ -408,62 +414,7 @@
 		03A679B8130D5DA06C4DF198 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				CLANG_ANALYZER_NONNULL = YES;
-				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
-				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
-				CLANG_CXX_LIBRARY = "libc++";
-				CLANG_ENABLE_MODULES = YES;
-				CLANG_ENABLE_OBJC_ARC = YES;
-				CLANG_ENABLE_OBJC_WEAK = YES;
-				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
-				CLANG_WARN_BOOL_CONVERSION = YES;
-				CLANG_WARN_COMMA = YES;
-				CLANG_WARN_CONSTANT_CONVERSION = YES;
-				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
-				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
-				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
-				CLANG_WARN_EMPTY_BODY = YES;
-				CLANG_WARN_ENUM_CONVERSION = YES;
-				CLANG_WARN_INFINITE_RECURSION = YES;
-				CLANG_WARN_INT_CONVERSION = YES;
-				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
-				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
-				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
-				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
-				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
-				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
-				CLANG_WARN_STRICT_PROTOTYPES = YES;
-				CLANG_WARN_SUSPICIOUS_MOVE = YES;
-				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
-				CLANG_WARN_UNREACHABLE_CODE = YES;
-				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				COPY_PHASE_STRIP = NO;
-				DEBUG_INFORMATION_FORMAT = dwarf;
-				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_TESTABILITY = YES;
-				GCC_C_LANGUAGE_STANDARD = gnu11;
-				GCC_DYNAMIC_NO_PIC = NO;
-				GCC_NO_COMMON_BLOCKS = YES;
-				GCC_OPTIMIZATION_LEVEL = 0;
-				GCC_PREPROCESSOR_DEFINITIONS = (
-					"$(inherited)",
-					"DEBUG=1",
-				);
-				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
-				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
-				GCC_WARN_UNDECLARED_SELECTOR = YES;
-				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
-				GCC_WARN_UNUSED_FUNCTION = YES;
-				GCC_WARN_UNUSED_VARIABLE = YES;
-				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
-				MTL_FAST_MATH = YES;
-				ONLY_ACTIVE_ARCH = YES;
-				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
-				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
 		};
@@ -472,12 +423,12 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = "错字复习/错字复习.entitlements";
-				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = FCAW792CJD;
-					GENERATE_INFOPLIST_FILE = NO;
-					INFOPLIST_FILE = "错字复习/Info.plist";
-					INFOPLIST_KEY_CFBundleDevelopmentRegion = zh_Hans;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "错字复习/Info.plist";
+				INFOPLIST_KEY_CFBundleDevelopmentRegion = zh_Hans;
+				INFOPLIST_KEY_CFBundleDisplayName = "听写复习本";
 				INFOPLIST_KEY_CFBundleLocalizations = (
 					zh_Hans,
 					en,
@@ -490,13 +441,10 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				"INFOPLIST_KEY_UISupportedInterfaceOrientations~ipad" = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.2.0;
+				MARKETING_VERSION = 1.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "cc.xiaorsz.typo-review";
-				SDKROOT = iphoneos;
+				PRODUCT_NAME = TypoReview;
+				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
@@ -509,15 +457,10 @@
 				DEVELOPMENT_TEAM = FCAW792CJD;
 				INFOPLIST_FILE = TypoWidget/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MARKETING_VERSION = 1.2.0;
+				MARKETING_VERSION = 1.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "cc.xiaorsz.typo-review.TypoWidget";
-				SDKROOT = iphoneos;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				PRODUCT_NAME = TypoWidget;
+				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
 		};
@@ -529,15 +472,10 @@
 				DEVELOPMENT_TEAM = FCAW792CJD;
 				INFOPLIST_FILE = TypoWidget/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MARKETING_VERSION = 1.2.0;
+				MARKETING_VERSION = 1.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "cc.xiaorsz.typo-review.TypoWidget";
-				SDKROOT = iphoneos;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				PRODUCT_NAME = TypoWidget;
+				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
 		};
@@ -546,12 +484,12 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = "错字复习/错字复习.entitlements";
-				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = FCAW792CJD;
-					GENERATE_INFOPLIST_FILE = NO;
-					INFOPLIST_FILE = "错字复习/Info.plist";
-					INFOPLIST_KEY_CFBundleDevelopmentRegion = zh_Hans;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "错字复习/Info.plist";
+				INFOPLIST_KEY_CFBundleDevelopmentRegion = zh_Hans;
+				INFOPLIST_KEY_CFBundleDisplayName = "听写复习本";
 				INFOPLIST_KEY_CFBundleLocalizations = (
 					zh_Hans,
 					en,
@@ -564,13 +502,10 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				"INFOPLIST_KEY_UISupportedInterfaceOrientations~ipad" = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.2.0;
+				MARKETING_VERSION = 1.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "cc.xiaorsz.typo-review";
-				SDKROOT = iphoneos;
+				PRODUCT_NAME = TypoReview;
+				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
@@ -578,55 +513,7 @@
 		AC210FFA5E717367DA656C39 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				CLANG_ANALYZER_NONNULL = YES;
-				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
-				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
-				CLANG_CXX_LIBRARY = "libc++";
-				CLANG_ENABLE_MODULES = YES;
-				CLANG_ENABLE_OBJC_ARC = YES;
-				CLANG_ENABLE_OBJC_WEAK = YES;
-				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
-				CLANG_WARN_BOOL_CONVERSION = YES;
-				CLANG_WARN_COMMA = YES;
-				CLANG_WARN_CONSTANT_CONVERSION = YES;
-				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
-				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
-				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
-				CLANG_WARN_EMPTY_BODY = YES;
-				CLANG_WARN_ENUM_CONVERSION = YES;
-				CLANG_WARN_INFINITE_RECURSION = YES;
-				CLANG_WARN_INT_CONVERSION = YES;
-				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
-				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
-				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
-				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
-				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
-				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
-				CLANG_WARN_STRICT_PROTOTYPES = YES;
-				CLANG_WARN_SUSPICIOUS_MOVE = YES;
-				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
-				CLANG_WARN_UNREACHABLE_CODE = YES;
-				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				COPY_PHASE_STRIP = NO;
-				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				ENABLE_NS_ASSERTIONS = NO;
-				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				GCC_C_LANGUAGE_STANDARD = gnu11;
-				GCC_NO_COMMON_BLOCKS = YES;
-				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
-				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
-				GCC_WARN_UNDECLARED_SELECTOR = YES;
-				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
-				GCC_WARN_UNUSED_FUNCTION = YES;
-				GCC_WARN_UNUSED_VARIABLE = YES;
-				MTL_ENABLE_DEBUG_INFO = NO;
-				MTL_FAST_MATH = YES;
-				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
-				SWIFT_COMPILATION_MODE = wholemodule;
-				SWIFT_OPTIMIZATION_LEVEL = "-O";
-				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
 		};

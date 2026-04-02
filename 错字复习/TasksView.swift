@@ -180,9 +180,8 @@ struct TasksView: View {
                 }
             }
         }
-        .scrollContentBackground(.hidden)
-        .background(Color(uiColor: .systemBackground))
         .navigationTitle("任务管理")
+        .navigationBarTitleDisplayMode(.large)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
