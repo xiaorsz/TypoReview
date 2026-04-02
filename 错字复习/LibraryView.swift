@@ -137,6 +137,14 @@ struct LibraryView: View {
         .searchable(text: $searchText, prompt: "搜索词句或英语")
         .navigationTitle("题库")
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                NavigationLink {
+                    MediaLibraryView()
+                } label: {
+                    Label("晨读资源", systemImage: "music.note.list")
+                }
+            }
+
             ToolbarItem(placement: .topBarTrailing) {
                 Menu("新增", systemImage: "plus") {
                     NavigationLink {

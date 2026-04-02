@@ -53,6 +53,12 @@
 		DDCF8DA830A19662393BA8B3 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E8B64A4B415CF43C0F3EEDD /* AppModel.swift */; };
 		DF19E9BF447813C14B3C0B4A /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E8B64A4B415CF43C0F3EEDD /* AppModel.swift */; };
 		E1FDCFE5F33348BCFA5FBB7F /* ScheduleItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0A42DE1DFCACBAA52B4531 /* ScheduleItem.swift */; };
+		MDA000000000000000000011 /* MediaAsset.swift in Sources */ = {isa = PBXBuildFile; fileRef = MDA000000000000000000001 /* MediaAsset.swift */; };
+		MDA000000000000000000012 /* MediaLibraryStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = MDA000000000000000000002 /* MediaLibraryStorage.swift */; };
+		MDA000000000000000000013 /* MediaPlaybackCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = MDA000000000000000000003 /* MediaPlaybackCoordinator.swift */; };
+		MDA000000000000000000014 /* MediaLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = MDA000000000000000000004 /* MediaLibraryView.swift */; };
+		MDA000000000000000000015 /* MediaLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = MDA000000000000000000005 /* MediaLibraryStore.swift */; };
+		MDA000000000000000000017 /* DashboardBoardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = MDA000000000000000000016 /* DashboardBoardView.swift */; };
 		F24EAA2C2EDFBE490535AC3E /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BED107080E55F2BD20BBDA2 /* RootTabView.swift */; };
 		F2639B6BCE88ED5084EADFDB /* AddScheduleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A4D0019865BF5BEADD017D9 /* AddScheduleView.swift */; };
 		F57CFB6F0C8C4D236FB6878D /* TypoWidgetLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0719D37F7BD0FEE00156CFFB /* TypoWidgetLiveActivity.swift */; };
@@ -127,6 +133,12 @@
 		D475A66F00FA0F89DB5D4410 /* SharedUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedUI.swift; sourceTree = "<group>"; };
 		E981311286FBC45F0EFB2166 /* TypoWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TypoWidget.entitlements; sourceTree = "<group>"; };
 		EC0219F9D579B8E10D54BCAE /* AppIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIntent.swift; sourceTree = "<group>"; };
+		MDA000000000000000000001 /* MediaAsset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaAsset.swift; sourceTree = "<group>"; };
+		MDA000000000000000000002 /* MediaLibraryStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryStorage.swift; sourceTree = "<group>"; };
+		MDA000000000000000000003 /* MediaPlaybackCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaPlaybackCoordinator.swift; sourceTree = "<group>"; };
+		MDA000000000000000000004 /* MediaLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryView.swift; sourceTree = "<group>"; };
+		MDA000000000000000000005 /* MediaLibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryStore.swift; sourceTree = "<group>"; };
+		MDA000000000000000000016 /* DashboardBoardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardBoardView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -141,6 +153,7 @@
 				7E8B64A4B415CF43C0F3EEDD /* AppModel.swift */,
 				7B43E29B6728FBAA1D22D769 /* AppSettings.swift */,
 				24F9C2B1A4D34E0987AB12CE /* DataBackup.swift */,
+				MDA000000000000000000016 /* DashboardBoardView.swift */,
 				67CBEE4738C53CAF8BFD0E09 /* Assets.xcassets */,
 				0FFAF335CDD525B5AAB52CC1 /* BatchAddReviewItemsView.swift */,
 				BD3384CB49CD514C167C97AA /* BatchReviewGradingView.swift */,
@@ -152,6 +165,11 @@
 				784F6272A4455A0B3B474874 /* DictationSessionView.swift */,
 				A320D12ED2C802E15DB792C0 /* HomeView.swift */,
 				835499BE852352E7085C7083 /* LibraryView.swift */,
+				MDA000000000000000000001 /* MediaAsset.swift */,
+				MDA000000000000000000005 /* MediaLibraryStore.swift */,
+				MDA000000000000000000004 /* MediaLibraryView.swift */,
+				MDA000000000000000000002 /* MediaLibraryStorage.swift */,
+				MDA000000000000000000003 /* MediaPlaybackCoordinator.swift */,
 				1F447BB1A692AD23B681C92C /* ReviewItem.swift */,
 				0ACD58BD800639DC62AB3988 /* ReviewRecord.swift */,
 				C78706DDBA19DB8AE3305527 /* ReviewScheduler.swift */,
@@ -343,6 +361,7 @@
 				DF19E9BF447813C14B3C0B4A /* AppModel.swift in Sources */,
 				2E1F7231B968C31E01B33689 /* AppSettings.swift in Sources */,
 				24F9C2B1A4D34E0987AB12CD /* DataBackup.swift in Sources */,
+				MDA000000000000000000017 /* DashboardBoardView.swift in Sources */,
 				01634FB78D42C465212540EA /* BatchAddReviewItemsView.swift in Sources */,
 				932330CC5F580390519EA018 /* BatchReviewGradingView.swift in Sources */,
 				231AA24240FC6FCBD6A369F2 /* BatchReviewSessionView.swift in Sources */,
@@ -353,6 +372,11 @@
 				C4A164C2713F7EBDE40E4E17 /* DictationSessionView.swift in Sources */,
 				67A2D2AB90E5C98ED3ACD524 /* HomeView.swift in Sources */,
 				1F5BBAEFD6C810FCEBCB7CBD /* LibraryView.swift in Sources */,
+				MDA000000000000000000011 /* MediaAsset.swift in Sources */,
+				MDA000000000000000000015 /* MediaLibraryStore.swift in Sources */,
+				MDA000000000000000000014 /* MediaLibraryView.swift in Sources */,
+				MDA000000000000000000012 /* MediaLibraryStorage.swift in Sources */,
+				MDA000000000000000000013 /* MediaPlaybackCoordinator.swift in Sources */,
 				67A2899B1980619FFDC0A3D3 /* ReviewItem.swift in Sources */,
 				0CF6EA9D83611EC51A035122 /* ReviewRecord.swift in Sources */,
 				BB05FCD5CE7DA8AFAA98C5BD /* ReviewScheduler.swift in Sources */,

@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(SyncStatusStore.self) private var syncStatusStore
+    @Environment(MediaLibraryStore.self) private var mediaLibraryStore
     @Query private var settingsList: [AppSettings]
 
     @State private var exportDocument = DataBackupDocument.empty
@@ -44,12 +45,48 @@ struct SettingsView: View {
         )
     }
 
+    private var boardAutoplayStartDate: Binding<Date> {
+        Binding(
+            get: {
+                var components = DateComponents()
+                components.hour = settings?.boardAutoplayStartHour ?? AppSettings.defaultBoardAutoplayStartHour
+                components.minute = settings?.boardAutoplayStartMinute ?? AppSettings.defaultBoardAutoplayStartMinute
+                return Calendar.current.date(from: components) ?? Date()
+            },
+            set: { newValue in
+                let components = Calendar.current.dateComponents([.hour, .minute], from: newValue)
+                settings?.setBoardAutoplayStart(
+                    hour: components.hour ?? AppSettings.defaultBoardAutoplayStartHour,
+                    minute: components.minute ?? AppSettings.defaultBoardAutoplayStartMinute
+                )
+            }
+        )
+    }
+
+    private var boardAutoplayDurationMinutes: Binding<Int> {
+        Binding(
+            get: { settings?.boardAutoplayDurationMinutes ?? AppSettings.defaultBoardAutoplayDurationMinutes },
+            set: { settings?.setBoardAutoplayDuration(minutes: $0) }
+        )
+    }
+
+    private var boardManualPlaybackOption: Binding<BoardManualPlaybackOption> {
+        Binding(
+            get: { settings?.boardManualPlaybackOption ?? .untilPlaylistEnds },
+            set: { settings?.boardManualPlaybackOption = $0 }
+        )
+    }
+
+    private let boardAutoplayDurationOptions = [15, 30, 45, 60, 90, 120]
+    private let boardManualPlaybackOptions = BoardManualPlaybackOption.allCases
+
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
                 introCard
                 childInfoCard
                 reminderCard
+                boardAutoplayCard
                 reviewCard
                 syncCard
                 backupCard
@@ -220,6 +257,111 @@ struct SettingsView: View {
                 }
                 .padding(.top, 4)
             }
+        }
+        .padding(20)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private var boardAutoplayCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("晨读自动播放")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Toggle("", isOn: bind(\.boardAutoplayEnabled))
+                    .labelsHidden()
+            }
+
+            Text("只有看板打开时才会生效。到达设定时间后，会按资源库中的播放列表顺序循环播放；达到设定时长后自动停止。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("开始时间")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    DatePicker("", selection: boardAutoplayStartDate, displayedComponents: .hourAndMinute)
+                        .labelsHidden()
+                        .datePickerStyle(.compact)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("播放时长")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Picker("播放时长", selection: boardAutoplayDurationMinutes) {
+                        ForEach(boardAutoplayDurationOptions, id: \.self) { minutes in
+                            Text(durationOptionLabel(minutes)).tag(minutes)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle("周末不播放", isOn: bind(\.boardAutoplaySkipWeekends))
+                    .font(.subheadline.weight(.medium))
+
+                Toggle("法定节假日不播放", isOn: bind(\.boardAutoplaySkipChinaHolidays))
+                    .font(.subheadline.weight(.medium))
+            }
+
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("看板手动播放时长")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Picker("看板手动播放时长", selection: boardManualPlaybackOption) {
+                        ForEach(boardManualPlaybackOptions) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            if let settings {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(settings.boardAutoplayRuleSummary)
+                    Text("看板手动播放：\(settings.boardManualPlaybackOptionSummary)")
+                }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if settings?.boardAutoplaySkipChinaHolidays == true {
+                Text("法定节假日已内置 \(AppSettings.supportedChinaHolidayYearsSummary) 年国务院办公厅放假安排；后续年份需要跟随官方通知更新。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let settings, !settings.hasValidBoardAutoplayWindow {
+                Text("播放时长需要大于 0，当前设置不会自动播放。")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            NavigationLink {
+                MediaLibraryView()
+            } label: {
+                HStack {
+                    Label("管理晨读资源库", systemImage: "music.note.list")
+                    Spacer()
+                    if let settings {
+                        Text(settings.boardAutoplayTimeSummary)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .font(.subheadline.weight(.semibold))
+                .padding(14)
+                .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
+            }
+            .buttonStyle(.plain)
         }
         .padding(20)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
@@ -497,7 +639,10 @@ struct SettingsView: View {
                 try modelContext.save()
             }
 
-            let document = try DataBackupService.makeDocument(from: modelContext)
+            let document = try DataBackupService.makeDocument(
+                from: modelContext,
+                mediaAssets: mediaLibraryStore.snapshots()
+            )
             exportDocument = document
             exportFilename = document.payload.defaultFilename
             isExportingBackup = true
@@ -566,7 +711,11 @@ struct SettingsView: View {
         }
 
         do {
-            try DataBackupService.restore(pendingImportPayload, into: modelContext)
+            try DataBackupService.restore(
+                pendingImportPayload,
+                into: modelContext,
+                mediaLibraryStore: mediaLibraryStore
+            )
             showBackupAlert(
                 title: "恢复完成",
                 message: "已经根据备份文件恢复数据。\n\n\(pendingImportPayload.summaryText)"
@@ -589,6 +738,13 @@ struct SettingsView: View {
 
     private func showBackupAlert(title: String, message: String) {
         backupAlert = BackupAlert(title: title, message: message)
+    }
+
+    private func durationOptionLabel(_ minutes: Int) -> String {
+        if minutes % 60 == 0 {
+            return "\(minutes / 60) 小时"
+        }
+        return "\(minutes) 分钟"
     }
 
     private func isUserCancelled(_ error: Error) -> Bool {

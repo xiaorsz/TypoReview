@@ -60,6 +60,22 @@ struct DataBackupPayload: Codable {
     let dictationSessions: [DictationSessionSnapshot]
     let dictationEntries: [DictationEntrySnapshot]
     let scheduleItems: [ScheduleItemSnapshot]
+    let mediaAssets: [MediaAssetSnapshot]
+
+    enum CodingKeys: String, CodingKey {
+        case version
+        case exportedAt
+        case appVersion
+        case settings
+        case reviewItems
+        case reviewRecords
+        case taskItems
+        case taskCompletions
+        case dictationSessions
+        case dictationEntries
+        case scheduleItems
+        case mediaAssets
+    }
 
     init(
         version: Int = DataBackupPayload.currentVersion,
@@ -72,7 +88,8 @@ struct DataBackupPayload: Codable {
         taskCompletions: [TaskCompletionSnapshot],
         dictationSessions: [DictationSessionSnapshot],
         dictationEntries: [DictationEntrySnapshot],
-        scheduleItems: [ScheduleItemSnapshot]
+        scheduleItems: [ScheduleItemSnapshot],
+        mediaAssets: [MediaAssetSnapshot] = []
     ) {
         self.version = version
         self.exportedAt = exportedAt
@@ -85,6 +102,23 @@ struct DataBackupPayload: Codable {
         self.dictationSessions = dictationSessions
         self.dictationEntries = dictationEntries
         self.scheduleItems = scheduleItems
+        self.mediaAssets = mediaAssets
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(Int.self, forKey: .version)
+        exportedAt = try container.decode(Date.self, forKey: .exportedAt)
+        appVersion = try container.decode(String.self, forKey: .appVersion)
+        settings = try container.decodeIfPresent(AppSettingsSnapshot.self, forKey: .settings)
+        reviewItems = try container.decode([ReviewItemSnapshot].self, forKey: .reviewItems)
+        reviewRecords = try container.decode([ReviewRecordSnapshot].self, forKey: .reviewRecords)
+        taskItems = try container.decode([TaskItemSnapshot].self, forKey: .taskItems)
+        taskCompletions = try container.decode([TaskCompletionSnapshot].self, forKey: .taskCompletions)
+        dictationSessions = try container.decode([DictationSessionSnapshot].self, forKey: .dictationSessions)
+        dictationEntries = try container.decode([DictationEntrySnapshot].self, forKey: .dictationEntries)
+        scheduleItems = try container.decode([ScheduleItemSnapshot].self, forKey: .scheduleItems)
+        mediaAssets = try container.decodeIfPresent([MediaAssetSnapshot].self, forKey: .mediaAssets) ?? []
     }
 
     static var placeholder: DataBackupPayload {
@@ -96,11 +130,12 @@ struct DataBackupPayload: Codable {
             taskCompletions: [],
             dictationSessions: [],
             dictationEntries: [],
-            scheduleItems: []
+            scheduleItems: [],
+            mediaAssets: []
         )
     }
 
-    static func capture(from modelContext: ModelContext) throws -> DataBackupPayload {
+    static func capture(from modelContext: ModelContext, mediaAssets: [MediaLibraryAsset]) throws -> DataBackupPayload {
         let settings = try modelContext.fetch(FetchDescriptor<AppSettings>()).first.map(AppSettingsSnapshot.init)
         let reviewItems = try modelContext.fetch(FetchDescriptor<ReviewItem>()).map(ReviewItemSnapshot.init)
         let reviewRecords = try modelContext.fetch(FetchDescriptor<ReviewRecord>()).map(ReviewRecordSnapshot.init)
@@ -109,6 +144,7 @@ struct DataBackupPayload: Codable {
         let dictationSessions = try modelContext.fetch(FetchDescriptor<DictationSession>()).map(DictationSessionSnapshot.init)
         let dictationEntries = try modelContext.fetch(FetchDescriptor<DictationEntry>()).map(DictationEntrySnapshot.init)
         let scheduleItems = try modelContext.fetch(FetchDescriptor<ScheduleItem>()).map(ScheduleItemSnapshot.init)
+        let mediaAssetSnapshots = mediaAssets.map(MediaAssetSnapshot.init)
 
         return DataBackupPayload(
             settings: settings,
@@ -118,7 +154,8 @@ struct DataBackupPayload: Codable {
             taskCompletions: taskCompletions,
             dictationSessions: dictationSessions,
             dictationEntries: dictationEntries,
-            scheduleItems: scheduleItems
+            scheduleItems: scheduleItems,
+            mediaAssets: mediaAssetSnapshots
         )
     }
 
@@ -157,7 +194,8 @@ struct DataBackupPayload: Codable {
             "完成记录 \(taskCompletions.count) 条",
             "听写计划 \(dictationSessions.count) 组",
             "听写条目 \(dictationEntries.count) 条",
-            "日程 \(scheduleItems.count) 条"
+            "日程 \(scheduleItems.count) 条",
+            "晨读资源 \(mediaAssets.count) 条"
         ]
         .compactMap { $0 }
         .joined(separator: "，")
@@ -165,11 +203,19 @@ struct DataBackupPayload: Codable {
 }
 
 enum DataBackupService {
-    static func makeDocument(from modelContext: ModelContext) throws -> DataBackupDocument {
-        DataBackupDocument(payload: try DataBackupPayload.capture(from: modelContext))
+    static func makeDocument(
+        from modelContext: ModelContext,
+        mediaAssets: [MediaLibraryAsset]
+    ) throws -> DataBackupDocument {
+        DataBackupDocument(payload: try DataBackupPayload.capture(from: modelContext, mediaAssets: mediaAssets))
     }
 
-    static func restore(_ payload: DataBackupPayload, into modelContext: ModelContext) throws {
+    @MainActor
+    static func restore(
+        _ payload: DataBackupPayload,
+        into modelContext: ModelContext,
+        mediaLibraryStore: MediaLibraryStore
+    ) throws {
         try deleteAll(AppSettings.self, in: modelContext)
         try deleteAll(ReviewItem.self, in: modelContext)
         try deleteAll(ReviewRecord.self, in: modelContext)
@@ -209,6 +255,7 @@ enum DataBackupService {
         if modelContext.hasChanges {
             try modelContext.save()
         }
+        try mediaLibraryStore.replaceAll(with: payload.mediaAssets.map { $0.makeModel() })
     }
 
     private static func deleteAll<Model: PersistentModel>(_ type: Model.Type, in modelContext: ModelContext) throws {
@@ -223,6 +270,33 @@ struct AppSettingsSnapshot: Codable {
     let remindHour: Int
     let remindMinute: Int
     let reviewInteractionStyleRawValue: String
+    let boardAutoplayEnabled: Bool
+    let boardAutoplayStartHour: Int
+    let boardAutoplayStartMinute: Int
+    let boardAutoplayEndHour: Int
+    let boardAutoplayEndMinute: Int
+    let boardAutoplayDurationMinutes: Int
+    let boardManualPlaybackOptionRawValue: String
+    let boardAutoplaySkipWeekends: Bool
+    let boardAutoplaySkipChinaHolidays: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case childName
+        case dailyLimit
+        case remindHour
+        case remindMinute
+        case reviewInteractionStyleRawValue
+        case boardAutoplayEnabled
+        case boardAutoplayStartHour
+        case boardAutoplayStartMinute
+        case boardAutoplayEndHour
+        case boardAutoplayEndMinute
+        case boardAutoplayDurationMinutes
+        case boardManualPlaybackOptionRawValue
+        case boardAutoplaySkipWeekends
+        case boardAutoplaySkipChinaHolidays
+    }
 
     init(_ settings: AppSettings) {
         id = settings.id
@@ -231,6 +305,47 @@ struct AppSettingsSnapshot: Codable {
         remindHour = settings.remindHour
         remindMinute = settings.remindMinute
         reviewInteractionStyleRawValue = settings.reviewInteractionStyleRawValue
+        boardAutoplayEnabled = settings.boardAutoplayEnabled
+        boardAutoplayStartHour = settings.boardAutoplayStartHour
+        boardAutoplayStartMinute = settings.boardAutoplayStartMinute
+        boardAutoplayEndHour = settings.boardAutoplayEndHour
+        boardAutoplayEndMinute = settings.boardAutoplayEndMinute
+        boardAutoplayDurationMinutes = settings.boardAutoplayDurationMinutes
+        boardManualPlaybackOptionRawValue = settings.boardManualPlaybackOptionRawValue
+        boardAutoplaySkipWeekends = settings.boardAutoplaySkipWeekends
+        boardAutoplaySkipChinaHolidays = settings.boardAutoplaySkipChinaHolidays
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        childName = try container.decode(String.self, forKey: .childName)
+        dailyLimit = try container.decode(Int.self, forKey: .dailyLimit)
+        remindHour = try container.decode(Int.self, forKey: .remindHour)
+        remindMinute = try container.decode(Int.self, forKey: .remindMinute)
+        reviewInteractionStyleRawValue = try container.decode(String.self, forKey: .reviewInteractionStyleRawValue)
+        boardAutoplayEnabled = try container.decodeIfPresent(Bool.self, forKey: .boardAutoplayEnabled)
+            ?? AppSettings.defaultBoardAutoplayEnabled
+        boardAutoplayStartHour = try container.decodeIfPresent(Int.self, forKey: .boardAutoplayStartHour)
+            ?? AppSettings.defaultBoardAutoplayStartHour
+        boardAutoplayStartMinute = try container.decodeIfPresent(Int.self, forKey: .boardAutoplayStartMinute)
+            ?? AppSettings.defaultBoardAutoplayStartMinute
+        boardAutoplayEndHour = try container.decodeIfPresent(Int.self, forKey: .boardAutoplayEndHour)
+            ?? AppSettings.defaultBoardAutoplayEndHour
+        boardAutoplayEndMinute = try container.decodeIfPresent(Int.self, forKey: .boardAutoplayEndMinute)
+            ?? AppSettings.defaultBoardAutoplayEndMinute
+        let legacyDuration = max(
+            1,
+            (boardAutoplayEndHour * 60 + boardAutoplayEndMinute) - (boardAutoplayStartHour * 60 + boardAutoplayStartMinute)
+        )
+        boardAutoplayDurationMinutes = try container.decodeIfPresent(Int.self, forKey: .boardAutoplayDurationMinutes)
+            ?? legacyDuration
+        boardManualPlaybackOptionRawValue = try container.decodeIfPresent(String.self, forKey: .boardManualPlaybackOptionRawValue)
+            ?? AppSettings.defaultBoardManualPlaybackOption
+        boardAutoplaySkipWeekends = try container.decodeIfPresent(Bool.self, forKey: .boardAutoplaySkipWeekends)
+            ?? AppSettings.defaultBoardAutoplaySkipWeekends
+        boardAutoplaySkipChinaHolidays = try container.decodeIfPresent(Bool.self, forKey: .boardAutoplaySkipChinaHolidays)
+            ?? AppSettings.defaultBoardAutoplaySkipChinaHolidays
     }
 
     func makeModel() -> AppSettings {
@@ -240,7 +355,16 @@ struct AppSettingsSnapshot: Codable {
             dailyLimit: dailyLimit,
             remindHour: remindHour,
             remindMinute: remindMinute,
-            reviewInteractionStyle: ReviewInteractionStyle(rawValue: reviewInteractionStyleRawValue) ?? AppSettings.defaultReviewInteractionStyle
+            reviewInteractionStyle: ReviewInteractionStyle(rawValue: reviewInteractionStyleRawValue) ?? AppSettings.defaultReviewInteractionStyle,
+            boardAutoplayEnabled: boardAutoplayEnabled,
+            boardAutoplayStartHour: boardAutoplayStartHour,
+            boardAutoplayStartMinute: boardAutoplayStartMinute,
+            boardAutoplayEndHour: boardAutoplayEndHour,
+            boardAutoplayEndMinute: boardAutoplayEndMinute,
+            boardAutoplayDurationMinutes: boardAutoplayDurationMinutes,
+            boardManualPlaybackOption: BoardManualPlaybackOption(rawValue: boardManualPlaybackOptionRawValue) ?? .untilPlaylistEnds,
+            boardAutoplaySkipWeekends: boardAutoplaySkipWeekends,
+            boardAutoplaySkipChinaHolidays: boardAutoplaySkipChinaHolidays
         )
         settings.reviewInteractionStyleRawValue = reviewInteractionStyleRawValue
         return settings
@@ -542,5 +666,46 @@ struct ScheduleItemSnapshot: Codable {
         schedule.repeatRuleRawValue = repeatRuleRawValue
         schedule.weekdaysJSON = weekdaysJSON
         return schedule
+    }
+}
+
+struct MediaAssetSnapshot: Codable {
+    let id: UUID
+    let title: String
+    let originalFilename: String
+    let storedFilename: String
+    let mediaTypeRawValue: String
+    let storageScopeRawValue: String
+    let playlistOrder: Int
+    let isIncludedInPlaylist: Bool
+    let createdAt: Date
+    let updatedAt: Date
+
+    init(_ asset: MediaLibraryAsset) {
+        id = asset.id
+        title = asset.title
+        originalFilename = asset.originalFilename
+        storedFilename = asset.storedFilename
+        mediaTypeRawValue = asset.mediaTypeRawValue
+        storageScopeRawValue = asset.storageScopeRawValue
+        playlistOrder = asset.playlistOrder
+        isIncludedInPlaylist = asset.isIncludedInPlaylist
+        createdAt = asset.createdAt
+        updatedAt = asset.updatedAt
+    }
+
+    func makeModel() -> MediaLibraryAsset {
+        MediaLibraryAsset(
+            id: id,
+            title: title,
+            originalFilename: originalFilename,
+            storedFilename: storedFilename,
+            mediaType: MediaAssetType(rawValue: mediaTypeRawValue) ?? .audio,
+            storageScope: MediaStorageScope(rawValue: storageScopeRawValue) ?? .local,
+            playlistOrder: playlistOrder,
+            isIncludedInPlaylist: isIncludedInPlaylist,
+            createdAt: createdAt,
+            updatedAt: updatedAt
+        )
     }
 }

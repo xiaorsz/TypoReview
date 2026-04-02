@@ -1,9 +1,11 @@
 import SwiftUI
 import SwiftData
+import SQLite3
 
 @main
 struct TypoReviewApp: App {
     @State private var syncStatusStore = SyncStatusStore()
+    @State private var mediaLibraryStore = MediaLibraryStore()
     private let cloudKitContainerIdentifier = "iCloud.cc.xiaorsz.typo-review"
     private let appGroupIdentifier = "group.cc.xiaorsz.typo-review"
     private let sharedModelContainer: ModelContainer
@@ -17,7 +19,8 @@ struct TypoReviewApp: App {
             AppSettings.self,
             DictationSession.self,
             DictationEntry.self,
-            ScheduleItem.self
+            ScheduleItem.self,
+            MediaAsset.self
         ])
 
         let fileManager = FileManager.default
@@ -44,6 +47,7 @@ struct TypoReviewApp: App {
                 targetStoreURL: cloudConfiguration.url,
                 fileManager: fileManager
             )
+            Self.repairLegacySchemaIfNeeded(at: cloudConfiguration.url, fileManager: fileManager)
         } else {
             print("WARNING: App Group container URL is nil. Falling back to default store URL.")
             cloudConfiguration = ModelConfiguration(
@@ -56,6 +60,7 @@ struct TypoReviewApp: App {
                 url: defaultStoreURL,
                 cloudKitDatabase: .none
             )
+            Self.repairLegacySchemaIfNeeded(at: defaultStoreURL, fileManager: fileManager)
         }
 
         do {
@@ -138,6 +143,78 @@ struct TypoReviewApp: App {
         }
     }
 
+    private static func repairLegacySchemaIfNeeded(
+        at storeURL: URL,
+        fileManager: FileManager
+    ) {
+        guard fileManager.fileExists(atPath: storeURL.path) else { return }
+
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(storeURL.path, &database, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+            if let database {
+                sqlite3_close(database)
+            }
+            print("Failed to open legacy store for schema repair at \(storeURL.path)")
+            return
+        }
+
+        defer { sqlite3_close(database) }
+
+        guard let database else { return }
+        guard tableExists(named: "ZAPPSETTINGS", in: database) else { return }
+
+        let existingColumns = fetchColumnNames(for: "ZAPPSETTINGS", in: database)
+        let requiredStatements = [
+            ("ZBOARDAUTOPLAYENABLED", "ALTER TABLE ZAPPSETTINGS ADD COLUMN ZBOARDAUTOPLAYENABLED INTEGER NOT NULL DEFAULT 1"),
+            ("ZBOARDAUTOPLAYSTARTHOUR", "ALTER TABLE ZAPPSETTINGS ADD COLUMN ZBOARDAUTOPLAYSTARTHOUR INTEGER NOT NULL DEFAULT 7"),
+            ("ZBOARDAUTOPLAYSTARTMINUTE", "ALTER TABLE ZAPPSETTINGS ADD COLUMN ZBOARDAUTOPLAYSTARTMINUTE INTEGER NOT NULL DEFAULT 0"),
+            ("ZBOARDAUTOPLAYENDHOUR", "ALTER TABLE ZAPPSETTINGS ADD COLUMN ZBOARDAUTOPLAYENDHOUR INTEGER NOT NULL DEFAULT 7"),
+            ("ZBOARDAUTOPLAYENDMINUTE", "ALTER TABLE ZAPPSETTINGS ADD COLUMN ZBOARDAUTOPLAYENDMINUTE INTEGER NOT NULL DEFAULT 30"),
+            ("ZBOARDAUTOPLAYDURATIONMINUTES", "ALTER TABLE ZAPPSETTINGS ADD COLUMN ZBOARDAUTOPLAYDURATIONMINUTES INTEGER NOT NULL DEFAULT 30"),
+            ("ZBOARDMANUALPLAYBACKOPTIONRAWVALUE", "ALTER TABLE ZAPPSETTINGS ADD COLUMN ZBOARDMANUALPLAYBACKOPTIONRAWVALUE TEXT NOT NULL DEFAULT 'until_playlist_ends'"),
+            ("ZBOARDAUTOPLAYSKIPWEEKENDS", "ALTER TABLE ZAPPSETTINGS ADD COLUMN ZBOARDAUTOPLAYSKIPWEEKENDS INTEGER NOT NULL DEFAULT 1"),
+            ("ZBOARDAUTOPLAYSKIPCHINAHOLIDAYS", "ALTER TABLE ZAPPSETTINGS ADD COLUMN ZBOARDAUTOPLAYSKIPCHINAHOLIDAYS INTEGER NOT NULL DEFAULT 1")
+        ]
+
+        for (columnName, statement) in requiredStatements where !existingColumns.contains(columnName) {
+            if sqlite3_exec(database, statement, nil, nil, nil) != SQLITE_OK {
+                let message = sqlite3_errmsg(database).map { String(cString: $0) } ?? "unknown"
+                print("Failed to add \(columnName) to legacy store: \(message)")
+            }
+        }
+    }
+
+    private static func tableExists(named tableName: String, in database: OpaquePointer) -> Bool {
+        let escapedTableName = tableName.replacingOccurrences(of: "'", with: "''")
+        let query = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '\(escapedTableName)' LIMIT 1"
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_prepare_v2(database, query, -1, &statement, nil) == SQLITE_OK else {
+            return false
+        }
+
+        return sqlite3_step(statement) == SQLITE_ROW
+    }
+
+    private static func fetchColumnNames(for tableName: String, in database: OpaquePointer) -> Set<String> {
+        let query = "PRAGMA table_info(\(tableName))"
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_prepare_v2(database, query, -1, &statement, nil) == SQLITE_OK else {
+            return []
+        }
+
+        var columns = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let rawName = sqlite3_column_text(statement, 1) {
+                columns.insert(String(cString: rawName))
+            }
+        }
+        return columns
+    }
+
     private static func storeBundleURLs(for baseURL: URL) -> [URL] {
         [
             baseURL,
@@ -150,6 +227,7 @@ struct TypoReviewApp: App {
         WindowGroup {
             RootTabView()
                 .environment(syncStatusStore)
+                .environment(mediaLibraryStore)
                 .environment(\.locale, Locale(identifier: "zh_Hans"))
         }
         .modelContainer(sharedModelContainer)
