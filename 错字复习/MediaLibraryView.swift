@@ -12,7 +12,26 @@ struct MediaLibraryView: View {
     @State private var titleDraft = ""
 
     private var mediaAssets: [MediaLibraryAsset] {
-        mediaLibraryStore.mediaAssets
+        mediaLibraryStore.mediaAssets.sorted { lhs, rhs in
+            if lhs.playlistOrder == rhs.playlistOrder {
+                return lhs.createdAt > rhs.createdAt
+            }
+            return lhs.playlistOrder > rhs.playlistOrder
+        }
+    }
+
+    private var totalMediaCount: Int {
+        mediaAssets.count
+    }
+
+    private var totalMediaFileSize: Int64 {
+        mediaAssets.reduce(into: Int64(0)) { total, asset in
+            total += MediaLibraryStorage.fileSize(for: asset.storedFilename)
+        }
+    }
+
+    private var totalMediaFileSizeText: String {
+        ByteCountFormatter.string(fromByteCount: totalMediaFileSize, countStyle: .file)
     }
 
     var body: some View {
@@ -30,6 +49,11 @@ struct MediaLibraryView: View {
                 }
             } else {
                 List {
+                    Section {
+                        librarySummarySection
+                    }
+                    .listRowBackground(Color.clear)
+
                     if playbackCoordinator.currentAsset != nil || playbackCoordinator.isWaitingForDownload {
                         Section {
                             previewSection
@@ -84,6 +108,27 @@ struct MediaLibraryView: View {
         .onDisappear {
             playbackCoordinator.stop()
         }
+    }
+
+    private var librarySummarySection: some View {
+        HStack(spacing: 12) {
+            summaryCard(
+                title: "资源数量",
+                value: "\(totalMediaCount)",
+                caption: totalMediaCount == 1 ? "共 1 条资源" : "共 \(totalMediaCount) 条资源",
+                icon: "square.stack.3d.up.fill",
+                tint: .blue
+            )
+
+            summaryCard(
+                title: "占用体积",
+                value: totalMediaFileSizeText,
+                caption: "按当前可读取文件统计",
+                icon: "externaldrive.fill",
+                tint: .green
+            )
+        }
+        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
     }
 
     private func mediaRow(for asset: MediaLibraryAsset) -> some View {
@@ -147,6 +192,17 @@ struct MediaLibraryView: View {
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(syncStatusColor(for: asset).opacity(0.12), in: Capsule())
+
+                        HStack(spacing: 4) {
+                            Image(systemName: "calendar")
+                                .font(.system(size: 8))
+                            Text(importedAtText(for: asset))
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.12), in: Capsule())
                     }
                     .padding(.top, 2)
                 }
@@ -313,7 +369,9 @@ struct MediaLibraryView: View {
 
     private func moveAssets(from source: IndexSet, to destination: Int) {
         do {
-            try mediaLibraryStore.moveAssets(from: source, to: destination)
+            var reorderedAssets = mediaAssets
+            reorderedAssets.move(fromOffsets: source, toOffset: destination)
+            try mediaLibraryStore.replaceDisplayedOrder(with: reorderedAssets)
         } catch {
             showError(error, title: "调整顺序失败")
         }
@@ -321,7 +379,8 @@ struct MediaLibraryView: View {
 
     private func deleteAssets(at offsets: IndexSet) {
         do {
-            try mediaLibraryStore.deleteAssets(at: offsets)
+            let assetIDs = offsets.map { mediaAssets[$0].id }
+            try mediaLibraryStore.deleteAssets(withIDs: assetIDs)
         } catch {
             showError(error, title: "删除失败")
         }
@@ -437,6 +496,49 @@ struct MediaLibraryView: View {
         default:
             return .secondary
         }
+    }
+
+    private func importedAtText(for asset: MediaLibraryAsset) -> String {
+        asset.createdAt.formatted(.dateTime.month().day())
+    }
+
+    private func summaryCard(
+        title: String,
+        value: String,
+        caption: String,
+        icon: String,
+        tint: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 14, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+            }
+            .foregroundStyle(tint)
+
+            Text(value)
+                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+
+            Text(caption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemGroupedBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(tint.opacity(0.12), lineWidth: 1)
+        )
     }
 }
 

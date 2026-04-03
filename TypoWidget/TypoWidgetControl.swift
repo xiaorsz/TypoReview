@@ -23,7 +23,7 @@ struct TypoWidgetControl: ControlWidget {
                 isOn: value.isRunning,
                 action: StartTimerIntent(value.name)
             ) { isRunning in
-                Label(isRunning ? "On" : "Off", systemImage: "timer")
+                Label(isRunning ? "开启" : "关闭", systemImage: "timer")
             }
         }
         .displayName("Timer")

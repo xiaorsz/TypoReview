@@ -65,6 +65,32 @@ enum MediaLibraryStorage {
         }
     }
 
+    static func fileSize(for storedFilename: String) -> Int64 {
+        for url in candidateFileURLs(for: storedFilename) where FileManager.default.fileExists(atPath: url.path) {
+            let values = try? url.resourceValues(forKeys: [
+                .totalFileSizeKey,
+                .fileSizeKey,
+                .totalFileAllocatedSizeKey,
+                .fileAllocatedSizeKey
+            ])
+
+            if let size = values?.totalFileAllocatedSize {
+                return Int64(size)
+            }
+            if let size = values?.fileAllocatedSize {
+                return Int64(size)
+            }
+            if let size = values?.totalFileSize {
+                return Int64(size)
+            }
+            if let size = values?.fileSize {
+                return Int64(size)
+            }
+        }
+
+        return 0
+    }
+
     static func preferredMetadataURL() throws -> (fileURL: URL, storageScope: MediaStorageScope) {
         let location = try preferredStorageLocation()
         return (

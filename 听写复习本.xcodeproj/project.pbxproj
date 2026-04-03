@@ -50,6 +50,7 @@
 		9B3748AF8610AB9DAEDC55A3 /* DictationReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54E7E4D3A83E8BB53D0F1DBA /* DictationReviewView.swift */; };
 		9D1ADDEC791C0E72883CA9F1 /* MediaAsset.swift in Sources */ = {isa = PBXBuildFile; fileRef = D462982FDCF82CEE1F04B828 /* MediaAsset.swift */; };
 		A046BF33825080EEED7D2285 /* TaskItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6A74373962C3C4C62923384 /* TaskItem.swift */; };
+		AC5DDB6A0F340EAB0D39549B /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A99D2AE03D18721598C7D8E5 /* Localizable.strings */; };
 		B7EB4DA6A822CF40AB65AFB9 /* SpeechAudioSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B6BED7625915F1CA069DAB6 /* SpeechAudioSession.swift */; };
 		BA3B7C0964D938CF4B19305E /* DictationEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0F396BBF587A380BEE3F397 /* DictationEntry.swift */; };
 		BB05FCD5CE7DA8AFAA98C5BD /* ReviewScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = C78706DDBA19DB8AE3305527 /* ReviewScheduler.swift */; };
@@ -115,6 +116,7 @@
 		784F6272A4455A0B3B474874 /* DictationSessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationSessionView.swift; sourceTree = "<group>"; };
 		7B43E29B6728FBAA1D22D769 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
 		7E8B64A4B415CF43C0F3EEDD /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		7EAC75D915715917D72FF083 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
 		7EFCE1B1D4218D4C5A356E18 /* TypoWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypoWidget.swift; sourceTree = "<group>"; };
 		82B57298A1B4CF7DFEF09CD9 /* TypoReviewApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypoReviewApp.swift; sourceTree = "<group>"; };
 		835499BE852352E7085C7083 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
@@ -189,6 +191,7 @@
 				B6A74373962C3C4C62923384 /* TaskItem.swift */,
 				08B33BBC82EF65E89FA0551B /* TasksView.swift */,
 				82B57298A1B4CF7DFEF09CD9 /* TypoReviewApp.swift */,
+				A99D2AE03D18721598C7D8E5 /* Localizable.strings */,
 				3AA1A80440A535898C789B2D /* Preview Content */,
 			);
 			path = "错字复习";
@@ -294,11 +297,11 @@
 				};
 			};
 			buildConfigurationList = 130257229D928B8F036D9DC5 /* Build configuration list for PBXProject "听写复习本" */;
-			developmentRegion = en;
+			developmentRegion = "zh-Hans";
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				Base,
-				en,
+				"zh-Hans",
 			);
 			mainGroup = 403372BBC3BC500F5D6BB989;
 			minimizedProjectReferenceProxies = 1;
@@ -328,6 +331,7 @@
 			files = (
 				D8F6247E90A49A83716297D8 /* Assets.xcassets in Resources */,
 				8DD0DB1825D5A2A8FBA4F3AD /* Contents.json in Resources */,
+				AC5DDB6A0F340EAB0D39549B /* Localizable.strings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -409,6 +413,17 @@
 			targetProxy = F178C30041669E8A17693C5A /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
+
+/* Begin PBXVariantGroup section */
+		A99D2AE03D18721598C7D8E5 /* Localizable.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				7EAC75D915715917D72FF083 /* zh-Hans */,
+			);
+			name = Localizable.strings;
+			sourceTree = "<group>";
+		};
+/* End PBXVariantGroup section */
 
 /* Begin XCBuildConfiguration section */
 		03A679B8130D5DA06C4DF198 /* Debug */ = {

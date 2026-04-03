@@ -25,9 +25,9 @@ final class MediaPlaybackCoordinator {
             .filter(\.isIncludedInPlaylist)
             .sorted { lhs, rhs in
                 if lhs.playlistOrder == rhs.playlistOrder {
-                    return lhs.createdAt < rhs.createdAt
+                    return lhs.createdAt > rhs.createdAt
                 }
-                return lhs.playlistOrder < rhs.playlistOrder
+                return lhs.playlistOrder > rhs.playlistOrder
             }
     }
 

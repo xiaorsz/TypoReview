@@ -1,6 +1,7 @@
 name: 听写复习本
 options:
   minimumXcodeGenVersion: 2.38.0
+  developmentLanguage: zh-Hans
 schemes:
   听写复习本:
     build:

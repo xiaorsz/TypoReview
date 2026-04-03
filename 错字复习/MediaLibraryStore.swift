@@ -86,6 +86,10 @@ final class MediaLibraryStore {
         try overwrite(with: reorderedAssets)
     }
 
+    func replaceDisplayedOrder(with displayedAssets: [MediaLibraryAsset]) throws {
+        try overwrite(with: Array(displayedAssets.reversed()))
+    }
+
     func deleteAssets(at offsets: IndexSet) throws {
         let deletedAssets = offsets.map { mediaAssets[$0] }
         deletedAssets.forEach { MediaLibraryStorage.deleteFile(named: $0.storedFilename) }
@@ -94,6 +98,14 @@ final class MediaLibraryStore {
             offsets.contains(index) ? nil : asset
         }
 
+        try overwrite(with: remainingAssets)
+    }
+
+    func deleteAssets(withIDs assetIDs: [UUID]) throws {
+        let deletedAssets = mediaAssets.filter { assetIDs.contains($0.id) }
+        deletedAssets.forEach { MediaLibraryStorage.deleteFile(named: $0.storedFilename) }
+
+        let remainingAssets = mediaAssets.filter { !assetIDs.contains($0.id) }
         try overwrite(with: remainingAssets)
     }
 
