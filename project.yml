@@ -80,6 +80,10 @@ targets:
         type: file
       - path: 错字复习/TaskCompletion.swift
         type: file
+      - path: 错字复习/TaskSubitem.swift
+        type: file
+      - path: 错字复习/TaskExecutionSupport.swift
+        type: file
       - path: 错字复习/ReviewRecord.swift
         type: file
       - path: 错字复习/AppSettings.swift

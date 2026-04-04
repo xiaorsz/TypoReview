@@ -16,6 +16,9 @@ struct TypoReviewApp: App {
             ReviewRecord.self,
             TaskItem.self,
             TaskCompletion.self,
+            TaskSubitem.self,
+            TaskExecutionRecord.self,
+            TaskSubitemExecutionRecord.self,
             AppSettings.self,
             DictationSession.self,
             DictationEntry.self,
@@ -65,6 +68,8 @@ struct TypoReviewApp: App {
 
         do {
             let container = try ModelContainer(for: schema, configurations: [cloudConfiguration])
+            Self.migrateLegacyTaskExecutionsIfNeeded(in: container.mainContext)
+            TaskExecutionSupport.migrateLegacySubtasksIfNeeded(in: container.mainContext)
             sharedModelContainer = container
 
             _syncStatusStore = State(initialValue: {
@@ -81,6 +86,8 @@ struct TypoReviewApp: App {
             let container: ModelContainer
             do {
                 container = try ModelContainer(for: schema, configurations: [fallbackConfiguration])
+                Self.migrateLegacyTaskExecutionsIfNeeded(in: container.mainContext)
+                TaskExecutionSupport.migrateLegacySubtasksIfNeeded(in: container.mainContext)
             } catch {
                 print("Fallback ModelContainer also failed: \(error)")
                 let inMemoryConfig = ModelConfiguration(isStoredInMemoryOnly: true)
@@ -183,6 +190,23 @@ struct TypoReviewApp: App {
                 print("Failed to add \(columnName) to legacy store: \(message)")
             }
         }
+
+        if tableExists(named: "ZTASKSUBITEM", in: database) {
+            let subtaskColumns = fetchColumnNames(for: "ZTASKSUBITEM", in: database)
+            let subtaskStatements = [
+                ("ZTASKEXECUTIONIDRAWVALUE", "ALTER TABLE ZTASKSUBITEM ADD COLUMN ZTASKEXECUTIONIDRAWVALUE TEXT NOT NULL DEFAULT ''"),
+                ("ZDETAIL", "ALTER TABLE ZTASKSUBITEM ADD COLUMN ZDETAIL TEXT NOT NULL DEFAULT ''"),
+                ("ZSTATUSRAWVALUE", "ALTER TABLE ZTASKSUBITEM ADD COLUMN ZSTATUSRAWVALUE TEXT NOT NULL DEFAULT '待处理'"),
+                ("ZCOMPLETEDAT", "ALTER TABLE ZTASKSUBITEM ADD COLUMN ZCOMPLETEDAT DOUBLE")
+            ]
+
+            for (columnName, statement) in subtaskStatements where !subtaskColumns.contains(columnName) {
+                if sqlite3_exec(database, statement, nil, nil, nil) != SQLITE_OK {
+                    let message = sqlite3_errmsg(database).map { String(cString: $0) } ?? "unknown"
+                    print("Failed to add \(columnName) to legacy subtask store: \(message)")
+                }
+            }
+        }
     }
 
     private static func tableExists(named tableName: String, in database: OpaquePointer) -> Bool {
@@ -222,6 +246,33 @@ struct TypoReviewApp: App {
             URL(fileURLWithPath: baseURL.path + "-wal"),
             URL(fileURLWithPath: baseURL.path + "-shm")
         ]
+    }
+
+    private static func migrateLegacyTaskExecutionsIfNeeded(in modelContext: ModelContext) {
+        let executionCount = (try? modelContext.fetchCount(FetchDescriptor<TaskExecutionRecord>())) ?? 0
+        guard executionCount == 0 else { return }
+
+        let legacyCompletions = (try? modelContext.fetch(FetchDescriptor<TaskCompletion>())) ?? []
+        guard !legacyCompletions.isEmpty else { return }
+
+        let calendar = Calendar.current
+        for completion in legacyCompletions {
+            let record = TaskExecutionRecord(
+                id: completion.id,
+                taskID: completion.taskID,
+                occurrenceDate: calendar.startOfDay(for: completion.completedDate),
+                detail: "",
+                status: .completed,
+                completedAt: completion.completedAt,
+                createdAt: completion.completedAt,
+                updatedAt: completion.completedAt
+            )
+            modelContext.insert(record)
+        }
+
+        if modelContext.hasChanges {
+            try? modelContext.save()
+        }
     }
 
     var body: some Scene {

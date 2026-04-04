@@ -6,6 +6,9 @@ struct TasksView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \TaskItem.createdAt, order: .reverse) private var allTasks: [TaskItem]
     @Query(sort: \TaskCompletion.completedAt, order: .reverse) private var completions: [TaskCompletion]
+    @Query(sort: \TaskSubitem.sortOrder) private var allSubtasks: [TaskSubitem]
+    @Query(sort: \TaskExecutionRecord.occurrenceDate, order: .reverse) private var executionRecords: [TaskExecutionRecord]
+    @Query(sort: \TaskSubitemExecutionRecord.updatedAt, order: .reverse) private var subtaskExecutionRecords: [TaskSubitemExecutionRecord]
     @Query(sort: \ScheduleItem.startTime) private var allSchedules: [ScheduleItem]
 
     private var activeTasks: [TaskItem] {
@@ -18,7 +21,12 @@ struct TasksView: View {
 
     private var todayTaskItems: [TodayTaskDisplayItem] {
         TodayTaskListBuilder
-            .build(from: activeTasks, completions: completions)
+            .build(
+                from: activeTasks,
+                executions: executionRecords,
+                subtasks: allSubtasks,
+                subtaskExecutions: subtaskExecutionRecords
+            )
     }
 
     private var todayPending: [TodayTaskDisplayItem] {
@@ -158,13 +166,7 @@ struct TasksView: View {
 
                                 Button("彻底删除", systemImage: "trash", role: .destructive) {
                                     // Delete all completions for this task too
-                                    let taskID = task.id
-                                    for c in completions where c.taskID == taskID {
-                                        modelContext.delete(c)
-                                    }
-                                    modelContext.delete(task)
-                                    try? modelContext.save()
-                                    WidgetCenter.shared.reloadAllTimelines()
+                                    deleteTask(task)
                                 }
                             }
                         }
@@ -208,26 +210,45 @@ struct TasksView: View {
             item.task,
             isDone: item.isCompleted,
             showActions: showActions,
-            occurrenceLabel: item.overdueOriginText
+            occurrenceDate: item.occurrenceDate,
+            occurrenceLabel: item.overdueOriginText,
+            totalSubtaskCount: item.totalSubtaskCount,
+            completedSubtaskCount: item.completedSubtaskCount
         )
     }
 
-    private func taskRow(_ task: TaskItem, isDone: Bool, showActions: Bool = true, occurrenceLabel: String? = nil) -> some View {
-        HStack(spacing: 14) {
+    private func taskRow(
+        _ task: TaskItem,
+        isDone: Bool,
+        showActions: Bool = true,
+        occurrenceDate: Date? = nil,
+        occurrenceLabel: String? = nil,
+        totalSubtaskCount: Int? = nil,
+        completedSubtaskCount: Int? = nil
+    ) -> some View {
+        let hasSubtasks = (totalSubtaskCount ?? 0) > 0
+
+        return HStack(spacing: 14) {
             if showActions {
-                Button {
-                    toggleCompletion(for: task, isDone: isDone)
-                } label: {
-                    Image(systemName: isDone ? "checkmark.circle.fill" : "circle")
+                if hasSubtasks {
+                    Image(systemName: isDone ? "checkmark.circle.fill" : "list.bullet.circle")
                         .font(.title2)
                         .foregroundStyle(isDone ? .green : .secondary)
-                        .contentTransition(.symbolEffect(.replace))
+                } else {
+                    Button {
+                        toggleCompletion(for: task, occurrenceDate: occurrenceDate ?? .now, isDone: isDone)
+                    } label: {
+                        Image(systemName: isDone ? "checkmark.circle.fill" : "circle")
+                            .font(.title2)
+                            .foregroundStyle(isDone ? .green : .secondary)
+                            .contentTransition(.symbolEffect(.replace))
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
 
             NavigationLink {
-                AddTaskView(task: task)
+                TaskDetailView(task: task)
             } label: {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(task.title)
@@ -258,6 +279,13 @@ struct TasksView: View {
                                 .foregroundStyle(.orange)
                                 .lineLimit(1)
                         }
+
+                        if let totalSubtaskCount, totalSubtaskCount > 0,
+                           let completedSubtaskCount {
+                            Text("\(completedSubtaskCount)/\(totalSubtaskCount) 子任务")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(isDone ? .green : .blue)
+                        }
                     }
 
                     if !task.note.isEmpty {
@@ -281,31 +309,22 @@ struct TasksView: View {
         }
     }
 
-    private func toggleCompletion(for task: TaskItem, isDone: Bool) {
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: .now)
-
+    private func toggleCompletion(for task: TaskItem, occurrenceDate: Date, isDone: Bool) {
         if isDone {
-            // Un-complete: remove today's completion
-            if let completion = completions.first(where: {
-                $0.taskID == task.id && calendar.isDate($0.completedDate, inSameDayAs: today)
-            }) {
-                modelContext.delete(completion)
-            }
-        } else {
-            // Complete: add a completion record
-            let completion = TaskCompletion(
-                taskID: task.id,
-                completedDate: today
+            TaskExecutionSupport.reopenTaskCompletion(
+                task: task,
+                occurrenceDate: occurrenceDate,
+                existingExecutions: executionRecords,
+                modelContext: modelContext
             )
-            modelContext.insert(completion)
+        } else {
+            TaskExecutionSupport.markTaskCompleted(
+                task: task,
+                occurrenceDate: occurrenceDate,
+                existingExecutions: executionRecords,
+                modelContext: modelContext
+            )
 
-            // For once tasks, also archive
-            if task.recurrence.kind == .once {
-                task.isArchived = true
-            }
-
-            // Haptic
             let generator = UINotificationFeedbackGenerator()
             generator.notificationOccurred(.success)
         }
@@ -409,5 +428,27 @@ struct TasksView: View {
                 WidgetCenter.shared.reloadAllTimelines()
             }
         }
+    }
+
+    private func deleteTask(_ task: TaskItem) {
+        let taskID = task.id
+        let relatedExecutionRecords = executionRecords.filter { $0.taskID == taskID }
+        let relatedExecutionIDs = Set(relatedExecutionRecords.map(\.id))
+
+        for completion in completions where completion.taskID == taskID {
+            modelContext.delete(completion)
+        }
+        for subtaskExecution in subtaskExecutionRecords where relatedExecutionIDs.contains(subtaskExecution.taskExecutionID) {
+            modelContext.delete(subtaskExecution)
+        }
+        for execution in relatedExecutionRecords {
+            modelContext.delete(execution)
+        }
+        for subtask in allSubtasks where subtask.parentTaskID == taskID {
+            modelContext.delete(subtask)
+        }
+        modelContext.delete(task)
+        try? modelContext.save()
+        WidgetCenter.shared.reloadAllTimelines()
     }
 }

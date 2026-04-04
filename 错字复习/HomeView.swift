@@ -16,18 +16,25 @@ struct HomeView: View {
     @Query(sort: \DictationEntry.sortOrder) private var dictationEntries: [DictationEntry]
     @Query private var settings: [AppSettings]
     @Query(sort: \TaskItem.createdAt) private var allTasks: [TaskItem]
-    @Query(sort: \TaskCompletion.completedAt, order: .reverse) private var taskCompletions: [TaskCompletion]
+    @Query(sort: \TaskSubitem.sortOrder) private var taskSubitems: [TaskSubitem]
+    @Query(sort: \TaskExecutionRecord.occurrenceDate, order: .reverse) private var taskExecutionRecords: [TaskExecutionRecord]
+    @Query(sort: \TaskSubitemExecutionRecord.updatedAt, order: .reverse) private var taskSubitemExecutionRecords: [TaskSubitemExecutionRecord]
     @Query(sort: \ScheduleItem.startTime) private var allSchedules: [ScheduleItem]
     
     @State private var showingReviewPreview = false
     @State private var isReviewActive = false
     @State private var previewSession: DictationSession?
     @State private var activeDictationSession: DictationSession?
+    @State private var selectedTaskForDetail: TaskItem?
     @State private var showingDashboardBoard = false
     @State private var showQuickEntryHint = false
 
     private let scheduler = ReviewScheduler()
     private let isPad = UIDevice.current.userInterfaceIdiom == .pad
+
+    private var activeTasks: [TaskItem] {
+        allTasks.filter { !$0.isArchived }
+    }
 
     private var dailyLimit: Int {
         settings.first?.dailyLimit ?? 15
@@ -103,7 +110,12 @@ struct HomeView: View {
             .filter { $0.shouldAppear(on: .now) && !$0.hasEnded(on: .now, reference: .now) }
             .sorted { $0.startTimeMinutes < $1.startTimeMinutes }
         
-        let taskItems = TodayTaskListBuilder.build(from: allTasks, completions: taskCompletions)
+        let taskItems = TodayTaskListBuilder.build(
+            from: activeTasks,
+            executions: taskExecutionRecords,
+            subtasks: taskSubitems,
+            subtaskExecutions: taskSubitemExecutionRecords
+        )
         let tPendingTasks = taskItems.filter { $0.section == .todayPending }
         let hPendingTasks = taskItems.filter { $0.section == .historicalPending }
             .sorted { lhs, rhs in
@@ -292,6 +304,9 @@ struct HomeView: View {
                     session: session,
                     entries: dictationEntries.filter { $0.sessionID == session.id }.sorted { $0.sortOrder < $1.sortOrder }
                 )
+            }
+            .navigationDestination(item: $selectedTaskForDetail) { task in
+                TaskDetailView(task: task)
             }
             .navigationDestination(isPresented: $isReviewActive) {
                 if reviewStyle == .batch {
@@ -599,13 +614,16 @@ struct HomeView: View {
 
     @ViewBuilder
     private func todayTasksCard(_ snapshot: DashboardSnapshot) -> some View {
-        let pendingItems = snapshot.todayPendingTasks
-        let historicalItems = snapshot.historicalPendingTasks
+        let pendingItems = collapsedHomeTaskItems(snapshot.todayPendingTasks)
+        let pendingTaskIDs = Set(pendingItems.map(\.task.id))
+        let historicalItems = collapsedHomeTaskItems(
+            snapshot.historicalPendingTasks.filter { !pendingTaskIDs.contains($0.task.id) }
+        )
         let doneCount = snapshot.todayCompletedTaskCount
         let todayTaskCount = pendingItems.count + doneCount
-        let historyCount = historicalItems.count
+        let historyCount = snapshot.historicalPendingTasks.count
         
-        if !pendingItems.isEmpty || doneCount > 0 || !historicalItems.isEmpty || !allTasks.isEmpty {
+        if !pendingItems.isEmpty || doneCount > 0 || !historicalItems.isEmpty || !activeTasks.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     Image(systemName: "checklist")
@@ -630,7 +648,7 @@ struct HomeView: View {
                     }
                 }
 
-                if pendingItems.isEmpty && historicalItems.isEmpty && !allTasks.isEmpty {
+                if pendingItems.isEmpty && historicalItems.isEmpty && !activeTasks.isEmpty {
                     Text("今天没有待完成的任务。")
                         .foregroundStyle(.secondary)
                         .font(.subheadline)
@@ -680,69 +698,99 @@ struct HomeView: View {
         let task = item.task
         let isDone = item.isCompleted
         let occurrenceLabel = item.overdueOriginText
+        let hasSubtasks = item.hasSubtasks
 
-        return HStack(spacing: 12) {
-            Button {
-                if !isDone {
-                    completeTask(task)
-                }
-            } label: {
-                Image(systemName: isDone ? "checkmark.circle.fill" : "circle")
+        return HStack(spacing: 10) {
+            if hasSubtasks {
+                Image(systemName: isDone ? "checkmark.circle.fill" : "list.bullet.circle")
                     .font(.title3)
                     .foregroundStyle(isDone ? .green : .secondary)
+            } else {
+                Button {
+                    if !isDone {
+                        completeTask(task, occurrenceDate: item.occurrenceDate)
+                    }
+                } label: {
+                    Image(systemName: isDone ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
+                        .foregroundStyle(isDone ? .green : .secondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(isDone)
             }
-            .buttonStyle(.plain)
-            .disabled(isDone)
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(task.title)
-                    .fontWeight(.medium)
-                    .foregroundStyle(isDone ? .secondary : .primary)
-                    .strikethrough(isDone)
+            Button {
+                selectedTaskForDetail = task
+            } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(task.title)
+                        .fontWeight(.medium)
+                        .foregroundStyle(isDone ? .secondary : .primary)
+                        .strikethrough(isDone)
 
-                HStack(spacing: 6) {
-                    Text(task.recurrenceLabel)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    if let effectiveDateRangeLabel = task.effectiveDateRangeLabel {
-                        Text(effectiveDateRangeLabel)
+                    HStack(spacing: 4) {
+                        Text(task.recurrenceLabel)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                    }
 
-                    if task.skipPolicy == .unskippable {
-                        Text("不可跳过")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.orange)
-                    }
+                        if let effectiveDateRangeLabel = task.effectiveDateRangeLabel {
+                            Text(effectiveDateRangeLabel)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
 
-                    if let occurrenceLabel, !isDone {
-                        Text(occurrenceLabel)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.orange)
-                            .lineLimit(1)
+                        if task.skipPolicy == .unskippable {
+                            Text("不可跳过")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.orange)
+                        }
+
+                        if let occurrenceLabel, !isDone {
+                            Text(occurrenceLabel)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.orange)
+                                .lineLimit(1)
+                        }
+
+                        if let progressText = item.subtaskProgressText {
+                            Text(progressText)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(isDone ? .green : .blue)
+                        }
+
+                        if !isDone, item.pendingOccurrenceCount > 1 {
+                            Text("共 \(item.pendingOccurrenceCount) 次待处理")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.orange)
+                        }
                     }
+                    .opacity(isDone ? 0.6 : 1.0)
                 }
-                .opacity(isDone ? 0.6 : 1.0)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .buttonStyle(.plain)
 
-            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
         }
         .padding(.vertical, 2)
     }
 
-    private func completeTask(_ task: TaskItem) {
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: .now)
-
-        let completion = TaskCompletion(taskID: task.id, completedDate: today)
-        modelContext.insert(completion)
-
-        if task.recurrence.kind == .once {
-            task.isArchived = true
+    private func collapsedHomeTaskItems(_ items: [TodayTaskDisplayItem]) -> [TodayTaskDisplayItem] {
+        var seenTaskIDs = Set<UUID>()
+        return items.filter { item in
+            seenTaskIDs.insert(item.task.id).inserted
         }
+    }
 
+    private func completeTask(_ task: TaskItem, occurrenceDate: Date) {
+        TaskExecutionSupport.markTaskCompleted(
+            task: task,
+            occurrenceDate: occurrenceDate,
+            existingExecutions: taskExecutionRecords,
+            modelContext: modelContext
+        )
         try? modelContext.save()
         WidgetCenter.shared.reloadAllTimelines()
 
