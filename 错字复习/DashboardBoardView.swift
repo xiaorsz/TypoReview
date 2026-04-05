@@ -13,7 +13,9 @@ struct DashboardBoardView: View {
     @Query(sort: \DictationSession.createdAt, order: .reverse) private var dictationSessions: [DictationSession]
     @Query(sort: \DictationEntry.sortOrder) private var dictationEntries: [DictationEntry]
     @Query(sort: \TaskItem.createdAt) private var allTasks: [TaskItem]
-    @Query(sort: \TaskCompletion.completedAt, order: .reverse) private var taskCompletions: [TaskCompletion]
+    @Query(sort: \TaskSubitem.sortOrder) private var taskSubitems: [TaskSubitem]
+    @Query(sort: \TaskExecutionRecord.occurrenceDate, order: .reverse) private var taskExecutionRecords: [TaskExecutionRecord]
+    @Query(sort: \TaskSubitemExecutionRecord.updatedAt, order: .reverse) private var taskSubitemExecutionRecords: [TaskSubitemExecutionRecord]
     @Query(sort: \ScheduleItem.startTime) private var allSchedules: [ScheduleItem]
     @Query private var settings: [AppSettings]
 
@@ -64,7 +66,13 @@ struct DashboardBoardView: View {
 
     private var todayTaskItems: [TodayTaskDisplayItem] {
         TodayTaskListBuilder
-            .build(from: allTasks.filter { !$0.isArchived }, completions: taskCompletions, on: boardNow)
+            .build(
+                from: allTasks.filter { !$0.isArchived },
+                executions: taskExecutionRecords,
+                subtasks: taskSubitems,
+                subtaskExecutions: taskSubitemExecutionRecords,
+                on: boardNow
+            )
     }
 
     private var todayPendingTasks: [TodayTaskDisplayItem] {
@@ -674,6 +682,13 @@ struct DashboardBoardView: View {
                     Text(statusText)
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
                         .foregroundStyle(isDone ? Color.green.opacity(0.95) : Color.orange.opacity(0.95))
+                        .lineLimit(1)
+                }
+
+                if let progressText = item.subtaskProgressText {
+                    Text(progressText)
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundStyle(isDone ? Color.green.opacity(0.95) : Color.blue.opacity(0.95))
                         .lineLimit(1)
                 }
             }

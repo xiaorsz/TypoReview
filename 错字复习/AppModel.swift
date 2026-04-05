@@ -55,14 +55,14 @@ enum ReviewInteractionStyle: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-enum TaskSkipPolicy: String, Codable, CaseIterable, Identifiable {
+enum TaskSkipPolicy: String, Codable, CaseIterable, Identifiable, Sendable {
     case skippable = "可跳过"
     case unskippable = "不可跳过"
 
     var id: String { rawValue }
 }
 
-enum ScheduleRepeatRule: String, Codable, CaseIterable, Identifiable {
+enum ScheduleRepeatRule: String, Codable, CaseIterable, Identifiable, Sendable {
     case once = "单次"
     case daily = "每天"
     case weekly = "每周"
@@ -71,8 +71,8 @@ enum ScheduleRepeatRule: String, Codable, CaseIterable, Identifiable {
 }
 
 /// Recurrence rule encoded as JSON string for SwiftData storage.
-struct TaskRecurrence: Codable, Equatable {
-    enum Kind: String, Codable, CaseIterable, Identifiable {
+struct TaskRecurrence: Codable, Equatable, Sendable {
+    enum Kind: String, Codable, CaseIterable, Identifiable, Sendable {
         case once = "单次"
         case daily = "每天"
         case weekly = "每周"

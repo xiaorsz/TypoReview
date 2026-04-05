@@ -47,7 +47,7 @@ struct DataBackupDocument: FileDocument {
 }
 
 struct DataBackupPayload: Codable {
-    static let currentVersion = 1
+    static let currentVersion = 3
 
     let version: Int
     let exportedAt: Date
@@ -57,6 +57,9 @@ struct DataBackupPayload: Codable {
     let reviewRecords: [ReviewRecordSnapshot]
     let taskItems: [TaskItemSnapshot]
     let taskCompletions: [TaskCompletionSnapshot]
+    let taskSubitems: [TaskSubitemSnapshot]
+    let taskExecutionRecords: [TaskExecutionRecordSnapshot]
+    let taskSubitemExecutionRecords: [TaskSubitemExecutionRecordSnapshot]
     let dictationSessions: [DictationSessionSnapshot]
     let dictationEntries: [DictationEntrySnapshot]
     let scheduleItems: [ScheduleItemSnapshot]
@@ -71,6 +74,9 @@ struct DataBackupPayload: Codable {
         case reviewRecords
         case taskItems
         case taskCompletions
+        case taskSubitems
+        case taskExecutionRecords
+        case taskSubitemExecutionRecords
         case dictationSessions
         case dictationEntries
         case scheduleItems
@@ -86,6 +92,9 @@ struct DataBackupPayload: Codable {
         reviewRecords: [ReviewRecordSnapshot],
         taskItems: [TaskItemSnapshot],
         taskCompletions: [TaskCompletionSnapshot],
+        taskSubitems: [TaskSubitemSnapshot],
+        taskExecutionRecords: [TaskExecutionRecordSnapshot],
+        taskSubitemExecutionRecords: [TaskSubitemExecutionRecordSnapshot],
         dictationSessions: [DictationSessionSnapshot],
         dictationEntries: [DictationEntrySnapshot],
         scheduleItems: [ScheduleItemSnapshot],
@@ -99,6 +108,9 @@ struct DataBackupPayload: Codable {
         self.reviewRecords = reviewRecords
         self.taskItems = taskItems
         self.taskCompletions = taskCompletions
+        self.taskSubitems = taskSubitems
+        self.taskExecutionRecords = taskExecutionRecords
+        self.taskSubitemExecutionRecords = taskSubitemExecutionRecords
         self.dictationSessions = dictationSessions
         self.dictationEntries = dictationEntries
         self.scheduleItems = scheduleItems
@@ -115,6 +127,9 @@ struct DataBackupPayload: Codable {
         reviewRecords = try container.decode([ReviewRecordSnapshot].self, forKey: .reviewRecords)
         taskItems = try container.decode([TaskItemSnapshot].self, forKey: .taskItems)
         taskCompletions = try container.decode([TaskCompletionSnapshot].self, forKey: .taskCompletions)
+        taskSubitems = try container.decodeIfPresent([TaskSubitemSnapshot].self, forKey: .taskSubitems) ?? []
+        taskExecutionRecords = try container.decodeIfPresent([TaskExecutionRecordSnapshot].self, forKey: .taskExecutionRecords) ?? []
+        taskSubitemExecutionRecords = try container.decodeIfPresent([TaskSubitemExecutionRecordSnapshot].self, forKey: .taskSubitemExecutionRecords) ?? []
         dictationSessions = try container.decode([DictationSessionSnapshot].self, forKey: .dictationSessions)
         dictationEntries = try container.decode([DictationEntrySnapshot].self, forKey: .dictationEntries)
         scheduleItems = try container.decode([ScheduleItemSnapshot].self, forKey: .scheduleItems)
@@ -128,6 +143,9 @@ struct DataBackupPayload: Codable {
             reviewRecords: [],
             taskItems: [],
             taskCompletions: [],
+            taskSubitems: [],
+            taskExecutionRecords: [],
+            taskSubitemExecutionRecords: [],
             dictationSessions: [],
             dictationEntries: [],
             scheduleItems: [],
@@ -141,6 +159,9 @@ struct DataBackupPayload: Codable {
         let reviewRecords = try modelContext.fetch(FetchDescriptor<ReviewRecord>()).map(ReviewRecordSnapshot.init)
         let taskItems = try modelContext.fetch(FetchDescriptor<TaskItem>()).map(TaskItemSnapshot.init)
         let taskCompletions = try modelContext.fetch(FetchDescriptor<TaskCompletion>()).map(TaskCompletionSnapshot.init)
+        let taskSubitems = try modelContext.fetch(FetchDescriptor<TaskSubitem>()).map(TaskSubitemSnapshot.init)
+        let taskExecutionRecords = try modelContext.fetch(FetchDescriptor<TaskExecutionRecord>()).map(TaskExecutionRecordSnapshot.init)
+        let taskSubitemExecutionRecords = try modelContext.fetch(FetchDescriptor<TaskSubitemExecutionRecord>()).map(TaskSubitemExecutionRecordSnapshot.init)
         let dictationSessions = try modelContext.fetch(FetchDescriptor<DictationSession>()).map(DictationSessionSnapshot.init)
         let dictationEntries = try modelContext.fetch(FetchDescriptor<DictationEntry>()).map(DictationEntrySnapshot.init)
         let scheduleItems = try modelContext.fetch(FetchDescriptor<ScheduleItem>()).map(ScheduleItemSnapshot.init)
@@ -152,6 +173,9 @@ struct DataBackupPayload: Codable {
             reviewRecords: reviewRecords,
             taskItems: taskItems,
             taskCompletions: taskCompletions,
+            taskSubitems: taskSubitems,
+            taskExecutionRecords: taskExecutionRecords,
+            taskSubitemExecutionRecords: taskSubitemExecutionRecords,
             dictationSessions: dictationSessions,
             dictationEntries: dictationEntries,
             scheduleItems: scheduleItems,
@@ -164,7 +188,7 @@ struct DataBackupPayload: Codable {
         decoder.dateDecodingStrategy = .iso8601
 
         let payload = try decoder.decode(DataBackupPayload.self, from: data)
-        guard payload.version == currentVersion else {
+        guard payload.version <= currentVersion else {
             throw DataBackupError.unsupportedVersion(payload.version)
         }
         return payload
@@ -191,7 +215,8 @@ struct DataBackupPayload: Codable {
             "题库 \(reviewItems.count) 条",
             "复习记录 \(reviewRecords.count) 条",
             "待办 \(taskItems.count) 条",
-            "完成记录 \(taskCompletions.count) 条",
+            "执行记录 \(max(taskExecutionRecords.count, taskCompletions.count)) 条",
+            "子任务 \(taskSubitems.count) 条",
             "听写计划 \(dictationSessions.count) 组",
             "听写条目 \(dictationEntries.count) 条",
             "日程 \(scheduleItems.count) 条",
@@ -221,6 +246,9 @@ enum DataBackupService {
         try deleteAll(ReviewRecord.self, in: modelContext)
         try deleteAll(TaskItem.self, in: modelContext)
         try deleteAll(TaskCompletion.self, in: modelContext)
+        try deleteAll(TaskSubitem.self, in: modelContext)
+        try deleteAll(TaskExecutionRecord.self, in: modelContext)
+        try deleteAll(TaskSubitemExecutionRecord.self, in: modelContext)
         try deleteAll(DictationSession.self, in: modelContext)
         try deleteAll(DictationEntry.self, in: modelContext)
         try deleteAll(ScheduleItem.self, in: modelContext)
@@ -241,6 +269,30 @@ enum DataBackupService {
         payload.taskCompletions
             .map { $0.makeModel() }
             .forEach { modelContext.insert($0) }
+        payload.taskSubitems
+            .map { $0.makeModel() }
+            .forEach { modelContext.insert($0) }
+        let restoredTaskExecutions: [TaskExecutionRecord] = {
+            if payload.taskExecutionRecords.isEmpty {
+                return payload.taskCompletions.map { snapshot in
+                    TaskExecutionRecord(
+                        id: snapshot.id,
+                        taskID: snapshot.taskID,
+                        occurrenceDate: snapshot.completedDate,
+                        detail: "",
+                        status: .completed,
+                        completedAt: snapshot.completedAt,
+                        createdAt: snapshot.completedAt,
+                        updatedAt: snapshot.completedAt
+                    )
+                }
+            }
+            return payload.taskExecutionRecords.map { $0.makeModel() }
+        }()
+        restoredTaskExecutions.forEach { modelContext.insert($0) }
+        payload.taskSubitemExecutionRecords
+            .map { $0.makeModel() }
+            .forEach { modelContext.insert($0) }
         payload.dictationSessions
             .map { $0.makeModel() }
             .forEach { modelContext.insert($0) }
@@ -250,6 +302,8 @@ enum DataBackupService {
         payload.scheduleItems
             .map { $0.makeModel() }
             .forEach { modelContext.insert($0) }
+
+        TaskExecutionSupport.migrateLegacySubtasksIfNeeded(in: modelContext)
 
         _ = try AppSettings.ensureSingleton(in: modelContext)
         if modelContext.hasChanges {
@@ -539,6 +593,158 @@ struct TaskCompletionSnapshot: Codable {
             completedDate: completedDate,
             completedAt: completedAt
         )
+    }
+}
+
+struct TaskSubitemSnapshot: Codable {
+    let id: UUID
+    let parentTaskID: UUID
+    let taskExecutionIDRawValue: String
+    let title: String
+    let note: String
+    let detail: String
+    let statusRawValue: String
+    let sortOrder: Int
+    let isArchived: Bool
+    let completedAt: Date?
+    let createdAt: Date
+    let updatedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case parentTaskID
+        case taskExecutionIDRawValue
+        case title
+        case note
+        case detail
+        case statusRawValue
+        case sortOrder
+        case isArchived
+        case completedAt
+        case createdAt
+        case updatedAt
+    }
+
+    init(_ subtask: TaskSubitem) {
+        id = subtask.id
+        parentTaskID = subtask.parentTaskID
+        taskExecutionIDRawValue = subtask.taskExecutionIDRawValue
+        title = subtask.title
+        note = subtask.note
+        detail = subtask.detail
+        statusRawValue = subtask.statusRawValue
+        sortOrder = subtask.sortOrder
+        isArchived = subtask.isArchived
+        completedAt = subtask.completedAt
+        createdAt = subtask.createdAt
+        updatedAt = subtask.updatedAt
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        parentTaskID = try container.decode(UUID.self, forKey: .parentTaskID)
+        taskExecutionIDRawValue = try container.decodeIfPresent(String.self, forKey: .taskExecutionIDRawValue) ?? ""
+        title = try container.decode(String.self, forKey: .title)
+        note = try container.decodeIfPresent(String.self, forKey: .note) ?? ""
+        detail = try container.decodeIfPresent(String.self, forKey: .detail) ?? ""
+        statusRawValue = try container.decodeIfPresent(String.self, forKey: .statusRawValue) ?? TaskExecutionStatus.pending.rawValue
+        sortOrder = try container.decodeIfPresent(Int.self, forKey: .sortOrder) ?? 0
+        isArchived = try container.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
+        completedAt = try container.decodeIfPresent(Date.self, forKey: .completedAt)
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? .now
+        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
+    }
+
+    func makeModel() -> TaskSubitem {
+        TaskSubitem(
+            id: id,
+            parentTaskID: parentTaskID,
+            taskExecutionID: UUID(uuidString: taskExecutionIDRawValue),
+            title: title,
+            note: note,
+            detail: detail,
+            status: TaskExecutionStatus(rawValue: statusRawValue) ?? .pending,
+            sortOrder: sortOrder,
+            isArchived: isArchived,
+            completedAt: completedAt,
+            createdAt: createdAt,
+            updatedAt: updatedAt
+        )
+    }
+}
+
+struct TaskExecutionRecordSnapshot: Codable {
+    let id: UUID
+    let taskID: UUID
+    let occurrenceDate: Date
+    let detail: String
+    let statusRawValue: String
+    let completedAt: Date?
+    let createdAt: Date
+    let updatedAt: Date
+
+    init(_ record: TaskExecutionRecord) {
+        id = record.id
+        taskID = record.taskID
+        occurrenceDate = record.occurrenceDate
+        detail = record.detail
+        statusRawValue = record.statusRawValue
+        completedAt = record.completedAt
+        createdAt = record.createdAt
+        updatedAt = record.updatedAt
+    }
+
+    func makeModel() -> TaskExecutionRecord {
+        let record = TaskExecutionRecord(
+            id: id,
+            taskID: taskID,
+            occurrenceDate: occurrenceDate,
+            detail: detail,
+            status: TaskExecutionStatus(rawValue: statusRawValue) ?? .pending,
+            completedAt: completedAt,
+            createdAt: createdAt,
+            updatedAt: updatedAt
+        )
+        record.statusRawValue = statusRawValue
+        return record
+    }
+}
+
+struct TaskSubitemExecutionRecordSnapshot: Codable {
+    let id: UUID
+    let taskExecutionID: UUID
+    let subtaskID: UUID
+    let detail: String
+    let statusRawValue: String
+    let completedAt: Date?
+    let createdAt: Date
+    let updatedAt: Date
+
+    init(_ record: TaskSubitemExecutionRecord) {
+        id = record.id
+        taskExecutionID = record.taskExecutionID
+        subtaskID = record.subtaskID
+        detail = record.detail
+        statusRawValue = record.statusRawValue
+        completedAt = record.completedAt
+        createdAt = record.createdAt
+        updatedAt = record.updatedAt
+    }
+
+    func makeModel() -> TaskSubitemExecutionRecord {
+        let record = TaskSubitemExecutionRecord(
+            id: id,
+            taskExecutionID: taskExecutionID,
+            subtaskID: subtaskID,
+            detail: detail,
+            status: TaskExecutionStatus(rawValue: statusRawValue) ?? .pending,
+            completedAt: completedAt,
+            createdAt: createdAt,
+            updatedAt: updatedAt
+        )
+        record.statusRawValue = statusRawValue
+        return record
     }
 }
 
