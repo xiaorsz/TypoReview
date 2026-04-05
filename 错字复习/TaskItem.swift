@@ -128,6 +128,27 @@ final class TaskItem {
         return "\(startDay.formatted(.dateTime.year().month().day())) - \(effectiveEndDay.formatted(.dateTime.year().month().day()))"
     }
 
+    var recurrenceShortLabel: String {
+        switch recurrence.kind {
+        case .once:
+            return "单次"
+        case .daily:
+            return "每天"
+        case .weekly:
+            let names = ["日", "一", "二", "三", "四", "五", "六"]
+            let days = recurrence.weekdays.sorted().compactMap { wd -> String? in
+                guard wd >= 1, wd <= 7 else { return nil }
+                return names[wd - 1]
+            }
+            return "周" + days.joined(separator: "、")
+        }
+    }
+
+    func originShortText(for pendingDate: Date) -> String {
+        let calendar = Calendar.current
+        return pendingDate.formatted(.dateTime.month().day())
+    }
+
     var effectiveEndDay: Date? {
         guard let endDate else { return nil }
         return Calendar.current.startOfDay(for: endDate)

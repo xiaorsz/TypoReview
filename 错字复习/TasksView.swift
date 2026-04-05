@@ -4,38 +4,26 @@ import WidgetKit
 
 struct TasksView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \TaskItem.createdAt, order: .reverse) private var allTasks: [TaskItem]
+    @Query(filter: #Predicate<TaskItem> { !$0.isArchived }, sort: \TaskItem.createdAt, order: .reverse) private var activeTasks: [TaskItem]
+    @Query(filter: #Predicate<TaskItem> { $0.isArchived }, sort: \TaskItem.createdAt, order: .reverse) private var archivedTasks: [TaskItem]
     @Query(sort: \TaskCompletion.completedAt, order: .reverse) private var completions: [TaskCompletion]
-    @Query(sort: \TaskSubitem.sortOrder) private var allSubtasks: [TaskSubitem]
+    @Query(filter: #Predicate<TaskSubitem> { !$0.isArchived }, sort: \TaskSubitem.sortOrder) private var allSubtasks: [TaskSubitem]
     @Query(sort: \TaskExecutionRecord.occurrenceDate, order: .reverse) private var executionRecords: [TaskExecutionRecord]
     @Query(sort: \TaskSubitemExecutionRecord.updatedAt, order: .reverse) private var subtaskExecutionRecords: [TaskSubitemExecutionRecord]
-    @Query(sort: \ScheduleItem.startTime) private var allSchedules: [ScheduleItem]
-
-    private var activeTasks: [TaskItem] {
-        allTasks.filter { !$0.isArchived }
-    }
-
-    private var activeSchedules: [ScheduleItem] {
-        allSchedules.filter { !$0.isArchived }
-    }
-
-    private var todayTaskItems: [TodayTaskDisplayItem] {
-        TodayTaskListBuilder
-            .build(
-                from: activeTasks,
-                executions: executionRecords,
-                subtasks: allSubtasks,
-                subtaskExecutions: subtaskExecutionRecords
-            )
-    }
+    @Query(filter: #Predicate<ScheduleItem> { !$0.isArchived }, sort: \ScheduleItem.startTime) private var activeSchedules: [ScheduleItem]
+    @Query(filter: #Predicate<ScheduleItem> { $0.isArchived }, sort: \ScheduleItem.startTime) private var archivedSchedules: [ScheduleItem]
+    
+    // Performance Optimization: Cache computed results in a local snapshot
+    @State private var todayTasksSnapshot: [TodayTaskDisplayItem] = []
+    @State private var snapshotRefreshTask: Task<Void, Never>?
 
     private var todayPending: [TodayTaskDisplayItem] {
-        todayTaskItems
+        todayTasksSnapshot
             .filter { $0.section == .todayPending }
     }
-
+    
     private var historicalPending: [TodayTaskDisplayItem] {
-        todayTaskItems
+        todayTasksSnapshot
             .filter { $0.section == .historicalPending }
             .sorted { lhs, rhs in
                 if lhs.occurrenceDate == rhs.occurrenceDate {
@@ -44,18 +32,18 @@ struct TasksView: View {
                 return lhs.occurrenceDate < rhs.occurrenceDate
             }
     }
-
+    
     private var todayDone: [TodayTaskDisplayItem] {
-        todayTaskItems
+        todayTasksSnapshot
             .filter { $0.section == .todayDone }
     }
 
-    private var archivedTasks: [TaskItem] {
-        allTasks.filter { $0.isArchived }
+    private var todayTaskIds: Set<UUID> {
+        Set(todayTasksSnapshot.map(\.task.id))
     }
 
-    private var archivedSchedules: [ScheduleItem] {
-        allSchedules.filter { $0.isArchived }
+    private var otherTasks: [TaskItem] {
+        activeTasks.filter { !todayTaskIds.contains($0.id) }
     }
 
     private var todaySchedules: [ScheduleItem] {
@@ -91,56 +79,27 @@ struct TasksView: View {
                 }
             } else {
                 if !todaySchedules.isEmpty {
-                    Section("今日日程") {
-                        ForEach(todaySchedules) { schedule in
-                            scheduleRow(schedule)
-                        }
-                    }
+                    scheduleSection("今日日程", schedules: todaySchedules)
                 }
 
                 if !todayPending.isEmpty {
-                    Section("今日待完成") {
-                        ForEach(todayPending) { item in
-                            taskRow(item)
-                        }
-                    }
+                    todayTaskSection("今日待完成", items: todayPending)
                 }
 
                 if !historicalPending.isEmpty {
-                    Section("历史待完成") {
-                        ForEach(historicalPending) { item in
-                            taskRow(item)
-                        }
-                    }
+                    todayTaskSection("历史待完成", items: historicalPending)
                 }
 
                 if !todayDone.isEmpty {
-                    Section("今日已完成") {
-                        ForEach(todayDone) { item in
-                            taskRow(item)
-                        }
-                    }
-                }
-
-                // Show tasks that are not appearing today (future or non-scheduled today)
-                let otherTasks = activeTasks.filter { task in
-                    !todayTaskItems.contains(where: { $0.task.id == task.id })
+                    todayTaskSection("今日已完成", items: todayDone)
                 }
 
                 if !otherTasks.isEmpty {
-                    Section("其它任务") {
-                        ForEach(otherTasks) { task in
-                            taskRow(task, isDone: false, showActions: false)
-                        }
-                    }
+                    otherTaskSection("其它任务", tasks: otherTasks)
                 }
 
                 if !otherSchedules.isEmpty {
-                    Section("其它日程") {
-                        ForEach(otherSchedules) { schedule in
-                            scheduleRow(schedule)
-                        }
-                    }
+                    scheduleSection("其它日程", schedules: otherSchedules)
                 }
 
                 if !archivedTasks.isEmpty {
@@ -203,9 +162,73 @@ struct TasksView: View {
                 }
             }
         }
+        .task {
+            scheduleSnapshotRefresh()
+        }
+        .onChange(of: activeTasks) { _, _ in scheduleSnapshotRefresh() }
+        .onChange(of: executionRecords) { _, _ in scheduleSnapshotRefresh() }
+        .onChange(of: allSubtasks) { _, _ in scheduleSnapshotRefresh() }
+        .onChange(of: subtaskExecutionRecords) { _, _ in scheduleSnapshotRefresh() }
+        .onDisappear {
+            snapshotRefreshTask?.cancel()
+        }
     }
 
-    private func taskRow(_ item: TodayTaskDisplayItem, showActions: Bool = true) -> some View {
+    private func scheduleSection(_ title: LocalizedStringKey, schedules: [ScheduleItem]) -> some View {
+        Section(title) {
+            ForEach(schedules) { schedule in
+                scheduleRow(schedule)
+            }
+        }
+    }
+
+    private func todayTaskSection(_ title: LocalizedStringKey, items: [TodayTaskDisplayItem]) -> some View {
+        Section(title) {
+            ForEach(items) { item in
+                todayTaskRow(item)
+            }
+        }
+    }
+
+    private func otherTaskSection(_ title: LocalizedStringKey, tasks: [TaskItem]) -> some View {
+        Section(title) {
+            ForEach(tasks) { task in
+                taskRow(task, isDone: false, showActions: false)
+            }
+        }
+    }
+    
+    private func scheduleSnapshotRefresh() {
+        snapshotRefreshTask?.cancel()
+        let taskModels = activeTasks
+        let taskProjections = taskModels.map(TaskProjection.init)
+        let executionProjections = executionRecords.map(TaskExecutionRecordProjection.init)
+        let subtaskProjections = allSubtasks.map(TaskSubitemProjection.init)
+
+        snapshotRefreshTask = Task(priority: .utility) {
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            let projectedItems = await Task.detached(priority: .utility) {
+                TodayTaskProjectionBuilder.build(
+                    from: taskProjections,
+                    executions: executionProjections,
+                    subtasks: subtaskProjections
+                )
+            }.value
+
+            guard !Task.isCancelled else { return }
+            let tasksByID = Dictionary(
+                taskModels.map { ($0.id, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            todayTasksSnapshot = TodayTaskProjectionBuilder.displayItems(
+                from: projectedItems,
+                tasksByID: tasksByID
+            )
+        }
+    }
+
+    private func todayTaskRow(_ item: TodayTaskDisplayItem, showActions: Bool = true) -> some View {
         taskRow(
             item.task,
             isDone: item.isCompleted,
@@ -228,18 +251,18 @@ struct TasksView: View {
     ) -> some View {
         let hasSubtasks = (totalSubtaskCount ?? 0) > 0
 
-        return HStack(spacing: 14) {
+        return HStack(spacing: 10) {
             if showActions {
                 if hasSubtasks {
                     Image(systemName: isDone ? "checkmark.circle.fill" : "list.bullet.circle")
-                        .font(.title2)
+                        .font(.title3)
                         .foregroundStyle(isDone ? .green : .secondary)
                 } else {
                     Button {
                         toggleCompletion(for: task, occurrenceDate: occurrenceDate ?? .now, isDone: isDone)
                     } label: {
                         Image(systemName: isDone ? "checkmark.circle.fill" : "circle")
-                            .font(.title2)
+                            .font(.title3)
                             .foregroundStyle(isDone ? .green : .secondary)
                             .contentTransition(.symbolEffect(.replace))
                     }
@@ -250,43 +273,60 @@ struct TasksView: View {
             NavigationLink {
                 TaskDetailView(task: task)
             } label: {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text(task.title)
-                        .font(.headline)
+                        .fontWeight(.medium)
                         .strikethrough(isDone)
                         .foregroundStyle(isDone ? .secondary : .primary)
 
-                    HStack(spacing: 8) {
-                        Label(task.recurrenceLabel, systemImage: task.recurrence.kind == .once ? "1.circle" : "arrow.triangle.2.circlepath")
+                    HStack(spacing: 3) {
+                        Text(task.recurrenceShortLabel)
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
-                        if let effectiveDateRangeLabel = task.effectiveDateRangeLabel {
-                            Text(effectiveDateRangeLabel)
+                        if let _ = task.effectiveDateRangeLabel {
+                            Text("·")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                            
+                            Text(task.effectiveDateRangeLabel!)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
 
                         if task.skipPolicy == .unskippable {
-                            Label("不可跳过", systemImage: "exclamationmark.triangle.fill")
-                                .font(.caption)
+                            Text("·")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.caption2)
                                 .foregroundStyle(.orange)
                         }
 
-                        if let occurrenceLabel, !isDone {
-                            Text(occurrenceLabel)
-                                .font(.caption.weight(.semibold))
+                        if let _ = occurrenceLabel, !isDone {
+                            Text("·")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                
+                            Text(task.originShortText(for: occurrenceDate ?? .now))
+                                .font(.caption2.weight(.semibold))
                                 .foregroundStyle(.orange)
-                                .lineLimit(1)
                         }
 
                         if let totalSubtaskCount, totalSubtaskCount > 0,
                            let completedSubtaskCount {
-                            Text("\(completedSubtaskCount)/\(totalSubtaskCount) 子任务")
-                                .font(.caption.weight(.semibold))
+                            Text("·")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                
+                            Text("\(completedSubtaskCount)/\(totalSubtaskCount)")
+                                .font(.caption2.weight(.semibold))
                                 .foregroundStyle(isDone ? .green : .blue)
                         }
                     }
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
 
                     if !task.note.isEmpty {
                         Text(task.note)
@@ -336,25 +376,33 @@ struct TasksView: View {
         NavigationLink {
             AddScheduleView(schedule: schedule)
         } label: {
-            HStack(spacing: 14) {
-                Image(systemName: "calendar")
-                    .font(.title2)
-                    .foregroundStyle(.indigo)
+            HStack(spacing: 12) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(.indigo)
+                    .frame(width: 4, height: 28)
 
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text(schedule.title)
-                        .font(.headline)
+                        .fontWeight(.medium)
 
-                    HStack(spacing: 8) {
+                    HStack(spacing: 4) {
                         Text(schedule.timeRangeText(on: .now))
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.indigo)
+
+                        Text("·")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
 
                         Text(schedule.repeatRuleLabel)
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
                         if let effectiveDateRangeLabel = schedule.effectiveDateRangeLabel {
+                            Text("·")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                
                             Text(effectiveDateRangeLabel)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -390,23 +438,27 @@ struct TasksView: View {
     }
 
     private func archivedScheduleRow(_ schedule: ScheduleItem) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: "archivebox")
-                .font(.title2)
-                .foregroundStyle(.secondary)
+        HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(.secondary.opacity(0.3))
+                .frame(width: 4, height: 28)
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(schedule.title)
-                    .font(.headline)
+                    .fontWeight(.medium)
                     .strikethrough()
                     .foregroundStyle(.secondary)
 
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Text(schedule.repeatRule == .once ? schedule.startTime.formatted(.dateTime.year().month().day()) : schedule.repeatRuleLabel)
                         .font(.caption)
                         .foregroundStyle(.tertiary)
 
                     if let effectiveDateRangeLabel = schedule.effectiveDateRangeLabel {
+                        Text("·")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            
                         Text(effectiveDateRangeLabel)
                             .font(.caption)
                             .foregroundStyle(.tertiary)

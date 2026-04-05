@@ -9,7 +9,14 @@ struct DictationHomeView: View {
     @State private var previewSession: DictationSession?
     @State private var activeSession: DictationSession?
     @State private var editingSession: DictationSession?
-
+    
+    private var entriesBySessionID: [UUID: [DictationEntry]] {
+        Dictionary(grouping: allEntries, by: \.sessionID)
+            .mapValues { entries in
+                entries.sorted { $0.sortOrder < $1.sortOrder }
+            }
+    }
+    
     var body: some View {
         List {
             Section {
@@ -121,7 +128,8 @@ struct DictationHomeView: View {
                     }
 
                     HStack {
-                        Text("\(session.type.displayName) · \(entries(for: session).count) 条")
+                        let sessionEntries = entriesBySessionID[session.id] ?? []
+                        Text("\(session.type.displayName) · \(sessionEntries.count) 条")
                         Spacer()
                         Text(session.scheduledDate.formatted(date: .abbreviated, time: .omitted))
                             .font(.caption)
@@ -164,7 +172,7 @@ struct DictationHomeView: View {
 
     @ViewBuilder
     private func destinationView(for session: DictationSession) -> some View {
-        let sessionEntries = entries(for: session)
+        let sessionEntries = entriesBySessionID[session.id] ?? []
         if session.isReviewed {
             DictationReviewView(session: session, entries: sessionEntries)
         } else if session.isFinished {
@@ -175,9 +183,7 @@ struct DictationHomeView: View {
     }
 
     private func entries(for session: DictationSession) -> [DictationEntry] {
-        allEntries
-            .filter { $0.sessionID == session.id }
-            .sorted { $0.sortOrder < $1.sortOrder }
+        entriesBySessionID[session.id] ?? []
     }
 
     private func statusText(for session: DictationSession) -> String {

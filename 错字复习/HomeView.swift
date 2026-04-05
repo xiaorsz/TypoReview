@@ -15,11 +15,11 @@ struct HomeView: View {
     @Query(sort: \DictationSession.createdAt, order: .reverse) private var dictationSessions: [DictationSession]
     @Query(sort: \DictationEntry.sortOrder) private var dictationEntries: [DictationEntry]
     @Query private var settings: [AppSettings]
-    @Query(sort: \TaskItem.createdAt) private var allTasks: [TaskItem]
-    @Query(sort: \TaskSubitem.sortOrder) private var taskSubitems: [TaskSubitem]
+    @Query(filter: #Predicate<TaskItem> { !$0.isArchived }, sort: \TaskItem.createdAt) private var activeTasks: [TaskItem]
+    @Query(filter: #Predicate<TaskSubitem> { !$0.isArchived }, sort: \TaskSubitem.sortOrder) private var taskSubitems: [TaskSubitem]
     @Query(sort: \TaskExecutionRecord.occurrenceDate, order: .reverse) private var taskExecutionRecords: [TaskExecutionRecord]
     @Query(sort: \TaskSubitemExecutionRecord.updatedAt, order: .reverse) private var taskSubitemExecutionRecords: [TaskSubitemExecutionRecord]
-    @Query(sort: \ScheduleItem.startTime) private var allSchedules: [ScheduleItem]
+    @Query(filter: #Predicate<ScheduleItem> { !$0.isArchived }, sort: \ScheduleItem.startTime) private var activeSchedules: [ScheduleItem]
     
     @State private var showingReviewPreview = false
     @State private var isReviewActive = false
@@ -28,12 +28,19 @@ struct HomeView: View {
     @State private var selectedTaskForDetail: TaskItem?
     @State private var showingDashboardBoard = false
     @State private var showQuickEntryHint = false
+    @State private var dashboardSnapshot: DashboardSnapshot?
+    @State private var homeTaskSnapshot: [TodayTaskDisplayItem] = []
+    @State private var dashboardSnapshotTask: Task<Void, Never>?
+    @State private var homeTaskSnapshotTask: Task<Void, Never>?
 
     private let scheduler = ReviewScheduler()
     private let isPad = UIDevice.current.userInterfaceIdiom == .pad
 
-    private var activeTasks: [TaskItem] {
-        allTasks.filter { !$0.isArchived }
+    private var entriesBySessionID: [UUID: [DictationEntry]] {
+        Dictionary(grouping: dictationEntries, by: \.sessionID)
+            .mapValues { entries in
+                entries.sorted { $0.sortOrder < $1.sortOrder }
+            }
     }
 
     private var dailyLimit: Int {
@@ -91,11 +98,10 @@ struct HomeView: View {
         let todayStart = calendar.startOfDay(for: .now)
         
         // Optimize Dictation count: build entry map once
-        let entryMap = Dictionary(grouping: dictationEntries, by: { $0.sessionID })
         let pendingSessions = dictationSessions.filter {
             !$0.isReviewed && calendar.startOfDay(for: $0.scheduledDate) <= todayStart
         }
-        let pDictationCount = pendingSessions.reduce(0) { $0 + (entryMap[$1.id]?.count ?? 0) }
+        let pDictationCount = pendingSessions.reduce(0) { $0 + (entriesBySessionID[$1.id]?.count ?? 0) }
         
         let latestDS: DictationSession? = {
             if let firstPending = pendingSessions.sorted(by: { $0.scheduledDate < $1.scheduledDate }).first {
@@ -106,16 +112,11 @@ struct HomeView: View {
             }.min(by: { $0.scheduledDate > $1.scheduledDate })
         }()
         
-        let tSchedules = allSchedules
+        let tSchedules = activeSchedules
             .filter { $0.shouldAppear(on: .now) && !$0.hasEnded(on: .now, reference: .now) }
             .sorted { $0.startTimeMinutes < $1.startTimeMinutes }
         
-        let taskItems = TodayTaskListBuilder.build(
-            from: activeTasks,
-            executions: taskExecutionRecords,
-            subtasks: taskSubitems,
-            subtaskExecutions: taskSubitemExecutionRecords
-        )
+        let taskItems = homeTaskSnapshot
         let tPendingTasks = taskItems.filter { $0.section == .todayPending }
         let hPendingTasks = taskItems.filter { $0.section == .historicalPending }
             .sorted { lhs, rhs in
@@ -129,7 +130,7 @@ struct HomeView: View {
         let totPendingTaskCount = tPendingTasks.count + hPendingTasks.count
         
         // Hero logic (single pass)
-        let tasksDone = totPendingTaskCount == 0 && (tCompletedTaskCount > 0 || allTasks.isEmpty)
+        let tasksDone = totPendingTaskCount == 0 && (tCompletedTaskCount > 0 || activeTasks.isEmpty)
         let reviewDone = cappedDueContent.isEmpty
         let dictationDone = latestDS?.isReviewed ?? true
         let scheduleDone = tSchedules.isEmpty
@@ -249,8 +250,76 @@ struct HomeView: View {
     }
 
     var body: some View {
-        let snapshot = makeSnapshot()
-        
+        Group {
+            if let snapshot = dashboardSnapshot {
+                mainContentView(snapshot)
+            } else {
+                ProgressView("正在准备数据...")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(uiColor: .systemGroupedBackground))
+            }
+        }
+        .task {
+            scheduleHomeTaskSnapshotRefresh()
+        }
+        .onChange(of: reviewItems) { _, _ in scheduleDashboardSnapshotUpdate() }
+        .onChange(of: reviewRecords) { _, _ in scheduleDashboardSnapshotUpdate() }
+        .onChange(of: dictationSessions) { _, _ in scheduleDashboardSnapshotUpdate() }
+        .onChange(of: dictationEntries) { _, _ in scheduleDashboardSnapshotUpdate() }
+        .onChange(of: activeSchedules) { _, _ in scheduleDashboardSnapshotUpdate() }
+        .onChange(of: settings) { _, _ in scheduleDashboardSnapshotUpdate() }
+        .onChange(of: activeTasks) { _, _ in scheduleHomeTaskSnapshotRefresh() }
+        .onChange(of: taskSubitems) { _, _ in scheduleHomeTaskSnapshotRefresh() }
+        .onChange(of: taskExecutionRecords) { _, _ in scheduleHomeTaskSnapshotRefresh() }
+        .onChange(of: taskSubitemExecutionRecords) { _, _ in scheduleHomeTaskSnapshotRefresh() }
+        .onDisappear {
+            dashboardSnapshotTask?.cancel()
+            homeTaskSnapshotTask?.cancel()
+        }
+    }
+
+    private func scheduleDashboardSnapshotUpdate() {
+        dashboardSnapshotTask?.cancel()
+        dashboardSnapshotTask = Task(priority: .utility) {
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            dashboardSnapshot = makeSnapshot()
+        }
+    }
+
+    private func scheduleHomeTaskSnapshotRefresh() {
+        homeTaskSnapshotTask?.cancel()
+        let taskModels = activeTasks
+        let taskProjections = taskModels.map(TaskProjection.init)
+        let executionProjections = taskExecutionRecords.map(TaskExecutionRecordProjection.init)
+        let subtaskProjections = taskSubitems.map(TaskSubitemProjection.init)
+
+        homeTaskSnapshotTask = Task(priority: .utility) {
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+
+            let projectedItems = await Task.detached(priority: .utility) {
+                TodayTaskProjectionBuilder.build(
+                    from: taskProjections,
+                    executions: executionProjections,
+                    subtasks: subtaskProjections
+                )
+            }.value
+
+            guard !Task.isCancelled else { return }
+            let tasksByID = Dictionary(
+                taskModels.map { ($0.id, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            homeTaskSnapshot = TodayTaskProjectionBuilder.displayItems(
+                from: projectedItems,
+                tasksByID: tasksByID
+            )
+            scheduleDashboardSnapshotUpdate()
+        }
+    }
+
+    private func mainContentView(_ snapshot: DashboardSnapshot) -> some View {
         GeometryReader { proxy in
             ScrollView {
                 let isWide = proxy.size.width >= 700
@@ -293,7 +362,7 @@ struct HomeView: View {
             .sheet(item: $previewSession) { session in
                 DictationPreviewView(
                     session: session,
-                    entries: dictationEntries.filter { $0.sessionID == session.id }.sorted { $0.sortOrder < $1.sortOrder },
+                    entries: entriesBySessionID[session.id] ?? [],
                     onStartSession: {
                         activeDictationSession = session
                     }
@@ -302,7 +371,7 @@ struct HomeView: View {
             .navigationDestination(item: $activeDictationSession) { session in
                 DictationSessionView(
                     session: session,
-                    entries: dictationEntries.filter { $0.sessionID == session.id }.sorted { $0.sortOrder < $1.sortOrder }
+                    entries: entriesBySessionID[session.id] ?? []
                 )
             }
             .navigationDestination(item: $selectedTaskForDetail) { task in
@@ -539,7 +608,7 @@ struct HomeView: View {
             return "今天还没有新增听写内容"
         }
 
-        let count = dictationEntries.filter { $0.sessionID == latestDictationSession.id }.count
+        let count = entriesBySessionID[latestDictationSession.id]?.count ?? 0
         let status: String
         if latestDictationSession.isReviewed {
             status = "已判定"
@@ -728,42 +797,63 @@ struct HomeView: View {
                         .foregroundStyle(isDone ? .secondary : .primary)
                         .strikethrough(isDone)
 
-                    HStack(spacing: 4) {
-                        Text(task.recurrenceLabel)
+                    HStack(spacing: 3) {
+                        Text(task.recurrenceShortLabel)
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
-                        if let effectiveDateRangeLabel = task.effectiveDateRangeLabel {
-                            Text(effectiveDateRangeLabel)
+                        if let _ = task.effectiveDateRangeLabel {
+                            Text("·")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                            
+                            Text(task.effectiveDateRangeLabel!)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
 
                         if task.skipPolicy == .unskippable {
-                            Text("不可跳过")
-                                .font(.caption2.weight(.bold))
+                            Text("·")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.caption2)
                                 .foregroundStyle(.orange)
                         }
 
-                        if let occurrenceLabel, !isDone {
-                            Text(occurrenceLabel)
+                        if let _ = occurrenceLabel, !isDone {
+                            Text("·")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                
+                            Text(task.originShortText(for: item.occurrenceDate))
                                 .font(.caption2.weight(.semibold))
                                 .foregroundStyle(.orange)
-                                .lineLimit(1)
                         }
 
-                        if let progressText = item.subtaskProgressText {
+                        if let progressText = item.simpleProgressText {
+                            Text("·")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                
                             Text(progressText)
                                 .font(.caption2.weight(.semibold))
                                 .foregroundStyle(isDone ? .green : .blue)
                         }
 
                         if !isDone, item.pendingOccurrenceCount > 1 {
-                            Text("共 \(item.pendingOccurrenceCount) 次待处理")
+                            Text("·")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                
+                            Text("\(item.pendingOccurrenceCount)次待办")
                                 .font(.caption2.weight(.semibold))
                                 .foregroundStyle(.orange)
                         }
                     }
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                     .opacity(isDone ? 0.6 : 1.0)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

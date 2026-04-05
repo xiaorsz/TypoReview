@@ -25,6 +25,7 @@ struct TaskDetailView: View {
     @State private var subtaskDetailDraft = ""
     @State private var subtaskCompletedDraft = false
     @FocusState private var quickSubtaskFieldFocused: Bool
+    @State private var weekOffset: Int = 0
 
     private struct SubtaskEditorTarget: Identifiable {
         let id = UUID()
@@ -108,14 +109,31 @@ struct TaskDetailView: View {
     }
 
     private var timelineSnapshots: [TaskOccurrenceSnapshot] {
-        let all = (pendingOccurrences + upcomingOccurrences).sorted { $0.occurrenceDate < $1.occurrenceDate }
-        // Ensure the current selected date is in the timeline if it's completed
-        if let selectedDate = selectedOccurrenceDate,
-           !all.contains(where: { Calendar.current.isDate($0.occurrenceDate, inSameDayAs: selectedDate) }),
-           let selected = completedOccurrences.first(where: { Calendar.current.isDate($0.occurrenceDate, inSameDayAs: selectedDate) }) {
-            return (all + [selected]).sorted { $0.occurrenceDate < $1.occurrenceDate }
+        pendingOccurrences + upcomingOccurrences + completedOccurrences
+    }
+
+    private var gridStartDate: Date {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        let components = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: today)
+        let startOfWeek = calendar.date(from: components)!
+        return calendar.date(byAdding: .day, value: weekOffset * 7, to: startOfWeek)!
+    }
+
+    private var gridDates: [Date] {
+        let calendar = Calendar.current
+        let start = gridStartDate
+        return (0..<14).compactMap { dayOffset in
+            calendar.date(byAdding: .day, value: dayOffset, to: start)
         }
-        return all
+    }
+
+    private var calendarMonthYearLabel: String {
+        let calendar = Calendar.current
+        let middleDate = calendar.date(byAdding: .day, value: 7, to: gridStartDate)!
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy年 M月"
+        return formatter.string(from: middleDate)
     }
 
     private var currentOccurrenceDate: Date? {
@@ -153,9 +171,7 @@ struct TaskDetailView: View {
         List {
             summarySection
 
-            if !timelineSnapshots.isEmpty {
-                occurrenceTimelinePicker
-            }
+            occurrenceCalendarGrid
 
             if let selectedSnapshot {
                 currentOccurrenceSection(selectedSnapshot)
@@ -185,6 +201,7 @@ struct TaskDetailView: View {
         }
         .onAppear {
             syncSelectedOccurrence()
+            syncCalendarToSelectedDate()
             refreshParentDetailDraft()
         }
         .onChange(of: occurrenceSelectionIDs) { _, _ in
@@ -192,6 +209,7 @@ struct TaskDetailView: View {
             refreshParentDetailDraft()
         }
         .onChange(of: selectedOccurrenceDate) { _, _ in
+            syncCalendarToSelectedDate()
             refreshParentDetailDraft()
         }
         .onDisappear {
@@ -289,36 +307,34 @@ struct TaskDetailView: View {
 
     private var summarySection: some View {
         Section {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 5) {
                 Text(task.title)
-                    .font(.headline)
+                    .font(.title3.weight(.bold))
 
-                HStack(spacing: 8) {
-                    Label(task.recurrenceLabel, systemImage: task.recurrence.kind == .once ? "1.circle" : "arrow.triangle.2.circlepath")
+                HStack(spacing: 3) {
+                    Text(task.recurrenceShortLabel)
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    if let effectiveDateRangeLabel = task.effectiveDateRangeLabel {
-                        Text(effectiveDateRangeLabel)
+                    if let _ = task.effectiveDateRangeLabel {
+                        Text("·")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                        
+                        Text(task.effectiveDateRangeLabel!)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
 
                     if task.skipPolicy == .unskippable {
-                        Label("不可跳过", systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption)
+                        Text("·")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption2)
                             .foregroundStyle(.orange)
                     }
-                }
-
-                if !task.note.isEmpty {
-                    Text(task.note)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-
-                    Text("任务备注适合放长期说明；本次说明请在当前处理里单独记录。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
             }
             .padding(.vertical, 4)
@@ -327,34 +343,40 @@ struct TaskDetailView: View {
 
     private func currentOccurrenceSection(_ snapshot: TaskOccurrenceSnapshot) -> some View {
         Section("当前处理") {
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 6) {
-                    Text(snapshot.occurrenceDate.formatted(.dateTime.year().month().day()))
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                        .layoutPriority(1)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(snapshot.occurrenceDate.formatted(.dateTime.month().day()))
+                            .font(.headline)
+                        
+                        HStack(spacing: 3) {
+                            Text(snapshot.isCompleted ? "已完成" : (isFutureOccurrence(snapshot) ? "未来" : "待处理"))
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(snapshot.isCompleted ? .green : (isFutureOccurrence(snapshot) ? .blue : .orange))
 
-                    Text(snapshot.isCompleted ? "已完成" : (isFutureOccurrence(snapshot) ? "未来" : "待处理"))
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(snapshot.isCompleted ? .green : (isFutureOccurrence(snapshot) ? .blue : .orange))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(
-                            (snapshot.isCompleted ? Color.green.opacity(0.14) : (isFutureOccurrence(snapshot) ? Color.blue.opacity(0.12) : Color.orange.opacity(0.14))),
-                            in: Capsule()
-                        )
-
-                    if occurrenceHasDetail(snapshot.occurrenceDate) {
-                        noteBadge("有说明")
+                            if let progress = snapshot.simpleProgressText {
+                                Text("·")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                
+                                Text(progress)
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(snapshot.isCompleted ? .green : .blue)
+                            }
+                            
+                            if occurrenceHasDetail(snapshot.occurrenceDate) || currentOccurrenceSubtasks.contains(where: { !$0.note.isEmpty }) {
+                                Text("·")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                
+                                Image(systemName: "doc.text.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
 
-                    if currentOccurrenceSubtasks.contains(where: {
-                        !$0.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    }) {
-                        noteBadge("子任务有备注")
-                    }
-
-                    Spacer(minLength: 8)
+                    Spacer()
 
                     Button {
                         isEditingParentDetail = true
@@ -372,16 +394,18 @@ struct TaskDetailView: View {
                     .buttonStyle(.plain)
                 }
 
-                if !currentOccurrenceSubtasks.isEmpty {
-                    Text("共 \(currentOccurrenceSubtasks.count) 个本次子任务")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.blue)
-                }
-
-                if let subtaskProgressText {
-                    Text(subtaskProgressText)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.blue)
+                if !task.note.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("任务备注")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.secondary)
+                        Text(task.note)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
                 }
 
                 if isCurrentOccurrenceFuture {
@@ -410,23 +434,21 @@ struct TaskDetailView: View {
                 Button {
                     startQuickSubtaskCreation()
                 } label: {
-                    HStack(spacing: 10) {
+                    HStack(spacing: 8) {
                         Image(systemName: "plus.circle.fill")
+                            .font(.subheadline)
                             .foregroundStyle(.blue)
 
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("添加本次子任务")
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text("添加子任务")
+                                .font(.subheadline)
                                 .foregroundStyle(.primary)
-                            Text("这条子任务只属于 \((quickSubtaskOccurrenceDate ?? currentOccurrenceDate)?.formatted(.dateTime.month().day()) ?? "当前日期")")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
                         }
-
                         Spacer()
                     }
-                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             }
 
             if isCreatingSubtask {
@@ -440,6 +462,7 @@ struct TaskDetailView: View {
             } else {
                 ForEach(currentOccurrenceSubtasks) { subtask in
                     subtaskRow(subtask)
+                        .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 2, trailing: 16))
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             Button("删除", systemImage: "trash", role: .destructive) {
                                 deleteSubtask(subtask)
@@ -513,79 +536,123 @@ struct TaskDetailView: View {
         }
     }
 
-    private var occurrenceTimelinePicker: some View {
+    private var occurrenceCalendarGrid: some View {
         Section {
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 12) {
-                        ForEach(timelineSnapshots) { snapshot in
-                            timelineDateCell(snapshot)
-                                .id(snapshot.id)
-                        }
+            VStack(spacing: 0) {
+                // Calendar Header: Month + Arrows
+                HStack {
+                    Button {
+                        withAnimation { weekOffset -= 1 }
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 14, weight: .bold))
+                            .padding(10)
+                            .background(Color.secondary.opacity(0.12), in: Circle())
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
+                    .buttonStyle(BorderlessButtonStyle())
+                    
+                    Spacer()
+                    
+                    Text(calendarMonthYearLabel)
+                        .font(.headline)
+                    
+                    Spacer()
+                    
+                    Button {
+                        withAnimation { weekOffset += 1 }
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 14, weight: .bold))
+                            .padding(10)
+                            .background(Color.secondary.opacity(0.12), in: Circle())
+                    }
+                    .buttonStyle(BorderlessButtonStyle())
                 }
-                .onAppear {
-                    if let selectedSnapshot {
-                        proxy.scrollTo(selectedSnapshot.id, anchor: .center)
+                .padding(.horizontal)
+                .padding(.bottom, 12)
+
+                // Weekday Labels
+                let days = ["日", "一", "二", "三", "四", "五", "六"]
+                HStack {
+                    ForEach(days, id: \.self) { day in
+                        Text(day)
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
                     }
                 }
-                .onChange(of: selectedSnapshot?.id) { _, newID in
-                    if let newID {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                            proxy.scrollTo(newID, anchor: .center)
-                        }
+                .padding(.bottom, 8)
+
+                // Grid of Dates
+                let columns = Array(repeating: GridItem(.flexible(), spacing: 6), count: 7)
+                LazyVGrid(columns: columns, spacing: 6) {
+                    ForEach(gridDates, id: \.self) { date in
+                        calendarCell(for: date)
                     }
                 }
             }
-            .listRowInsets(EdgeInsets())
-            .listRowBackground(Color.clear)
+            .padding(.vertical, 12)
         }
     }
 
-    private func timelineDateCell(_ snapshot: TaskOccurrenceSnapshot) -> some View {
-        let isSelected = isSelected(snapshot)
-
+    private func calendarCell(for date: Date) -> some View {
+        let snapshot = timelineSnapshots.first { Calendar.current.isDate($0.occurrenceDate, inSameDayAs: date) }
+        let isSelected = selectedOccurrenceDate != nil && Calendar.current.isDate(date, inSameDayAs: selectedOccurrenceDate!)
+        let isToday = Calendar.current.isDateInToday(date)
+        
         return Button {
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                selectedOccurrenceDate = snapshot.occurrenceDate
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                selectedOccurrenceDate = date
             }
         } label: {
-            VStack(spacing: 6) {
-                Text(snapshot.occurrenceDate.formatted(.dateTime.weekday(.abbreviated)))
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(isSelected ? .white.opacity(0.8) : .secondary)
-
-                VStack(spacing: 2) {
-                    Text(snapshot.occurrenceDate.formatted(.dateTime.day()))
-                        .font(.system(size: 18, weight: .bold, design: .rounded))
-                    Text(snapshot.occurrenceDate.formatted(.dateTime.month(.abbreviated)))
-                        .font(.system(size: 9, weight: .medium))
-                }
-                .foregroundStyle(isSelected ? .white : .primary)
-
-                // Dot indicator
-                Circle()
-                    .fill(timelineDotColor(for: snapshot))
-                    .frame(width: 5, height: 5)
+            VStack(spacing: 2) {
+                Text("\(Calendar.current.component(.day, from: date))")
+                    .font(.system(size: 16, weight: isToday ? .black : .medium, design: .rounded))
+                    .foregroundStyle(isToday && !isSelected ? .red : cellContentColor(snapshot, isSelected: isSelected))
             }
-            .padding(.vertical, 8)
-            .frame(width: 54, height: 85)
+            .frame(maxWidth: .infinity)
+            .frame(height: 42)
+            .overlay(alignment: .topTrailing) {
+                if let snapshot, snapshot.totalSubtaskCount > 0 {
+                    Text("\(snapshot.totalSubtaskCount)")
+                        .font(.system(size: 9, weight: .black, design: .rounded))
+                        .foregroundStyle(isSelected ? .white.opacity(0.8) : .blue.opacity(0.8))
+                        .padding(5)
+                }
+            }
             .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(isSelected ? Color.accentColor : Color(uiColor: .secondarySystemGroupedBackground))
-                    .shadow(color: isSelected ? Color.accentColor.opacity(0.3) : .clear, radius: 4, y: 2)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(cellBackgroundColor(snapshot, isSelected: isSelected))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(isSelected ? Color.accentColor : (isToday ? Color.red.opacity(0.4) : Color.clear), lineWidth: isSelected ? 2 : 1.5)
             )
         }
         .buttonStyle(.plain)
     }
 
-    private func timelineDotColor(for snapshot: TaskOccurrenceSnapshot) -> Color {
+    private func cellBackgroundColor(_ snapshot: TaskOccurrenceSnapshot?, isSelected: Bool) -> Color {
+        guard let snapshot else {
+            return Color(uiColor: .systemGray6).opacity(0.3)
+        }
+        
+        if snapshot.isCompleted {
+            return .green.opacity(isSelected ? 0.9 : 0.35)
+        }
+        if snapshot.occurrenceDate < TaskExecutionSupport.day(for: .now) {
+            return .orange.opacity(isSelected ? 0.9 : 0.35)
+        }
+        return .blue.opacity(isSelected ? 0.9 : 0.35)
+    }
+
+    private func cellContentColor(_ snapshot: TaskOccurrenceSnapshot?, isSelected: Bool) -> Color {
+        if isSelected { return .white } // Selected background is dark, use white text
+        guard let snapshot else { return .secondary.opacity(0.5) }
+        
         if snapshot.isCompleted { return .green }
         if snapshot.occurrenceDate < TaskExecutionSupport.day(for: .now) { return .orange }
-        if snapshot.occurrenceDate > TaskExecutionSupport.day(for: .now) { return .blue }
-        return .orange // Today pending
+        return .blue
     }
 
     private func occurrenceSwitcherSection(
@@ -625,6 +692,8 @@ struct TaskDetailView: View {
                     }
                     .buttonStyle(.plain)
                 }
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
             }
         }
     }
@@ -739,14 +808,14 @@ struct TaskDetailView: View {
     private func subtaskRow(_ subtask: TaskSubitem) -> some View {
         let isDone = subtask.status == .completed
 
-        return HStack(alignment: .top, spacing: 12) {
+        return HStack(alignment: .center, spacing: 10) {
             Button {
                 toggleSubtaskCompletion(subtask)
             } label: {
                 Image(systemName: leadingSymbol(for: subtask, isDone: isDone))
-                    .font(.title3)
+                    .font(.body.weight(.bold))
                     .foregroundStyle(leadingColor(for: subtask, isDone: isDone))
-                    .frame(width: 28, height: 28)
+                    .frame(width: 24, height: 24)
             }
             .buttonStyle(.plain)
             .disabled(isCurrentOccurrenceFuture)
@@ -754,34 +823,29 @@ struct TaskDetailView: View {
             Button {
                 openEditSubtaskEditor(subtask)
             } label: {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 0) {
                     Text(subtask.title)
-                        .foregroundStyle(.primary)
+                        .font(.subheadline)
+                        .foregroundStyle(isDone ? .secondary : .primary)
+                        .strikethrough(isDone)
 
                     if !subtask.note.isEmpty {
                         Text(subtask.note)
-                            .font(.caption)
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-
-                    if !subtask.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text(subtask.detail)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
+                            .lineLimit(1)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
-            HStack(spacing: 10) {
+            HStack(spacing: 6) {
                 Button {
                     moveSubtaskUp(subtask)
                 } label: {
-                    Image(systemName: "arrow.up")
+                    Image(systemName: "chevron.up")
+                        .font(.caption2.weight(.bold))
                 }
                 .buttonStyle(.plain)
                 .disabled(isFirstSubtask(subtask))
@@ -789,17 +853,13 @@ struct TaskDetailView: View {
                 Button {
                     moveSubtaskDown(subtask)
                 } label: {
-                    Image(systemName: "arrow.down")
+                    Image(systemName: "chevron.down")
+                        .font(.caption2.weight(.bold))
                 }
                 .buttonStyle(.plain)
                 .disabled(isLastSubtask(subtask))
-
-                Image(systemName: "square.and.pencil")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
             }
-            .foregroundStyle(.secondary)
-            .padding(.top, 4)
+            .foregroundStyle(.tertiary)
         }
         .padding(.vertical, 2)
     }
@@ -892,6 +952,30 @@ struct TaskDetailView: View {
             preferredExecutionRecordID = resolvedExecutionID
         } else {
             preferredExecutionRecordID = nil
+        }
+    }
+
+    private func syncCalendarToSelectedDate() {
+        guard let date = selectedOccurrenceDate else { return }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        
+        // Find the start of the week for today (reference week 0)
+        let components = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: today)
+        guard let startOfThisWeek = calendar.date(from: components) else { return }
+        
+        // Find the start of the week for the target date
+        let targetComponents = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: date)
+        guard let startOfTargetWeek = calendar.date(from: targetComponents) else { return }
+        
+        // Calculate the week difference
+        let weekDiff = calendar.dateComponents([.weekOfYear], from: startOfThisWeek, to: startOfTargetWeek).weekOfYear ?? 0
+        
+        // Update weekOffset if the target date is outside the currently visible 2-week range
+        if weekDiff < weekOffset || weekDiff >= weekOffset + 2 {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                weekOffset = weekDiff
+            }
         }
     }
 

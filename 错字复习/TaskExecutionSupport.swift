@@ -1,13 +1,122 @@
 import Foundation
 import SwiftData
 
-enum TodayTaskDisplaySection {
+enum TodayTaskDisplaySection: Sendable {
     case todayPending
     case historicalPending
     case todayDone
 }
 
-struct TodayTaskDisplayItem: Identifiable {
+struct TaskProjection: Sendable {
+    let id: UUID
+    let createdAt: Date
+    let startDate: Date
+    let endDate: Date?
+    let recurrence: TaskRecurrence
+    let skipPolicy: TaskSkipPolicy
+
+    init(_ task: TaskItem) {
+        id = task.id
+        createdAt = task.createdAt
+        startDate = task.startDate
+        endDate = task.endDate
+        recurrence = task.recurrence
+        skipPolicy = task.skipPolicy
+    }
+
+    func originText(for pendingDate: Date, relativeTo date: Date) -> String {
+        let calendar = Calendar.current
+        let targetDay = calendar.startOfDay(for: date)
+
+        if calendar.isDate(pendingDate, equalTo: targetDay, toGranularity: .year) {
+            return "原定 \(pendingDate.formatted(.dateTime.month().day()))"
+        }
+        return "原定 \(pendingDate.formatted(.dateTime.year().month().day()))"
+    }
+
+    func scheduledOccurrenceDates(upTo date: Date) -> [Date] {
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: startDate)
+        let unclampedTarget = calendar.startOfDay(for: date)
+        let target = min(unclampedTarget, effectiveEndDay ?? unclampedTarget)
+
+        guard target >= start else { return [] }
+
+        switch recurrence.kind {
+        case .once:
+            return [start]
+
+        case .daily:
+            let days = calendar.dateComponents([.day], from: start, to: target).day ?? 0
+            return (0...days).compactMap { offset in
+                calendar.date(byAdding: .day, value: offset, to: start)
+            }
+
+        case .weekly:
+            var scheduledDates: [Date] = []
+            var checkDate = start
+            while checkDate <= target {
+                let weekday = calendar.component(.weekday, from: checkDate)
+                if recurrence.weekdays.contains(weekday) {
+                    scheduledDates.append(checkDate)
+                }
+                guard let nextDate = calendar.date(byAdding: .day, value: 1, to: checkDate) else {
+                    break
+                }
+                checkDate = nextDate
+            }
+            return scheduledDates
+        }
+    }
+
+    private var effectiveEndDay: Date? {
+        guard let endDate else { return nil }
+        return Calendar.current.startOfDay(for: endDate)
+    }
+}
+
+struct TaskSubitemProjection: Sendable {
+    let parentTaskID: UUID
+    let taskExecutionID: UUID?
+    let status: TaskExecutionStatus
+    let sortOrder: Int
+    let createdAt: Date
+
+    init(_ subtask: TaskSubitem) {
+        parentTaskID = subtask.parentTaskID
+        taskExecutionID = subtask.taskExecutionID
+        status = subtask.status
+        sortOrder = subtask.sortOrder
+        createdAt = subtask.createdAt
+    }
+}
+
+struct TaskExecutionRecordProjection: Sendable {
+    let id: UUID
+    let taskID: UUID
+    let occurrenceDate: Date
+    let status: TaskExecutionStatus
+
+    init(_ record: TaskExecutionRecord) {
+        id = record.id
+        taskID = record.taskID
+        occurrenceDate = record.occurrenceDate
+        status = record.status
+    }
+}
+
+struct TodayTaskProjectionResult: Sendable {
+    let taskID: UUID
+    let section: TodayTaskDisplaySection
+    let occurrenceDate: Date
+    let isCompleted: Bool
+    let pendingOccurrenceCount: Int
+    let overdueOriginText: String?
+    let totalSubtaskCount: Int
+    let completedSubtaskCount: Int
+}
+
+struct TodayTaskDisplayItem: Identifiable, Equatable {
     let task: TaskItem
     let section: TodayTaskDisplaySection
     let occurrenceDate: Date
@@ -16,6 +125,17 @@ struct TodayTaskDisplayItem: Identifiable {
     let overdueOriginText: String?
     let totalSubtaskCount: Int
     let completedSubtaskCount: Int
+
+    static func == (lhs: TodayTaskDisplayItem, rhs: TodayTaskDisplayItem) -> Bool {
+        lhs.task.id == rhs.task.id &&
+        lhs.section == rhs.section &&
+        lhs.occurrenceDate == rhs.occurrenceDate &&
+        lhs.isCompleted == rhs.isCompleted &&
+        lhs.pendingOccurrenceCount == rhs.pendingOccurrenceCount &&
+        lhs.overdueOriginText == rhs.overdueOriginText &&
+        lhs.totalSubtaskCount == rhs.totalSubtaskCount &&
+        lhs.completedSubtaskCount == rhs.completedSubtaskCount
+    }
 
     var id: String {
         "\(task.id.uuidString)-\(section)-\(occurrenceDate.timeIntervalSince1970)"
@@ -28,6 +148,11 @@ struct TodayTaskDisplayItem: Identifiable {
     var subtaskProgressText: String? {
         guard hasSubtasks else { return nil }
         return "\(completedSubtaskCount)/\(totalSubtaskCount) 子任务"
+    }
+
+    var simpleProgressText: String? {
+        guard hasSubtasks else { return nil }
+        return "\(completedSubtaskCount)/\(totalSubtaskCount)"
     }
 }
 
@@ -51,6 +176,11 @@ struct TaskOccurrenceSnapshot: Identifiable {
     var subtaskProgressText: String? {
         guard hasSubtasks else { return nil }
         return "\(completedSubtaskCount)/\(totalSubtaskCount) 子任务"
+    }
+
+    var simpleProgressText: String? {
+        guard hasSubtasks else { return nil }
+        return "\(completedSubtaskCount)/\(totalSubtaskCount)"
     }
 }
 
@@ -487,4 +617,177 @@ enum TodayTaskListBuilder {
             on: date
         )
     }
+}
+
+enum TodayTaskProjectionBuilder {
+    static func build(
+        from tasks: [TaskProjection],
+        executions: [TaskExecutionRecordProjection],
+        subtasks: [TaskSubitemProjection],
+        on date: Date = .now
+    ) -> [TodayTaskProjectionResult] {
+        let calendar = Calendar.current
+        let today = Calendar.current.startOfDay(for: date)
+
+        return tasks.flatMap { task -> [TodayTaskProjectionResult] in
+            let snapshots = occurrenceSnapshots(
+                for: task,
+                executions: executions,
+                subtasks: subtasks,
+                on: date
+            )
+            let pendingCount = snapshots.filter { !$0.isCompleted }.count
+
+            return snapshots.compactMap { snapshot in
+                let section: TodayTaskDisplaySection
+                if snapshot.isCompleted {
+                    guard calendar.isDate(snapshot.occurrenceDate, inSameDayAs: today) else { return nil }
+                    section = .todayDone
+                } else if calendar.isDate(snapshot.occurrenceDate, inSameDayAs: today) {
+                    section = .todayPending
+                } else {
+                    section = .historicalPending
+                }
+
+                return TodayTaskProjectionResult(
+                    taskID: task.id,
+                    section: section,
+                    occurrenceDate: snapshot.occurrenceDate,
+                    isCompleted: snapshot.isCompleted,
+                    pendingOccurrenceCount: pendingCount,
+                    overdueOriginText: snapshot.overdueOriginText,
+                    totalSubtaskCount: snapshot.totalSubtaskCount,
+                    completedSubtaskCount: snapshot.completedSubtaskCount
+                )
+            }
+        }
+    }
+
+    static func displayItems(
+        from projections: [TodayTaskProjectionResult],
+        tasksByID: [UUID: TaskItem]
+    ) -> [TodayTaskDisplayItem] {
+        projections.compactMap { projection in
+            guard let task = tasksByID[projection.taskID] else { return nil }
+            return TodayTaskDisplayItem(
+                task: task,
+                section: projection.section,
+                occurrenceDate: projection.occurrenceDate,
+                isCompleted: projection.isCompleted,
+                pendingOccurrenceCount: projection.pendingOccurrenceCount,
+                overdueOriginText: projection.overdueOriginText,
+                totalSubtaskCount: projection.totalSubtaskCount,
+                completedSubtaskCount: projection.completedSubtaskCount
+            )
+        }
+    }
+
+    private static func occurrenceSnapshots(
+        for task: TaskProjection,
+        executions: [TaskExecutionRecordProjection],
+        subtasks: [TaskSubitemProjection],
+        on date: Date = .now
+    ) -> [ProjectedTaskOccurrenceSnapshot] {
+        let calendar = Calendar.current
+        let today = Calendar.current.startOfDay(for: date)
+
+        return task.scheduledOccurrenceDates(upTo: date).compactMap { occurrenceDate in
+            let record = executionRecord(for: task.id, on: occurrenceDate, in: executions)
+            let completed = isOccurrenceCompleted(
+                task: task,
+                occurrenceDate: occurrenceDate,
+                executions: executions,
+                subtasks: subtasks
+            )
+
+            if !completed &&
+                task.skipPolicy == .skippable &&
+                !calendar.isDate(occurrenceDate, inSameDayAs: today) &&
+                record == nil {
+                return nil
+            }
+
+            let progress = subtaskProgress(
+                for: record,
+                in: subtasks
+            )
+            let overdueOriginText: String? = {
+                guard task.skipPolicy == .unskippable, occurrenceDate < today else { return nil }
+                return task.originText(for: occurrenceDate, relativeTo: today)
+            }()
+
+            return ProjectedTaskOccurrenceSnapshot(
+                taskID: task.id,
+                createdAt: task.createdAt,
+                occurrenceDate: occurrenceDate,
+                isCompleted: completed,
+                overdueOriginText: completed ? nil : overdueOriginText,
+                totalSubtaskCount: progress.total,
+                completedSubtaskCount: progress.completed
+            )
+        }
+    }
+
+    private static func executionRecord(
+        for taskID: UUID,
+        on occurrenceDate: Date,
+        in executions: [TaskExecutionRecordProjection]
+    ) -> TaskExecutionRecordProjection? {
+        let targetDay = Calendar.current.startOfDay(for: occurrenceDate)
+        return executions.first(where: {
+            $0.taskID == taskID && Calendar.current.isDate($0.occurrenceDate, inSameDayAs: targetDay)
+        })
+    }
+
+    private static func isOccurrenceCompleted(
+        task: TaskProjection,
+        occurrenceDate: Date,
+        executions: [TaskExecutionRecordProjection],
+        subtasks: [TaskSubitemProjection]
+    ) -> Bool {
+        let record = executionRecord(for: task.id, on: occurrenceDate, in: executions)
+        let occurrenceSubtasks = executionSubtasks(for: record, in: subtasks)
+
+        if occurrenceSubtasks.isEmpty {
+            return record?.status == .completed
+        }
+
+        return occurrenceSubtasks.allSatisfy { $0.status == .completed }
+    }
+
+    private static func executionSubtasks(
+        for executionRecord: TaskExecutionRecordProjection?,
+        in subtasks: [TaskSubitemProjection]
+    ) -> [TaskSubitemProjection] {
+        guard let executionRecord else { return [] }
+        return subtasks
+            .filter { $0.taskExecutionID == executionRecord.id }
+            .sorted(by: sortSubtasks)
+    }
+
+    private static func subtaskProgress(
+        for executionRecord: TaskExecutionRecordProjection?,
+        in subtasks: [TaskSubitemProjection]
+    ) -> (completed: Int, total: Int) {
+        let executionSubtasks = executionSubtasks(for: executionRecord, in: subtasks)
+        let completed = executionSubtasks.filter { $0.status == .completed }.count
+        return (completed, executionSubtasks.count)
+    }
+
+    private static func sortSubtasks(_ lhs: TaskSubitemProjection, _ rhs: TaskSubitemProjection) -> Bool {
+        if lhs.sortOrder == rhs.sortOrder {
+            return lhs.createdAt < rhs.createdAt
+        }
+        return lhs.sortOrder < rhs.sortOrder
+    }
+}
+
+private struct ProjectedTaskOccurrenceSnapshot {
+    let taskID: UUID
+    let createdAt: Date
+    let occurrenceDate: Date
+    let isCompleted: Bool
+    let overdueOriginText: String?
+    let totalSubtaskCount: Int
+    let completedSubtaskCount: Int
 }

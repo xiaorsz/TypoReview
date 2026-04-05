@@ -55,7 +55,7 @@ final class TaskSubitem {
     }
 }
 
-enum TaskExecutionStatus: String, Codable, CaseIterable, Identifiable {
+enum TaskExecutionStatus: String, Codable, CaseIterable, Identifiable, Sendable {
     case pending = "待处理"
     case completed = "已完成"
 
