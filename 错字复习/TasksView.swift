@@ -273,68 +273,74 @@ struct TasksView: View {
             NavigationLink {
                 TaskDetailView(task: task)
             } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(task.title)
-                        .fontWeight(.medium)
-                        .strikethrough(isDone)
-                        .foregroundStyle(isDone ? .secondary : .primary)
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(task.title)
+                            .fontWeight(.medium)
+                            .strikethrough(isDone)
+                            .foregroundStyle(isDone ? .secondary : .primary)
 
-                    HStack(spacing: 3) {
-                        Text(task.recurrenceShortLabel)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        if let _ = task.effectiveDateRangeLabel {
-                            Text("·")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                            
-                            Text(task.effectiveDateRangeLabel!)
+                        HStack(spacing: 3) {
+                            Text(task.recurrenceShortLabel)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                        }
 
-                        if task.skipPolicy == .unskippable {
-                            Text("·")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                            if let _ = task.effectiveDateRangeLabel {
+                                Text("·")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
                                 
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
-                        }
+                                Text(task.effectiveDateRangeLabel!)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
 
-                        if let _ = occurrenceLabel, !isDone {
-                            Text("·")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                                
-                            Text(task.originShortText(for: occurrenceDate ?? .now))
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.orange)
-                        }
+                            if task.skipPolicy == .unskippable {
+                                Text("·")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                            }
 
-                        if let totalSubtaskCount, totalSubtaskCount > 0,
-                           let completedSubtaskCount {
-                            Text("·")
-                                .font(.caption2)
+                            if let _ = occurrenceLabel, !isDone {
+                                Text("·")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    
+                                Text(task.originShortText(for: occurrenceDate ?? .now))
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.orange)
+                            }
+
+                            if let totalSubtaskCount, totalSubtaskCount > 0,
+                               let completedSubtaskCount {
+                                Text("·")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    
+                                Text("\(completedSubtaskCount)/\(totalSubtaskCount)")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(isDone ? .green : .blue)
+                            }
+                        }
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+
+                        if !task.note.isEmpty {
+                            Text(task.note)
+                                .font(.caption)
                                 .foregroundStyle(.tertiary)
-                                
-                            Text("\(completedSubtaskCount)/\(totalSubtaskCount)")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(isDone ? .green : .blue)
+                                .lineLimit(1)
                         }
                     }
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-
-                    if !task.note.isEmpty {
-                        Text(task.note)
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
+                    
+                    Spacer(minLength: 0)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
         }
         .padding(.vertical, 4)

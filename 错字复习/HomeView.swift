@@ -791,78 +791,83 @@ struct HomeView: View {
             Button {
                 selectedTaskForDetail = task
             } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(task.title)
-                        .fontWeight(.medium)
-                        .foregroundStyle(isDone ? .secondary : .primary)
-                        .strikethrough(isDone)
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(task.title)
+                            .fontWeight(.medium)
+                            .foregroundStyle(isDone ? .secondary : .primary)
+                            .strikethrough(isDone)
 
-                    HStack(spacing: 3) {
-                        Text(task.recurrenceShortLabel)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        if let _ = task.effectiveDateRangeLabel {
-                            Text("·")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                            
-                            Text(task.effectiveDateRangeLabel!)
+                        HStack(spacing: 3) {
+                            Text(task.recurrenceShortLabel)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                        }
 
-                        if task.skipPolicy == .unskippable {
-                            Text("·")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                            if let _ = task.effectiveDateRangeLabel {
+                                Text("·")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
                                 
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
-                        }
+                                Text(task.effectiveDateRangeLabel!)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
 
-                        if let _ = occurrenceLabel, !isDone {
-                            Text("·")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                                
-                            Text(task.originShortText(for: item.occurrenceDate))
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.orange)
-                        }
+                            if task.skipPolicy == .unskippable {
+                                Text("·")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                            }
 
-                        if let progressText = item.simpleProgressText {
-                            Text("·")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                                
-                            Text(progressText)
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(isDone ? .green : .blue)
-                        }
+                            if let _ = occurrenceLabel, !isDone {
+                                Text("·")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    
+                                Text(task.originShortText(for: item.occurrenceDate))
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.orange)
+                            }
 
-                        if !isDone, item.pendingOccurrenceCount > 1 {
-                            Text("·")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                                
-                            Text("\(item.pendingOccurrenceCount)次待办")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.orange)
+                            if let progressText = item.simpleProgressText {
+                                Text("·")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    
+                                Text(progressText)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(isDone ? .green : .blue)
+                            }
+
+                            if !isDone, item.pendingOccurrenceCount > 1 {
+                                Text("·")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    
+                                Text("\(item.pendingOccurrenceCount)次待办")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.orange)
+                            }
                         }
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .opacity(isDone ? 0.6 : 1.0)
                     }
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .opacity(isDone ? 0.6 : 1.0)
+
+                    Spacer(minLength: 0)
+
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
         }
         .padding(.vertical, 2)
     }
