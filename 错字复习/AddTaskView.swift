@@ -265,8 +265,12 @@ struct AddTaskView: View {
         withAnimation {
             showSaveToast = true
         }
-        try? modelContext.save()
-        WidgetCenter.shared.reloadAllTimelines()
+        
+        Task { @MainActor in
+            try? modelContext.save()
+            WidgetCenter.shared.reloadAllTimelinesInBackground()
+        }
+        
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
             dismiss()
         }

@@ -6,7 +6,7 @@ struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(SyncStatusStore.self) private var syncStatusStore
     @Environment(MediaLibraryStore.self) private var mediaLibraryStore
-    @Query private var settingsList: [AppSettings]
+    @Environment(AppSettingsStore.self) private var settings
 
     @State private var exportDocument = DataBackupDocument.empty
     @State private var exportFilename = DataBackupPayload.placeholder.defaultFilename
@@ -17,14 +17,13 @@ struct SettingsView: View {
     @State private var infoAlert: InfoAlert?
     @State private var isRestoringBackup = false
 
-    private var settings: AppSettings? {
-        settingsList.first
-    }
-
     private var reviewStyle: Binding<ReviewInteractionStyle> {
         Binding(
-            get: { settings?.reviewInteractionStyle ?? AppSettings.defaultReviewInteractionStyle },
-            set: { newValue in settings?.reviewInteractionStyle = newValue }
+            get: { settings.reviewInteractionStyle },
+            set: { newValue in
+                settings.reviewInteractionStyle = newValue
+                settings.persist(using: modelContext)
+            }
         )
     }
 
@@ -32,27 +31,31 @@ struct SettingsView: View {
         Binding(
             get: {
                 var components = DateComponents()
-                components.hour = settings?.remindHour ?? 19
-                components.minute = settings?.remindMinute ?? 30
+                components.hour = settings.remindHour
+                components.minute = settings.remindMinute
                 return Calendar.current.date(from: components) ?? Date()
             },
             set: { newValue in
                 let components = Calendar.current.dateComponents([.hour, .minute], from: newValue)
-                settings?.remindHour = components.hour ?? 19
-                settings?.remindMinute = components.minute ?? 30
+                settings.remindHour = components.hour ?? 19
+                settings.remindMinute = components.minute ?? 30
+                settings.persist(using: modelContext)
             }
         )
     }
 
     private var boardManualPlaybackOption: Binding<BoardManualPlaybackOption> {
         Binding(
-            get: { settings?.boardManualPlaybackOption ?? .untilPlaylistEnds },
-            set: { settings?.boardManualPlaybackOption = $0 }
+            get: { settings.boardManualPlaybackOption },
+            set: {
+                settings.boardManualPlaybackOption = $0
+                settings.persist(using: modelContext)
+            }
         )
     }
 
     private var boardAutoplaySlots: [BoardAutoplaySlot] {
-        settings?.boardAutoplaySlots ?? []
+        settings.boardAutoplaySlots
     }
 
     private let boardAutoplayDurationOptions = [15, 30, 45, 60, 90, 120]
@@ -75,7 +78,7 @@ struct SettingsView: View {
                         SettingsIcon(name: "list.number", color: .orange)
                         Text("每日题量")
                         Spacer()
-                        Text("\(settings?.dailyLimit ?? 15) 题")
+                        Text("\(settings.dailyLimit) 题")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -119,7 +122,7 @@ struct SettingsView: View {
                     }
                 }
                 
-                if settings?.boardAutoplayEnabled == true {
+                if settings.boardAutoplayEnabled {
                     ForEach(Array(boardAutoplaySlots.enumerated()), id: \.element.id) { index, slot in
                         VStack(alignment: .leading, spacing: 12) {
                             HStack {
@@ -133,7 +136,8 @@ struct SettingsView: View {
 
                                 if boardAutoplaySlots.count > 1 {
                                     Button(role: .destructive) {
-                                        settings?.removeBoardAutoplaySlot(id: slot.id)
+                                        settings.removeBoardAutoplaySlot(id: slot.id)
+                                        settings.persist(using: modelContext)
                                     } label: {
                                         Image(systemName: "trash")
                                             .font(.footnote.weight(.semibold))
@@ -158,7 +162,8 @@ struct SettingsView: View {
                     }
 
                     Button {
-                        settings?.addBoardAutoplaySlot()
+                        settings.addBoardAutoplaySlot()
+                        settings.persist(using: modelContext)
                     } label: {
                         HStack {
                             SettingsIcon(name: "plus.circle.fill", color: .cyan)
@@ -203,19 +208,17 @@ struct SettingsView: View {
             } header: {
                 Text("晨读与看板")
             } footer: {
-                if let settings {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("只有看板打开时自动播放才会生效。")
-                        SettingsNoteRow(
-                            icon: "clock.arrow.circlepath",
-                            text: settings.boardAutoplaySlots.isEmpty ? "当前还没有晨读自动播放时间段。" : "已设置 \(settings.boardAutoplaySlots.count) 个时间段：\(settings.boardAutoplayTimeSummary)"
-                        )
-                        Text(settings.boardAutoplayRuleSummary)
-                        SettingsNoteRow(
-                            icon: "flag.2.crossed.fill",
-                            text: "法定节假日已内置 \(AppSettings.supportedChinaHolidayYearsSummary) 年国务院办公厅放假安排；后续年份需要跟随官方通知更新。"
-                        )
-                    }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("只有看板打开时自动播放才会生效。")
+                    SettingsNoteRow(
+                        icon: "clock.arrow.circlepath",
+                        text: settings.boardAutoplaySlots.isEmpty ? "当前还没有晨读自动播放时间段。" : "已设置 \(settings.boardAutoplaySlots.count) 个时间段：\(settings.boardAutoplayTimeSummary)"
+                    )
+                    Text(settings.boardAutoplayRuleSummary)
+                    SettingsNoteRow(
+                        icon: "flag.2.crossed.fill",
+                        text: "法定节假日已内置 \(AppSettings.supportedChinaHolidayYearsSummary) 年国务院办公厅放假安排；后续年份需要跟随官方通知更新。"
+                    )
                 }
             }
 
@@ -353,10 +356,13 @@ struct SettingsView: View {
         }
     }
 
-    private func bind<Value>(_ keyPath: ReferenceWritableKeyPath<AppSettings, Value>) -> Binding<Value> {
+    private func bind<Value>(_ keyPath: ReferenceWritableKeyPath<AppSettingsStore, Value>) -> Binding<Value> {
         Binding(
-            get: { settings?[keyPath: keyPath] ?? defaultValue(for: keyPath) },
-            set: { newValue in settings?[keyPath: keyPath] = newValue }
+            get: { settings[keyPath: keyPath] },
+            set: { newValue in
+                settings[keyPath: keyPath] = newValue
+                settings.persist(using: modelContext)
+            }
         )
     }
 
@@ -370,10 +376,11 @@ struct SettingsView: View {
             },
             set: { newValue in
                 let components = Calendar.current.dateComponents([.hour, .minute], from: newValue)
-                settings?.updateBoardAutoplaySlot(id: slot.id) { slot in
+                settings.updateBoardAutoplaySlot(id: slot.id) { slot in
                     slot.startHour = components.hour ?? AppSettings.defaultBoardAutoplayStartHour
                     slot.startMinute = components.minute ?? AppSettings.defaultBoardAutoplayStartMinute
                 }
+                settings.persist(using: modelContext)
             }
         )
     }
@@ -382,15 +389,12 @@ struct SettingsView: View {
         Binding(
             get: { slot.durationMinutes },
             set: { newValue in
-                settings?.updateBoardAutoplaySlot(id: slot.id) { slot in
+                settings.updateBoardAutoplaySlot(id: slot.id) { slot in
                     slot.durationMinutes = newValue
                 }
+                settings.persist(using: modelContext)
             }
         )
-    }
-
-    private func defaultValue<Value>(for keyPath: ReferenceWritableKeyPath<AppSettings, Value>) -> Value {
-        AppSettings()[keyPath: keyPath]
     }
 
     private var importConfirmationMessage: String {
@@ -419,6 +423,7 @@ struct SettingsView: View {
 
             let document = try DataBackupService.makeDocument(
                 from: modelContext,
+                settingsStore: settings,
                 mediaAssets: mediaLibraryStore.snapshots()
             )
             exportDocument = document
@@ -492,6 +497,7 @@ struct SettingsView: View {
             try DataBackupService.restore(
                 pendingImportPayload,
                 into: modelContext,
+                settingsStore: settings,
                 mediaLibraryStore: mediaLibraryStore
             )
             showInfoAlert(

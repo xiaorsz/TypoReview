@@ -6,6 +6,10 @@ import Observation
 @MainActor
 @Observable
 final class SyncStatusStore {
+    private enum RefreshError: Error {
+        case cloudAccountStatusTimeout
+    }
+
     enum SyncNoticeKind {
         case checking
         case ready
@@ -87,6 +91,8 @@ final class SyncStatusStore {
         guard !isRefreshing else { return }
 
         isRefreshing = true
+        defer { isRefreshing = false }
+
         lastTrigger = trigger
         lastErrorMessage = ""
         localDataSummary = "检查中..."
@@ -101,11 +107,10 @@ final class SyncStatusStore {
             let reviewRecordCount = try modelContext.fetchCount(FetchDescriptor<ReviewRecord>())
             let taskCount = try modelContext.fetchCount(FetchDescriptor<TaskItem>())
             let scheduleCount = try modelContext.fetchCount(FetchDescriptor<ScheduleItem>())
-            let settingsCount = try modelContext.fetchCount(FetchDescriptor<AppSettings>())
             let dictationSessionCount = try modelContext.fetchCount(FetchDescriptor<DictationSession>())
             let dictationEntryCount = try modelContext.fetchCount(FetchDescriptor<DictationEntry>())
 
-            localDataSummary = "题库 \(reviewItemCount) 条，记录 \(reviewRecordCount) 条，待办 \(taskCount) 条，日程 \(scheduleCount) 条，听写 \(dictationSessionCount) 组 / \(dictationEntryCount) 条，设置 \(settingsCount) 条"
+            localDataSummary = "题库 \(reviewItemCount) 条，记录 \(reviewRecordCount) 条，待办 \(taskCount) 条，日程 \(scheduleCount) 条，听写 \(dictationSessionCount) 组 / \(dictationEntryCount) 条"
             lastRefreshAt = .now
         } catch {
             lastErrorMessage = error.localizedDescription
@@ -113,7 +118,6 @@ final class SyncStatusStore {
         }
 
         await refreshCloudAccountState()
-        isRefreshing = false
     }
 
     private func refreshCloudAccountState() async {
@@ -123,7 +127,23 @@ final class SyncStatusStore {
         }
 
         do {
-            let status = try await CKContainer(identifier: containerIdentifier).accountStatus()
+            let containerIdentifier = containerIdentifier
+            let status = try await withThrowingTaskGroup(of: CKAccountStatus.self) { group in
+                group.addTask {
+                    try await CKContainer(identifier: containerIdentifier).accountStatus()
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                    throw RefreshError.cloudAccountStatusTimeout
+                }
+
+                guard let status = try await group.next() else {
+                    throw RefreshError.cloudAccountStatusTimeout
+                }
+                group.cancelAll()
+                return status
+            }
+
             switch status {
             case .available:
                 cloudAccountState = .available
@@ -138,6 +158,8 @@ final class SyncStatusStore {
             @unknown default:
                 cloudAccountState = .couldNotDetermine("遇到了未知的 CloudKit 账户状态。")
             }
+        } catch RefreshError.cloudAccountStatusTimeout {
+            cloudAccountState = .couldNotDetermine("CloudKit 账户检查超过 5 秒，已停止等待。")
         } catch {
             cloudAccountState = .couldNotDetermine(error.localizedDescription)
         }

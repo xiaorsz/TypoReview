@@ -154,7 +154,14 @@ struct DataBackupPayload: Codable {
     }
 
     static func capture(from modelContext: ModelContext, mediaAssets: [MediaLibraryAsset]) throws -> DataBackupPayload {
-        let settings = try modelContext.fetch(FetchDescriptor<AppSettings>()).first.map(AppSettingsSnapshot.init)
+        try capture(from: modelContext, settings: nil, mediaAssets: mediaAssets)
+    }
+
+    static func capture(
+        from modelContext: ModelContext,
+        settings: AppSettingsSnapshot?,
+        mediaAssets: [MediaLibraryAsset]
+    ) throws -> DataBackupPayload {
         let reviewItems = try modelContext.fetch(FetchDescriptor<ReviewItem>()).map(ReviewItemSnapshot.init)
         let reviewRecords = try modelContext.fetch(FetchDescriptor<ReviewRecord>()).map(ReviewRecordSnapshot.init)
         let taskItems = try modelContext.fetch(FetchDescriptor<TaskItem>()).map(TaskItemSnapshot.init)
@@ -228,20 +235,28 @@ struct DataBackupPayload: Codable {
 }
 
 enum DataBackupService {
+    @MainActor
     static func makeDocument(
         from modelContext: ModelContext,
+        settingsStore: AppSettingsStore,
         mediaAssets: [MediaLibraryAsset]
     ) throws -> DataBackupDocument {
-        DataBackupDocument(payload: try DataBackupPayload.capture(from: modelContext, mediaAssets: mediaAssets))
+        DataBackupDocument(
+            payload: try DataBackupPayload.capture(
+                from: modelContext,
+                settings: settingsStore.snapshot,
+                mediaAssets: mediaAssets
+            )
+        )
     }
 
     @MainActor
     static func restore(
         _ payload: DataBackupPayload,
         into modelContext: ModelContext,
+        settingsStore: AppSettingsStore,
         mediaLibraryStore: MediaLibraryStore
     ) throws {
-        try deleteAll(AppSettings.self, in: modelContext)
         try deleteAll(ReviewItem.self, in: modelContext)
         try deleteAll(ReviewRecord.self, in: modelContext)
         try deleteAll(TaskItem.self, in: modelContext)
@@ -252,10 +267,6 @@ enum DataBackupService {
         try deleteAll(DictationSession.self, in: modelContext)
         try deleteAll(DictationEntry.self, in: modelContext)
         try deleteAll(ScheduleItem.self, in: modelContext)
-
-        if let settings = payload.settings?.makeModel() {
-            modelContext.insert(settings)
-        }
 
         payload.reviewItems
             .map { $0.makeModel() }
@@ -305,10 +316,10 @@ enum DataBackupService {
 
         TaskExecutionSupport.migrateLegacySubtasksIfNeeded(in: modelContext)
 
-        _ = try AppSettings.ensureSingleton(in: modelContext)
         if modelContext.hasChanges {
             try modelContext.save()
         }
+        settingsStore.restore(from: payload.settings, using: modelContext)
         try mediaLibraryStore.replaceAll(with: payload.mediaAssets.map { $0.makeModel() })
     }
 
@@ -317,7 +328,7 @@ enum DataBackupService {
     }
 }
 
-struct AppSettingsSnapshot: Codable {
+struct AppSettingsSnapshot: Codable, Equatable {
     let id: UUID
     let childName: String
     let dailyLimit: Int
@@ -371,6 +382,43 @@ struct AppSettingsSnapshot: Codable {
         boardManualPlaybackOptionRawValue = settings.boardManualPlaybackOptionRawValue
         boardAutoplaySkipWeekends = settings.boardAutoplaySkipWeekends
         boardAutoplaySkipChinaHolidays = settings.boardAutoplaySkipChinaHolidays
+    }
+
+    // 内部用：不依赖 AppSettings 实例直接构造快照（避免 @Model 实例化问题）
+    init(
+        id: UUID,
+        childName: String,
+        dailyLimit: Int,
+        remindHour: Int,
+        remindMinute: Int,
+        reviewInteractionStyleRawValue: String,
+        boardAutoplayEnabled: Bool,
+        boardAutoplayStartHour: Int,
+        boardAutoplayStartMinute: Int,
+        boardAutoplayEndHour: Int,
+        boardAutoplayEndMinute: Int,
+        boardAutoplayDurationMinutes: Int,
+        boardAutoplaySlotsRawValue: String,
+        boardManualPlaybackOptionRawValue: String,
+        boardAutoplaySkipWeekends: Bool,
+        boardAutoplaySkipChinaHolidays: Bool
+    ) {
+        self.id = id
+        self.childName = childName
+        self.dailyLimit = dailyLimit
+        self.remindHour = remindHour
+        self.remindMinute = remindMinute
+        self.reviewInteractionStyleRawValue = reviewInteractionStyleRawValue
+        self.boardAutoplayEnabled = boardAutoplayEnabled
+        self.boardAutoplayStartHour = boardAutoplayStartHour
+        self.boardAutoplayStartMinute = boardAutoplayStartMinute
+        self.boardAutoplayEndHour = boardAutoplayEndHour
+        self.boardAutoplayEndMinute = boardAutoplayEndMinute
+        self.boardAutoplayDurationMinutes = boardAutoplayDurationMinutes
+        self.boardAutoplaySlotsRawValue = boardAutoplaySlotsRawValue
+        self.boardManualPlaybackOptionRawValue = boardManualPlaybackOptionRawValue
+        self.boardAutoplaySkipWeekends = boardAutoplaySkipWeekends
+        self.boardAutoplaySkipChinaHolidays = boardAutoplaySkipChinaHolidays
     }
 
     init(from decoder: any Decoder) throws {

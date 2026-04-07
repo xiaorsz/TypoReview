@@ -1,16 +1,31 @@
 import SwiftUI
 import SwiftData
 import SQLite3
+import UIKit
 
 @main
 struct TypoReviewApp: App {
+    private static let cloudKitContainerIdentifierValue = "iCloud.cc.xiaorsz.typo-review"
+    private static let appGroupIdentifierValue = "group.cc.xiaorsz.typo-review"
+
     @State private var syncStatusStore = SyncStatusStore()
     @State private var mediaLibraryStore = MediaLibraryStore()
-    private let cloudKitContainerIdentifier = "iCloud.cc.xiaorsz.typo-review"
-    private let appGroupIdentifier = "group.cc.xiaorsz.typo-review"
+    @State private var appSettingsStore: AppSettingsStore
+    private let cloudKitContainerIdentifier = Self.cloudKitContainerIdentifierValue
+    private let appGroupIdentifier = Self.appGroupIdentifierValue
     private let sharedModelContainer: ModelContainer
 
     init() {
+        if #available(iOS 18.0, *) {
+        } else {
+            Task { @MainActor in
+                IOS17BackgroundSceneShield.shared.start()
+            }
+        }
+
+        _appSettingsStore = State(
+            initialValue: AppSettingsStore(appGroupIdentifier: Self.appGroupIdentifierValue)
+        )
         let schema = Schema([
             ReviewItem.self,
             ReviewRecord.self,
@@ -70,6 +85,7 @@ struct TypoReviewApp: App {
             let container = try ModelContainer(for: schema, configurations: [cloudConfiguration])
             Self.migrateLegacyTaskExecutionsIfNeeded(in: container.mainContext)
             TaskExecutionSupport.migrateLegacySubtasksIfNeeded(in: container.mainContext)
+            _ = try? AppSettings.ensureSingleton(in: container.mainContext)
             sharedModelContainer = container
 
             _syncStatusStore = State(initialValue: {
@@ -88,6 +104,7 @@ struct TypoReviewApp: App {
                 container = try ModelContainer(for: schema, configurations: [fallbackConfiguration])
                 Self.migrateLegacyTaskExecutionsIfNeeded(in: container.mainContext)
                 TaskExecutionSupport.migrateLegacySubtasksIfNeeded(in: container.mainContext)
+                _ = try? AppSettings.ensureSingleton(in: container.mainContext)
             } catch {
                 print("Fallback ModelContainer also failed: \(error)")
                 let inMemoryConfig = ModelConfiguration(isStoredInMemoryOnly: true)
@@ -280,8 +297,189 @@ struct TypoReviewApp: App {
             RootTabView()
                 .environment(syncStatusStore)
                 .environment(mediaLibraryStore)
+                .environment(appSettingsStore)
                 .environment(\.locale, Locale(identifier: "zh_Hans"))
         }
         .modelContainer(sharedModelContainer)
+    }
+}
+
+@MainActor
+private final class IOS17BackgroundSceneShield {
+    static let shared = IOS17BackgroundSceneShield()
+
+    private struct ShieldedWindow {
+        weak var window: UIWindow?
+        let rootViewController: UIViewController
+    }
+
+    private var isStarted = false
+    private var observers: [NSObjectProtocol] = []
+    private var shieldedWindows: [ObjectIdentifier: ShieldedWindow] = [:]
+
+    func start() {
+        guard !isStarted else { return }
+        guard isEnabled else { return }
+
+        isStarted = true
+        let center = NotificationCenter.default
+        observers = [
+            center.addObserver(
+                forName: UIScene.willDeactivateNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                MainActor.assumeIsolated {
+                    self?.shieldScene(from: notification)
+                }
+            },
+            center.addObserver(
+                forName: UIScene.didEnterBackgroundNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                MainActor.assumeIsolated {
+                    self?.shieldScene(from: notification)
+                }
+            },
+            center.addObserver(
+                forName: UIApplication.willResignActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.shieldActiveWindows()
+                }
+            },
+            center.addObserver(
+                forName: UIApplication.didEnterBackgroundNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.shieldActiveWindows()
+                }
+            },
+            center.addObserver(
+                forName: UIScene.didActivateNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                MainActor.assumeIsolated {
+                    self?.restoreScene(from: notification)
+                }
+            },
+            center.addObserver(
+                forName: UIApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.restoreShieldedWindows()
+                }
+            }
+        ]
+    }
+
+    private var isEnabled: Bool {
+        if #available(iOS 18.0, *) {
+            false
+        } else {
+            true
+        }
+    }
+
+    private func shieldActiveWindows() {
+        guard isEnabled else { return }
+
+        for case let windowScene as UIWindowScene in UIApplication.shared.connectedScenes {
+            guard windowScene.session.role == .windowApplication else { continue }
+
+            shield(windowScene)
+        }
+    }
+
+    private func shieldScene(from notification: Notification) {
+        guard let windowScene = notification.object as? UIWindowScene else {
+            shieldActiveWindows()
+            return
+        }
+        shield(windowScene)
+    }
+
+    private func shield(_ windowScene: UIWindowScene) {
+        guard isEnabled else { return }
+        guard windowScene.session.role == .windowApplication else { return }
+
+        for window in windowScene.windows where shouldShield(window) {
+            guard let rootViewController = window.rootViewController else { continue }
+
+            let windowID = ObjectIdentifier(window)
+            shieldedWindows[windowID] = ShieldedWindow(
+                window: window,
+                rootViewController: rootViewController
+            )
+
+            UIView.performWithoutAnimation {
+                removeContextMenuInteractions(from: window)
+                window.rootViewController = IOS17BackgroundShieldViewController()
+                window.layoutIfNeeded()
+            }
+        }
+    }
+
+    private func removeContextMenuInteractions(from view: UIView) {
+        for interaction in view.interactions where interaction is UIContextMenuInteraction {
+            view.removeInteraction(interaction)
+        }
+
+        for subview in view.subviews {
+            removeContextMenuInteractions(from: subview)
+        }
+    }
+
+    private func shouldShield(_ window: UIWindow) -> Bool {
+        guard !window.isHidden else { return false }
+        guard window.windowLevel == .normal else { return false }
+        guard window.rootViewController != nil else { return false }
+        return !(window.rootViewController is IOS17BackgroundShieldViewController)
+    }
+
+    private func restoreShieldedWindows() {
+        for (_, shieldedWindow) in shieldedWindows {
+            guard let window = shieldedWindow.window else { continue }
+            guard window.rootViewController is IOS17BackgroundShieldViewController else { continue }
+            window.rootViewController = shieldedWindow.rootViewController
+            window.makeKeyAndVisible()
+        }
+        shieldedWindows.removeAll()
+    }
+
+    private func restoreScene(from notification: Notification) {
+        guard let windowScene = notification.object as? UIWindowScene else {
+            restoreShieldedWindows()
+            return
+        }
+
+        let windowIDs = Set(windowScene.windows.map(ObjectIdentifier.init))
+        for (windowID, shieldedWindow) in shieldedWindows where windowIDs.contains(windowID) {
+            guard let window = shieldedWindow.window else { continue }
+            guard window.rootViewController is IOS17BackgroundShieldViewController else { continue }
+            window.rootViewController = shieldedWindow.rootViewController
+            window.makeKeyAndVisible()
+            shieldedWindows.removeValue(forKey: windowID)
+        }
+    }
+}
+
+private final class IOS17BackgroundShieldViewController: UIViewController {
+    override func loadView() {
+        let shieldView = UIView()
+        shieldView.backgroundColor = .systemBackground
+        view = shieldView
+    }
+
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        .all
     }
 }

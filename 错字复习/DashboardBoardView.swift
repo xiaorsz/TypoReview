@@ -8,6 +8,7 @@ struct DashboardBoardView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(MediaLibraryStore.self) private var mediaLibraryStore
+    @Environment(AppSettingsStore.self) private var appSettingsStore
     @Query(sort: \ReviewItem.nextReviewAt) private var reviewItems: [ReviewItem]
     @Query(sort: \ReviewRecord.reviewedAt, order: .reverse) private var reviewRecords: [ReviewRecord]
     @Query(sort: \DictationSession.createdAt, order: .reverse) private var dictationSessions: [DictationSession]
@@ -17,7 +18,6 @@ struct DashboardBoardView: View {
     @Query(sort: \TaskExecutionRecord.occurrenceDate, order: .reverse) private var taskExecutionRecords: [TaskExecutionRecord]
     @Query(sort: \TaskSubitemExecutionRecord.updatedAt, order: .reverse) private var taskSubitemExecutionRecords: [TaskSubitemExecutionRecord]
     @Query(sort: \ScheduleItem.startTime) private var allSchedules: [ScheduleItem]
-    @Query private var settings: [AppSettings]
 
     @State private var previousIdleTimerDisabled = false
     @State private var previousScreenBrightness: CGFloat?
@@ -28,59 +28,40 @@ struct DashboardBoardView: View {
     @State private var lastBoardInteractionAt = Date.now
     @State private var isExitButtonVisible = false
 
-    private var childName: String {
-        guard let settings = settings.first else { return "小朋友" }
-        return settings.childName.isEmpty ? "小朋友" : settings.childName
+    private struct BoardSnapshot {
+        let childName: String
+        let dueItems: [ReviewItem]
+        let pendingDictationCount: Int
+        let pendingDictationBoardItems: [BoardTextItem]
+        let boardTaskItems: [TodayTaskDisplayItem]
+        let totalPendingTaskCount: Int
+        let todaySchedules: [ScheduleItem]
+        let todayHeadline: String
+        let boardSettings: AppSettings?
+        let enabledMediaAssets: [MediaLibraryAsset]
     }
 
-    private var dueItems: [ReviewItem] {
-        reviewItems
+    private func makeBoardSnapshot() -> BoardSnapshot {
+        let childName = appSettingsStore.childName.isEmpty ? "小朋友" : appSettingsStore.childName
+        let dueItems = reviewItems
             .filter { $0.nextReviewAt <= boardNow }
             .sorted { $0.nextReviewAt < $1.nextReviewAt }
-    }
-
-    private var pendingDictationSessions: [DictationSession] {
-        let calendar = Calendar.current
-        let todayStart = calendar.startOfDay(for: boardNow)
-        return dictationSessions
-            .filter { !$0.isReviewed && calendar.startOfDay(for: $0.scheduledDate) <= todayStart }
-            .sorted { $0.scheduledDate < $1.scheduledDate }
-    }
-
-    private var pendingDictationCount: Int {
-        pendingDictationSessions.reduce(into: 0) { result, session in
-            result += dictationEntries.filter { $0.sessionID == session.id }.count
-        }
-    }
-
-    private var pendingDictationBoardItems: [BoardTextItem] {
-        pendingDictationSessions.flatMap { session in
-            dictationEntries
-                .filter { $0.sessionID == session.id }
-                .sorted { $0.sortOrder < $1.sortOrder }
-                .map { entry in
-                    BoardTextItem(id: entry.id, text: entry.content, detail: "")
+        let pendingDictationSessions = pendingDictationSessions(for: boardNow)
+        let pendingSessionIDs = Set(pendingDictationSessions.map(\.id))
+        let pendingDictationBoardItems = dictationEntries
+            .filter { pendingSessionIDs.contains($0.sessionID) }
+            .sorted {
+                if $0.sessionID == $1.sessionID {
+                    return $0.sortOrder < $1.sortOrder
                 }
-        }
-    }
-
-    private var todayTaskItems: [TodayTaskDisplayItem] {
-        TodayTaskListBuilder
-            .build(
-                from: allTasks.filter { !$0.isArchived },
-                executions: taskExecutionRecords,
-                subtasks: taskSubitems,
-                subtaskExecutions: taskSubitemExecutionRecords,
-                on: boardNow
-            )
-    }
-
-    private var todayPendingTasks: [TodayTaskDisplayItem] {
-        todayTaskItems.filter { $0.section == .todayPending }
-    }
-
-    private var historicalPendingTasks: [TodayTaskDisplayItem] {
-        todayTaskItems
+                return $0.sessionID.uuidString < $1.sessionID.uuidString
+            }
+            .map { entry in
+                BoardTextItem(id: entry.id, text: entry.content, detail: "")
+            }
+        let todayTaskItems = todayTaskItems(on: boardNow)
+        let todayPendingTasks = todayTaskItems.filter { $0.section == .todayPending }
+        let historicalPendingTasks = todayTaskItems
             .filter { $0.section == .historicalPending }
             .sorted { lhs, rhs in
                 if lhs.occurrenceDate == rhs.occurrenceDate {
@@ -88,42 +69,12 @@ struct DashboardBoardView: View {
                 }
                 return lhs.occurrenceDate < rhs.occurrenceDate
             }
-    }
+        let todayCompletedTasks = todayTaskItems.filter { $0.section == .todayDone }
+        let boardTaskItems = todayPendingTasks + historicalPendingTasks + todayCompletedTasks
+        let todaySchedules = todaySchedules(on: boardNow)
+        let boardSettings = appSettingsStore.modelRepresentation
+        let enabledMediaAssets = enabledPlaylist()
 
-    private var todayCompletedTasks: [TodayTaskDisplayItem] {
-        todayTaskItems.filter { $0.section == .todayDone }
-    }
-
-    private var boardTaskItems: [TodayTaskDisplayItem] {
-        todayPendingTasks + historicalPendingTasks + todayCompletedTasks
-    }
-
-    private var totalPendingTaskCount: Int {
-        todayPendingTasks.count + historicalPendingTasks.count
-    }
-
-    private var todaySchedules: [ScheduleItem] {
-        allSchedules
-            .filter { $0.shouldAppear(on: boardNow) && !$0.hasEnded(on: boardNow, reference: boardNow) }
-            .sorted { $0.startTimeMinutes < $1.startTimeMinutes }
-    }
-
-    private var boardSettings: AppSettings? {
-        settings.first
-    }
-
-    private var enabledMediaAssets: [MediaLibraryAsset] {
-        mediaLibraryStore.mediaAssets
-            .filter(\.isIncludedInPlaylist)
-            .sorted { lhs, rhs in
-                if lhs.playlistOrder == rhs.playlistOrder {
-                    return lhs.createdAt > rhs.createdAt
-                }
-                return lhs.playlistOrder > rhs.playlistOrder
-            }
-    }
-
-    private var todayHeadline: String {
         var parts: [String] = []
         if !todayPendingTasks.isEmpty {
             parts.append("\(todayPendingTasks.count) 项今日待办")
@@ -134,17 +85,65 @@ struct DashboardBoardView: View {
         if !dueItems.isEmpty {
             parts.append("\(dueItems.count) 项复习")
         }
-        if pendingDictationCount > 0 {
-            parts.append("\(pendingDictationCount) 条听写")
+        if !pendingDictationBoardItems.isEmpty {
+            parts.append("\(pendingDictationBoardItems.count) 条听写")
         }
-        return parts.isEmpty ? "\(childName) 今天都完成了" : "\(childName) 今天还有 \(parts.joined(separator: "、"))"
+
+        return BoardSnapshot(
+            childName: childName,
+            dueItems: dueItems,
+            pendingDictationCount: pendingDictationBoardItems.count,
+            pendingDictationBoardItems: pendingDictationBoardItems,
+            boardTaskItems: boardTaskItems,
+            totalPendingTaskCount: todayPendingTasks.count + historicalPendingTasks.count,
+            todaySchedules: todaySchedules,
+            todayHeadline: parts.isEmpty ? "\(childName) 今天都完成了" : "\(childName) 今天还有 \(parts.joined(separator: "、"))",
+            boardSettings: boardSettings,
+            enabledMediaAssets: enabledMediaAssets
+        )
     }
 
-    private var mediaAutoplayStatusText: String {
-        guard let boardSettings else { return "未配置" }
+    private func pendingDictationSessions(for date: Date) -> [DictationSession] {
+        let calendar = Calendar.current
+        let todayStart = calendar.startOfDay(for: date)
+        return dictationSessions
+            .filter { !$0.isReviewed && calendar.startOfDay(for: $0.scheduledDate) <= todayStart }
+            .sorted { $0.scheduledDate < $1.scheduledDate }
+    }
+
+    private func todayTaskItems(on date: Date) -> [TodayTaskDisplayItem] {
+        TodayTaskListBuilder
+            .build(
+                from: allTasks.filter { !$0.isArchived },
+                executions: taskExecutionRecords,
+                subtasks: taskSubitems,
+                subtaskExecutions: taskSubitemExecutionRecords,
+                on: date
+            )
+    }
+
+    private func todaySchedules(on date: Date) -> [ScheduleItem] {
+        allSchedules
+            .filter { $0.shouldAppear(on: date) && !$0.hasEnded(on: date, reference: date) }
+            .sorted { $0.startTimeMinutes < $1.startTimeMinutes }
+    }
+
+    private func enabledPlaylist() -> [MediaLibraryAsset] {
+        mediaLibraryStore.mediaAssets
+            .filter(\.isIncludedInPlaylist)
+            .sorted { lhs, rhs in
+                if lhs.playlistOrder == rhs.playlistOrder {
+                    return lhs.createdAt > rhs.createdAt
+                }
+                return lhs.playlistOrder > rhs.playlistOrder
+            }
+    }
+
+    private func mediaAutoplayStatusText(for snapshot: BoardSnapshot) -> String {
+        guard let boardSettings = snapshot.boardSettings else { return "未配置" }
         guard boardSettings.boardAutoplayEnabled else { return "已关闭" }
         guard boardSettings.hasValidBoardAutoplayWindow else { return "未配置时间段" }
-        guard !enabledMediaAssets.isEmpty else { return "播放列表为空" }
+        guard !snapshot.enabledMediaAssets.isEmpty else { return "播放列表为空" }
 
         if let manualStatusText = playbackCoordinator.boardManualStatusText {
             return manualStatusText
@@ -185,7 +184,49 @@ struct DashboardBoardView: View {
     private let boardInactivityReturnInterval: TimeInterval = 30
     private let boardOverlayVisibilityInterval: TimeInterval = 8
 
+    private var canRenderLiveContent: Bool {
+        scenePhase == .active && UIApplication.shared.applicationState == .active
+    }
+
     var body: some View {
+        Group {
+            if canRenderLiveContent {
+                boardActiveView(makeBoardSnapshot())
+            } else {
+                Color.clear
+            }
+        }
+        .onAppear {
+            activateIdleTimerOverride()
+            lastBoardInteractionAt = .now
+            isExitButtonVisible = false
+            syncBoardPlayback(for: boardNow)
+        }
+        .onDisappear {
+            restoreIdleTimer()
+            playbackCoordinator.stop()
+        }
+        .onReceive(boardRefreshTimer) {
+            guard canRenderLiveContent else { return }
+            boardNow = $0
+            applyScheduledBoardBrightness(for: $0)
+            syncBoardPlayback(for: $0)
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                boardNow = .now
+                activateIdleTimerOverride()
+                lastBoardInteractionAt = .now
+                isExitButtonVisible = false
+                syncBoardPlayback(for: boardNow)
+            } else {
+                restoreIdleTimer()
+                playbackCoordinator.stop()
+            }
+        }
+    }
+
+    private func boardActiveView(_ snapshot: BoardSnapshot) -> some View {
         GeometryReader { proxy in
             ScrollViewReader { scrollProxy in
                 ZStack {
@@ -206,9 +247,9 @@ struct DashboardBoardView: View {
                                 .frame(height: 1)
                                 .id(boardTopAnchorID)
 
-                            boardHeader
-                            boardStats
-                            boardContent
+                            boardHeader(snapshot)
+                            boardStats(snapshot)
+                            boardContent(snapshot)
                         }
                         .frame(maxWidth: .infinity, alignment: .top)
                         .padding(.top, boardTopInset(for: proxy))
@@ -228,6 +269,7 @@ struct DashboardBoardView: View {
                     }
                     .scrollBounceBehavior(.basedOnSize)
                     .onReceive(boardInactivityTimer) { _ in
+                        guard canRenderLiveContent else { return }
                         autoReturnBoardToTopIfNeeded(using: scrollProxy)
                     }
 
@@ -241,37 +283,9 @@ struct DashboardBoardView: View {
                 }
             }
         }
-        .onAppear {
-            activateIdleTimerOverride()
-            lastBoardInteractionAt = .now
-            isExitButtonVisible = false
-            syncBoardPlayback(for: boardNow)
-        }
-        .onDisappear {
-            restoreIdleTimer()
-            playbackCoordinator.stop()
-        }
-        .onReceive(boardRefreshTimer) {
-            boardNow = $0
-            applyScheduledBoardBrightness(for: $0)
-            syncBoardPlayback(for: $0)
-        }
-        .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .active {
-                boardNow = .now
-                activateIdleTimerOverride()
-                lastBoardInteractionAt = .now
-                isExitButtonVisible = false
-                syncBoardPlayback(for: boardNow)
-            } else {
-                isExitButtonVisible = false
-                restoreIdleTimer()
-                playbackCoordinator.stop()
-            }
-        }
     }
 
-    private var boardHeader: some View {
+    private func boardHeader(_ snapshot: BoardSnapshot) -> some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 12) {
@@ -282,8 +296,8 @@ struct DashboardBoardView: View {
                     Button {
                         recordBoardInteraction()
                         playbackCoordinator.toggleManualPlayback(
-                            playlist: enabledMediaAssets,
-                            option: boardSettings?.boardManualPlaybackOption ?? .untilPlaylistEnds
+                            playlist: snapshot.enabledMediaAssets,
+                            option: snapshot.boardSettings?.boardManualPlaybackOption ?? .untilPlaylistEnds
                         )
                     } label: {
                         Image(systemName: playbackCoordinator.isPlaying ? "pause.fill" : "play.fill")
@@ -293,12 +307,12 @@ struct DashboardBoardView: View {
                             .background(.white.opacity(0.16), in: Circle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(enabledMediaAssets.isEmpty && playbackCoordinator.currentAsset == nil)
-                    .opacity((enabledMediaAssets.isEmpty && playbackCoordinator.currentAsset == nil) ? 0.45 : 1)
+                    .disabled(snapshot.enabledMediaAssets.isEmpty && playbackCoordinator.currentAsset == nil)
+                    .opacity((snapshot.enabledMediaAssets.isEmpty && playbackCoordinator.currentAsset == nil) ? 0.45 : 1)
                     .accessibilityLabel(playbackCoordinator.isPlaying ? "暂停晨读资源播放" : "开始晨读资源播放")
                 }
 
-                Text(todayHeadline)
+                Text(snapshot.todayHeadline)
                     .font(.system(size: 22, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.9))
             }
@@ -323,24 +337,24 @@ struct DashboardBoardView: View {
         }
     }
 
-    private var boardStats: some View {
+    private func boardStats(_ snapshot: BoardSnapshot) -> some View {
         GeometryReader { proxy in
             let spacing: CGFloat = 18
             let unitWidth = max((proxy.size.width - spacing * 3) / 4, 0)
-            let hasSchedule = todaySchedules.first != nil
+            let hasSchedule = snapshot.todaySchedules.first != nil
 
             HStack(spacing: spacing) {
-                BoardStatCard(title: "待办任务", value: "\(totalPendingTaskCount)", tint: .orange)
+                BoardStatCard(title: "待办任务", value: "\(snapshot.totalPendingTaskCount)", tint: .orange)
                     .frame(width: unitWidth)
 
-                BoardStatCard(title: "待复习", value: "\(dueItems.count)", tint: .blue)
+                BoardStatCard(title: "待复习", value: "\(snapshot.dueItems.count)", tint: .blue)
                     .frame(width: unitWidth)
 
                 if hasSchedule {
-                    BoardScheduleStatCard(schedule: todaySchedules.first, tint: .green)
+                    BoardScheduleStatCard(schedule: snapshot.todaySchedules.first, tint: .green)
                         .frame(width: unitWidth * 2 + spacing)
                 } else {
-                    BoardStatCard(title: "待听写", value: "\(pendingDictationCount)", tint: .teal)
+                    BoardStatCard(title: "待听写", value: "\(snapshot.pendingDictationCount)", tint: .teal)
                         .frame(width: unitWidth)
 
                     BoardScheduleStatCard(schedule: nil, tint: .green)
@@ -352,19 +366,19 @@ struct DashboardBoardView: View {
         .frame(height: 112)
     }
 
-    private var boardContent: some View {
+    private func boardContent(_ snapshot: BoardSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             if playbackCoordinator.isPlaying {
-                boardMediaPanel
+                boardMediaPanel(snapshot)
             }
 
             HStack(alignment: .top, spacing: 18) {
-                boardTaskColumn
+                boardTaskColumn(snapshot)
 
                 boardColumn(
                     title: "待复习",
                     icon: "book.closed.fill",
-                    items: dueItems,
+                    items: snapshot.dueItems,
                     emptyTitle: "今天没有待复习",
                     itemText: { item in
                         let prompt = item.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -375,7 +389,7 @@ struct DashboardBoardView: View {
                 boardColumn(
                     title: "待听写",
                     icon: "text.book.closed.fill",
-                    items: pendingDictationBoardItems,
+                    items: snapshot.pendingDictationBoardItems,
                     emptyTitle: "今天没有待听写",
                     itemText: { item in
                         item.text
@@ -385,13 +399,13 @@ struct DashboardBoardView: View {
         }
     }
 
-    private var boardMediaPanel: some View {
+    private func boardMediaPanel(_ snapshot: BoardSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top) {
                 HStack(spacing: 10) {
                     Image(systemName: "music.note.tv")
                     Text("晨读自动播放")
-                    Text(boardSettings?.boardAutoplayTimeSummary ?? "07:00 - 07:30")
+                    Text(snapshot.boardSettings?.boardAutoplayTimeSummary ?? "07:00 - 07:30")
                         .font(.system(size: 16, weight: .medium, design: .rounded))
                         .foregroundStyle(.white.opacity(0.8))
                 }
@@ -400,7 +414,7 @@ struct DashboardBoardView: View {
 
                 Spacer()
 
-                Text(mediaAutoplayStatusText)
+                Text(mediaAutoplayStatusText(for: snapshot))
                     .font(.system(size: 14, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 12)
@@ -408,7 +422,7 @@ struct DashboardBoardView: View {
                     .background(.white.opacity(0.15), in: Capsule())
             }
 
-            if enabledMediaAssets.isEmpty {
+            if snapshot.enabledMediaAssets.isEmpty {
                 Label("播放列表还没有资源，请到资源库里导入音频或视频。", systemImage: "tray")
                     .font(.system(size: 18, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.88))
@@ -430,7 +444,7 @@ struct DashboardBoardView: View {
             } else {
                 HStack(alignment: .top, spacing: 18) {
                     boardMediaPreviewCard
-                    boardMediaQueueCard
+                    boardMediaQueueCard(snapshot)
                 }
             }
         }
@@ -497,14 +511,14 @@ struct DashboardBoardView: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    private var boardMediaQueueCard: some View {
+    private func boardMediaQueueCard(_ snapshot: BoardSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("播放列表")
                 .font(.system(size: 18, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white.opacity(0.85))
 
             VStack(alignment: .leading, spacing: 10) {
-                ForEach(Array(enabledMediaAssets.prefix(6))) { asset in
+                ForEach(Array(snapshot.enabledMediaAssets.prefix(6))) { asset in
                     HStack(spacing: 12) {
                         Image(systemName: asset.mediaType.systemImage)
                             .font(.system(size: 18, weight: .semibold))
@@ -543,15 +557,15 @@ struct DashboardBoardView: View {
                     .onTapGesture {
                         playbackCoordinator.play(
                             asset: asset,
-                            within: enabledMediaAssets,
-                            boardManualOption: boardSettings?.boardManualPlaybackOption ?? .untilPlaylistEnds
+                            within: snapshot.enabledMediaAssets,
+                            boardManualOption: snapshot.boardSettings?.boardManualPlaybackOption ?? .untilPlaylistEnds
                         )
                     }
                 }
             }
 
-            if enabledMediaAssets.count > 6 {
-                Text("还有 \(enabledMediaAssets.count - 6) 条资源未展示")
+            if snapshot.enabledMediaAssets.count > 6 {
+                Text("还有 \(snapshot.enabledMediaAssets.count - 6) 条资源未展示")
                     .font(.system(size: 14, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.72))
             }
@@ -559,7 +573,7 @@ struct DashboardBoardView: View {
         .frame(width: 360, alignment: .topLeading)
     }
 
-    private var boardTaskColumn: some View {
+    private func boardTaskColumn(_ snapshot: BoardSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 10) {
                 Image(systemName: "checklist")
@@ -568,7 +582,7 @@ struct DashboardBoardView: View {
             .font(.system(size: 24, weight: .bold, design: .rounded))
             .foregroundStyle(.white)
 
-            if boardTaskItems.isEmpty {
+            if snapshot.boardTaskItems.isEmpty {
                 VStack(spacing: 14) {
                     Spacer(minLength: 0)
                     Image(systemName: "checkmark.seal.fill")
@@ -584,12 +598,12 @@ struct DashboardBoardView: View {
                 .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 28))
             } else {
                 VStack(alignment: .leading, spacing: 14) {
-                    ForEach(Array(boardTaskItems.prefix(10))) { item in
+                    ForEach(Array(snapshot.boardTaskItems.prefix(10))) { item in
                         boardTaskRow(item)
                     }
 
-                    if boardTaskItems.count > 10 {
-                        Text("还有 \(boardTaskItems.count - 10) 项未展示")
+                    if snapshot.boardTaskItems.count > 10 {
+                        Text("还有 \(snapshot.boardTaskItems.count - 10) 项未展示")
                             .font(.headline)
                             .foregroundStyle(.white.opacity(0.8))
                             .padding(.leading, 4)
@@ -792,8 +806,8 @@ struct DashboardBoardView: View {
     private func syncBoardPlayback(for date: Date) {
         playbackCoordinator.sync(
             now: date,
-            settings: boardSettings,
-            playlist: enabledMediaAssets
+            settings: appSettingsStore.modelRepresentation,
+            playlist: enabledPlaylist()
         )
     }
 

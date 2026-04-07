@@ -1,11 +1,12 @@
 import SwiftUI
 import SwiftData
-import WidgetKit
 
 struct RootTabView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
     @Environment(SyncStatusStore.self) private var syncStatusStore
+    @Environment(AppSettingsStore.self) private var appSettingsStore
+    @State private var refreshAppStateTask: Task<Void, Never>?
 
     var body: some View {
         Group {
@@ -16,13 +17,18 @@ struct RootTabView: View {
             }
         }
         .task {
-            await refreshAppState(trigger: SyncStatusStore.Trigger.launch)
+            guard scenePhase == .active else { return }
+            scheduleAppStateRefresh(trigger: .launch, delay: 1.5)
         }
-        .onChange(of: scenePhase) { newPhase in
-            guard newPhase == .active else { return }
-            Task {
-                await refreshAppState(trigger: SyncStatusStore.Trigger.foreground)
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                scheduleAppStateRefresh(trigger: .foreground, delay: 2)
+            } else {
+                refreshAppStateTask?.cancel()
             }
+        }
+        .onDisappear {
+            refreshAppStateTask?.cancel()
         }
     }
 
@@ -101,13 +107,33 @@ struct RootTabView: View {
         }
     }
 
-    private func refreshAppState(trigger: SyncStatusStore.Trigger) async {
-        do {
-            _ = try AppSettings.ensureSingleton(in: modelContext)
-        } catch {
-            print("AppSettings singleton setup failed on \(trigger): \(error)")
+    private func scheduleAppStateRefresh(trigger: SyncStatusStore.Trigger, delay: TimeInterval) {
+        refreshAppStateTask?.cancel()
+        guard shouldRefreshAppState(for: trigger) else { return }
+
+        refreshAppStateTask = Task { @MainActor in
+            let nanoseconds = UInt64(delay * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled else { return }
+            guard scenePhase == .active else { return }
+            guard shouldRefreshAppState(for: trigger) else { return }
+            await refreshAppState(trigger: trigger)
         }
+    }
+
+    private func shouldRefreshAppState(for trigger: SyncStatusStore.Trigger) -> Bool {
+        guard !syncStatusStore.isRefreshing else { return false }
+
+        guard trigger == .foreground, let lastRefreshAt = syncStatusStore.lastRefreshAt else {
+            return true
+        }
+
+        return Date.now.timeIntervalSince(lastRefreshAt) >= 10 * 60
+    }
+
+    private func refreshAppState(trigger: SyncStatusStore.Trigger) async {
+        appSettingsStore.bootstrap(using: modelContext)
+        appSettingsStore.refreshFromSwiftDataIfPossible(using: modelContext)
         await syncStatusStore.refresh(using: modelContext, trigger: trigger)
-        WidgetCenter.shared.reloadAllTimelines()
     }
 }

@@ -1,4 +1,31 @@
 import SwiftUI
+import WidgetKit
+
+// MARK: - WidgetCenter Background Reload
+// On iOS 17, WidgetCenter.shared.reloadAllTimelines() blocks the main thread
+// for 1–3 seconds due to synchronous XPC. Always call via background task.
+extension WidgetCenter {
+    func reloadAllTimelinesInBackground() {
+        Task.detached(priority: .background) {
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func iOS17SafeSwipeActions<Actions: View>(
+        edge: HorizontalEdge = .trailing,
+        allowsFullSwipe: Bool = true,
+        @ViewBuilder actions: () -> Actions
+    ) -> some View {
+        if #available(iOS 18.0, *) {
+            swipeActions(edge: edge, allowsFullSwipe: allowsFullSwipe, content: actions)
+        } else {
+            self
+        }
+    }
+}
 
 // MARK: - Result Button Style
 

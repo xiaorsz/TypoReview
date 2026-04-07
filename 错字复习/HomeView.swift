@@ -8,47 +8,47 @@ import WidgetKit
 import UIKit
 
 struct HomeView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
     @Environment(SyncStatusStore.self) private var syncStatusStore: SyncStatusStore
+    @Environment(AppSettingsStore.self) private var appSettingsStore
     @Query(sort: \ReviewItem.nextReviewAt) private var reviewItems: [ReviewItem]
     @Query(sort: \ReviewRecord.reviewedAt, order: .reverse) private var reviewRecords: [ReviewRecord]
     @Query(sort: \DictationSession.createdAt, order: .reverse) private var dictationSessions: [DictationSession]
     @Query(sort: \DictationEntry.sortOrder) private var dictationEntries: [DictationEntry]
-    @Query private var settings: [AppSettings]
-    @Query(filter: #Predicate<TaskItem> { !$0.isArchived }, sort: \TaskItem.createdAt) private var activeTasks: [TaskItem]
-    @Query(filter: #Predicate<TaskSubitem> { !$0.isArchived }, sort: \TaskSubitem.sortOrder) private var taskSubitems: [TaskSubitem]
-    @Query(sort: \TaskExecutionRecord.occurrenceDate, order: .reverse) private var taskExecutionRecords: [TaskExecutionRecord]
-    @Query(sort: \TaskSubitemExecutionRecord.updatedAt, order: .reverse) private var taskSubitemExecutionRecords: [TaskSubitemExecutionRecord]
+    @Query(filter: #Predicate<TaskItem> { !$0.isArchived }, sort: \TaskItem.createdAt, order: .reverse) private var activeTasks: [TaskItem]
     @Query(filter: #Predicate<ScheduleItem> { !$0.isArchived }, sort: \ScheduleItem.startTime) private var activeSchedules: [ScheduleItem]
     
     @State private var showingReviewPreview = false
     @State private var isReviewActive = false
     @State private var previewSession: DictationSession?
     @State private var activeDictationSession: DictationSession?
-    @State private var selectedTaskForDetail: TaskItem?
     @State private var showingDashboardBoard = false
     @State private var showQuickEntryHint = false
     @State private var dashboardSnapshot: DashboardSnapshot?
     @State private var homeTaskSnapshot: [TodayTaskDisplayItem] = []
     @State private var dashboardSnapshotTask: Task<Void, Never>?
     @State private var homeTaskSnapshotTask: Task<Void, Never>?
+    @State private var deferredSaveTask: Task<Void, Never>?
 
     private let scheduler = ReviewScheduler()
     private let isPad = UIDevice.current.userInterfaceIdiom == .pad
 
-    private var entriesBySessionID: [UUID: [DictationEntry]] {
-        Dictionary(grouping: dictationEntries, by: \.sessionID)
-            .mapValues { entries in
-                entries.sorted { $0.sortOrder < $1.sortOrder }
-            }
-    }
-
     private var dailyLimit: Int {
-        settings.first?.dailyLimit ?? 15
+        appSettingsStore.dailyLimit
     }
 
     private var reviewStyle: ReviewInteractionStyle {
-        settings.first?.reviewInteractionStyle ?? AppSettings.defaultReviewInteractionStyle
+        appSettingsStore.reviewInteractionStyle
+    }
+
+    private var canRenderLiveContent: Bool {
+        scenePhase == .active
+    }
+
+    private struct HomeTaskDetailRoute: Hashable {
+        let taskID: UUID
+        let title: String
     }
 
     private struct DashboardSnapshot {
@@ -61,6 +61,7 @@ struct HomeView: View {
         let todayAccuracyText: String
         let pendingDictationCount: Int
         let latestDictationSession: DictationSession?
+        let latestDictationEntryCount: Int
         let todaySchedules: [ScheduleItem]
         let todayPendingTasks: [TodayTaskDisplayItem]
         let historicalPendingTasks: [TodayTaskDisplayItem]
@@ -74,13 +75,13 @@ struct HomeView: View {
     }
 
     private func makeSnapshot() -> DashboardSnapshot {
-        let name = settings.first?.childName.isEmpty ?? true ? "小朋友" : (settings.first?.childName ?? "小朋友")
+        let name = appSettingsStore.childName.isEmpty ? "小朋友" : appSettingsStore.childName
         
         let allDue = reviewItems
             .filter { $0.nextReviewAt <= .now }
             .sorted { $0.nextReviewAt < $1.nextReviewAt }
         
-        let limit = settings.first?.dailyLimit ?? 15
+        let limit = appSettingsStore.dailyLimit
         let cappedDueContent = Array(allDue.prefix(limit))
         
         let calendar = Calendar.current
@@ -97,12 +98,9 @@ struct HomeView: View {
         
         let todayStart = calendar.startOfDay(for: .now)
         
-        // Optimize Dictation count: build entry map once
         let pendingSessions = dictationSessions.filter {
             !$0.isReviewed && calendar.startOfDay(for: $0.scheduledDate) <= todayStart
         }
-        let pDictationCount = pendingSessions.reduce(0) { $0 + (entriesBySessionID[$1.id]?.count ?? 0) }
-        
         let latestDS: DictationSession? = {
             if let firstPending = pendingSessions.sorted(by: { $0.scheduledDate < $1.scheduledDate }).first {
                 return firstPending
@@ -111,6 +109,20 @@ struct HomeView: View {
                 calendar.startOfDay(for: $0.scheduledDate) <= todayStart
             }.min(by: { $0.scheduledDate > $1.scheduledDate })
         }()
+        let pendingSessionIDs = Set(pendingSessions.map(\.id))
+        let latestSessionID = latestDS?.id
+        var pendingDictationEntryCount = 0
+        var latestDictationEntryCount = 0
+
+        for entry in dictationEntries {
+            let sessionID = entry.sessionID
+            if pendingSessionIDs.contains(sessionID) {
+                pendingDictationEntryCount += 1
+            }
+            if sessionID == latestSessionID {
+                latestDictationEntryCount += 1
+            }
+        }
         
         let tSchedules = activeSchedules
             .filter { $0.shouldAppear(on: .now) && !$0.hasEnded(on: .now, reference: .now) }
@@ -182,8 +194,9 @@ struct HomeView: View {
             todayWrongCount: tWrong,
             todayCorrectCount: tCorrect,
             todayAccuracyText: tAccuracy,
-            pendingDictationCount: pDictationCount,
+            pendingDictationCount: pendingDictationEntryCount,
             latestDictationSession: latestDS,
+            latestDictationEntryCount: latestDictationEntryCount,
             todaySchedules: tSchedules,
             todayPendingTasks: tPendingTasks,
             historicalPendingTasks: hPendingTasks,
@@ -262,44 +275,112 @@ struct HomeView: View {
         .task {
             scheduleHomeTaskSnapshotRefresh()
         }
-        .onChange(of: reviewItems) { _, _ in scheduleDashboardSnapshotUpdate() }
-        .onChange(of: reviewRecords) { _, _ in scheduleDashboardSnapshotUpdate() }
-        .onChange(of: dictationSessions) { _, _ in scheduleDashboardSnapshotUpdate() }
-        .onChange(of: dictationEntries) { _, _ in scheduleDashboardSnapshotUpdate() }
-        .onChange(of: activeSchedules) { _, _ in scheduleDashboardSnapshotUpdate() }
-        .onChange(of: settings) { _, _ in scheduleDashboardSnapshotUpdate() }
-        .onChange(of: activeTasks) { _, _ in scheduleHomeTaskSnapshotRefresh() }
-        .onChange(of: taskSubitems) { _, _ in scheduleHomeTaskSnapshotRefresh() }
-        .onChange(of: taskExecutionRecords) { _, _ in scheduleHomeTaskSnapshotRefresh() }
-        .onChange(of: taskSubitemExecutionRecords) { _, _ in scheduleHomeTaskSnapshotRefresh() }
+        .modifier(HomeViewDataReconstructor(
+            scenePhase: scenePhase,
+            activeTasks: activeTasks,
+            reviewItemsCount: reviewItems.count,
+            reviewRecordsCount: reviewRecords.count,
+            dictationSessionsCount: dictationSessions.count,
+            dictationEntriesCount: dictationEntries.count,
+            activeSchedulesCount: activeSchedules.count,
+            appRevision: appSettingsStore.revision,
+            onRefresh: {
+                scheduleHomeTaskSnapshotRefresh()
+                scheduleDashboardSnapshotUpdate()
+            },
+            onTaskRefresh: {
+                scheduleHomeTaskSnapshotRefresh()
+            },
+            onDashboardRefresh: {
+                scheduleDashboardSnapshotUpdate()
+            },
+            onSceneChange: { newPhase in
+                if newPhase == .active {
+                    scheduleHomeTaskSnapshotRefresh()
+                } else {
+                    dashboardSnapshotTask?.cancel()
+                    homeTaskSnapshotTask?.cancel()
+                }
+            }
+        ))
         .onDisappear {
             dashboardSnapshotTask?.cancel()
             homeTaskSnapshotTask?.cancel()
         }
     }
 
+    private struct HomeViewDataReconstructor: ViewModifier {
+        let scenePhase: ScenePhase
+        let activeTasks: [TaskItem]
+        let reviewItemsCount: Int
+        let reviewRecordsCount: Int
+        let dictationSessionsCount: Int
+        let dictationEntriesCount: Int
+        let activeSchedulesCount: Int
+        let appRevision: Int
+        
+        let onRefresh: () -> Void
+        let onTaskRefresh: () -> Void
+        let onDashboardRefresh: () -> Void
+        let onSceneChange: (ScenePhase) -> Void
+
+        func body(content: Content) -> some View {
+            content
+                .onChange(of: scenePhase) { _, newPhase in onSceneChange(newPhase) }
+                .onChange(of: appRevision) { _, _ in onDashboardRefresh() }
+                .onChange(of: activeTasks) { _, _ in onRefresh() }
+                .onChange(of: reviewItemsCount) { _, _ in onDashboardRefresh() }
+                .onChange(of: reviewRecordsCount) { _, _ in onDashboardRefresh() }
+                .onChange(of: dictationSessionsCount) { _, _ in onDashboardRefresh() }
+                .onChange(of: dictationEntriesCount) { _, _ in onDashboardRefresh() }
+                .onChange(of: activeSchedulesCount) { _, _ in onDashboardRefresh() }
+                .onReceive(NotificationCenter.default.publisher(for: Notification.Name("appDataDidMutate"))) { _ in
+                    onRefresh()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+                    onRefresh()
+                }
+        }
+    }
+
     private func scheduleDashboardSnapshotUpdate() {
         dashboardSnapshotTask?.cancel()
+        guard canRenderLiveContent else { return }
         dashboardSnapshotTask = Task(priority: .utility) {
             await Task.yield()
             guard !Task.isCancelled else { return }
+            guard canRenderLiveContent else { return }
             dashboardSnapshot = makeSnapshot()
         }
     }
 
     private func scheduleHomeTaskSnapshotRefresh() {
         homeTaskSnapshotTask?.cancel()
+        guard canRenderLiveContent else { return }
+        
+        let container = modelContext.container
         let taskModels = activeTasks
-        let taskProjections = taskModels.map(TaskProjection.init)
-        let executionProjections = taskExecutionRecords.map(TaskExecutionRecordProjection.init)
-        let subtaskProjections = taskSubitems.map(TaskSubitemProjection.init)
 
         homeTaskSnapshotTask = Task(priority: .utility) {
             await Task.yield()
             guard !Task.isCancelled else { return }
 
-            let projectedItems = await Task.detached(priority: .utility) {
-                TodayTaskProjectionBuilder.build(
+            let projectedItems = try? await Task.detached(priority: .utility) {
+                let backgroundContext = ModelContext(container)
+                
+                let tasksDesc = FetchDescriptor<TaskItem>(predicate: #Predicate<TaskItem> { !$0.isArchived })
+                let executesDesc = FetchDescriptor<TaskExecutionRecord>()
+                let subtasksDesc = FetchDescriptor<TaskSubitem>(predicate: #Predicate<TaskSubitem> { !$0.isArchived })
+                
+                let safeTasks = (try? backgroundContext.fetch(tasksDesc)) ?? []
+                let safeExecutions = (try? backgroundContext.fetch(executesDesc)) ?? []
+                let safeSubtasks = (try? backgroundContext.fetch(subtasksDesc)) ?? []
+
+                let taskProjections = safeTasks.map(TaskProjection.init)
+                let executionProjections = safeExecutions.map(TaskExecutionRecordProjection.init)
+                let subtaskProjections = safeSubtasks.map(TaskSubitemProjection.init)
+
+                return TodayTaskProjectionBuilder.build(
                     from: taskProjections,
                     executions: executionProjections,
                     subtasks: subtaskProjections
@@ -307,12 +388,14 @@ struct HomeView: View {
             }.value
 
             guard !Task.isCancelled else { return }
+            guard let validProjectedItems = projectedItems else { return }
+            guard canRenderLiveContent else { return }
             let tasksByID = Dictionary(
                 taskModels.map { ($0.id, $0) },
                 uniquingKeysWith: { first, _ in first }
             )
             homeTaskSnapshot = TodayTaskProjectionBuilder.displayItems(
-                from: projectedItems,
+                from: validProjectedItems,
                 tasksByID: tasksByID
             )
             scheduleDashboardSnapshotUpdate()
@@ -362,7 +445,7 @@ struct HomeView: View {
             .sheet(item: $previewSession) { session in
                 DictationPreviewView(
                     session: session,
-                    entries: entriesBySessionID[session.id] ?? [],
+                    entries: entries(for: session.id),
                     onStartSession: {
                         activeDictationSession = session
                     }
@@ -371,11 +454,11 @@ struct HomeView: View {
             .navigationDestination(item: $activeDictationSession) { session in
                 DictationSessionView(
                     session: session,
-                    entries: entriesBySessionID[session.id] ?? []
+                    entries: entries(for: session.id)
                 )
             }
-            .navigationDestination(item: $selectedTaskForDetail) { task in
-                TaskDetailView(task: task)
+            .navigationDestination(for: HomeTaskDetailRoute.self) { route in
+                HomeDeferredTaskDetailView(route: route)
             }
             .navigationDestination(isPresented: $isReviewActive) {
                 if reviewStyle == .batch {
@@ -608,7 +691,7 @@ struct HomeView: View {
             return "今天还没有新增听写内容"
         }
 
-        let count = entriesBySessionID[latestDictationSession.id]?.count ?? 0
+        let count = snapshot.latestDictationEntryCount
         let status: String
         if latestDictationSession.isReviewed {
             status = "已判定"
@@ -619,6 +702,10 @@ struct HomeView: View {
         }
 
         return "\(latestDictationSession.title) · \(count) 条 · \(status)"
+    }
+
+    private func entries(for sessionID: UUID) -> [DictationEntry] {
+        dictationEntries.filter { $0.sessionID == sessionID }
     }
 
     // MARK: - Today Schedule
@@ -788,9 +875,7 @@ struct HomeView: View {
                 .disabled(isDone)
             }
 
-            Button {
-                selectedTaskForDetail = task
-            } label: {
+            NavigationLink(value: HomeTaskDetailRoute(taskID: task.id, title: task.title)) {
                 HStack(spacing: 10) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(task.title)
@@ -880,17 +965,149 @@ struct HomeView: View {
     }
 
     private func completeTask(_ task: TaskItem, occurrenceDate: Date) {
-        TaskExecutionSupport.markTaskCompleted(
-            task: task,
-            occurrenceDate: occurrenceDate,
-            existingExecutions: taskExecutionRecords,
-            modelContext: modelContext
-        )
-        try? modelContext.save()
-        WidgetCenter.shared.reloadAllTimelines()
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        
+        let tid = task.id
+        let container = modelContext.container
+        
+        // 1. 立即乐观更新 UI
+        optimisticCompleteHomeTask(taskID: tid, occurrenceDate: occurrenceDate)
+        
+        // 2. 后台处理同步
+        Task.detached(priority: .userInitiated) {
+            let ctx = ModelContext(container)
+            
+            do {
+                let descriptor = FetchDescriptor<TaskExecutionRecord>(
+                    predicate: #Predicate<TaskExecutionRecord> { $0.taskID == tid }
+                )
+                let relevantExecutions = (try? ctx.fetch(descriptor)) ?? []
+                
+                // 后台重新获取对象
+                let bgTask = (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))?.first
+                
+                if let validTask = bgTask {
+                    TaskExecutionSupport.markTaskCompleted(
+                        task: validTask,
+                        occurrenceDate: occurrenceDate,
+                        existingExecutions: relevantExecutions,
+                        modelContext: ctx
+                    )
+                    
+                    try? ctx.save()
+                    
+                    await MainActor.run {
+                        // 告知全应用数据已变动，刷新必要 UI
+                        NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
+                    }
+                }
+            } catch {
+                print("Home task complete background sync failed: \(error)")
+            }
+        }
+    }
 
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.success)
+    private func optimisticCompleteHomeTask(taskID: UUID, occurrenceDate: Date) {
+        withAnimation {
+            if let index = homeTaskSnapshot.firstIndex(where: { $0.task.id == taskID && $0.occurrenceDate == occurrenceDate }) {
+                let oldItem = homeTaskSnapshot[index]
+                let newItem = TodayTaskDisplayItem(
+                    task: oldItem.task,
+                    section: .todayDone,
+                    occurrenceDate: oldItem.occurrenceDate,
+                    isCompleted: true, // 首页任务栏点击肯定是完成
+                    pendingOccurrenceCount: oldItem.pendingOccurrenceCount,
+                    overdueOriginText: oldItem.overdueOriginText,
+                    totalSubtaskCount: oldItem.totalSubtaskCount,
+                    completedSubtaskCount: oldItem.totalSubtaskCount
+                )
+                homeTaskSnapshot[index] = newItem
+            }
+        }
+    }
+
+    private func saveAndReloadWidgetsDeferred() {
+        deferredSaveTask?.cancel()
+        deferredSaveTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            try? modelContext.save()
+            WidgetCenter.shared.reloadAllTimelinesInBackground()
+        }
+    }
+
+    private struct HomeDeferredTaskDetailView: View {
+        @Environment(\.scenePhase) private var scenePhase
+        @Environment(\.modelContext) private var modelContext
+
+        let route: HomeTaskDetailRoute
+
+        @State private var task: TaskItem?
+        @State private var loadTask: Task<Void, Never>?
+        @State private var loadFailed = false
+
+        private var canLoad: Bool {
+            scenePhase == .active && UIApplication.shared.applicationState == .active
+        }
+
+        var body: some View {
+            Group {
+                if let task {
+                    TaskDetailView(task: task)
+                } else if loadFailed {
+                    ContentUnavailableView("任务不存在", systemImage: "exclamationmark.triangle")
+                } else {
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text("正在打开 \(route.title)…")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(uiColor: .systemGroupedBackground))
+                }
+            }
+            .navigationTitle(route.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                loadTaskAfterNavigationSettles()
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                if newPhase == .active {
+                    loadTaskAfterNavigationSettles()
+                } else {
+                    loadTask?.cancel()
+                }
+            }
+            .onDisappear {
+                loadTask?.cancel()
+            }
+        }
+
+        private func loadTaskAfterNavigationSettles() {
+            loadTask?.cancel()
+            guard task == nil else { return }
+            guard canLoad else { return }
+
+            loadTask = Task { @MainActor in
+                await Task.yield()
+                try? await Task.sleep(nanoseconds: 80_000_000)
+                guard !Task.isCancelled else { return }
+                guard canLoad else { return }
+
+                do {
+                    let taskID = route.taskID
+                    var descriptor = FetchDescriptor<TaskItem>(
+                        predicate: #Predicate<TaskItem> { $0.id == taskID }
+                    )
+                    descriptor.fetchLimit = 1
+                    task = try modelContext.fetch(descriptor).first
+                    loadFailed = task == nil
+                } catch {
+                    loadFailed = true
+                }
+            }
+        }
     }
 
     private var syncStatusSummaryCard: some View {
@@ -1056,12 +1273,6 @@ private struct SyncStatusIconView: View {
 
     var body: some View {
         Image(systemName: isRefreshing ? "arrow.triangle.2.circlepath" : "icloud")
-            .rotationEffect(isRefreshing ? .degrees(360) : .zero)
-            .animation(
-                isRefreshing
-                ? .linear(duration: 1).repeatForever(autoreverses: false)
-                : .default,
-                value: isRefreshing
-            )
+            .symbolVariant(isRefreshing ? .circle : .none)
     }
 }

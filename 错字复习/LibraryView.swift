@@ -122,7 +122,7 @@ struct LibraryView: View {
                         }
                     }
                     .padding(.vertical, 6)
-                    .swipeActions {
+                    .iOS17SafeSwipeActions {
                         Button(role: .destructive) {
                             modelContext.delete(item)
                         } label: {

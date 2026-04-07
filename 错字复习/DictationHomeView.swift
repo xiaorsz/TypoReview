@@ -9,12 +9,33 @@ struct DictationHomeView: View {
     @State private var previewSession: DictationSession?
     @State private var activeSession: DictationSession?
     @State private var editingSession: DictationSession?
-    
-    private var entriesBySessionID: [UUID: [DictationEntry]] {
-        Dictionary(grouping: allEntries, by: \.sessionID)
-            .mapValues { entries in
-                entries.sorted { $0.sortOrder < $1.sortOrder }
-            }
+    @State private var snapshot: DictationHomeSnapshot = .empty
+
+    // 轻量 token，只在关键字段变化时才重算 snapshot，避免 body 每次都同步执行
+    private struct SessionChangeToken: Equatable {
+        let id: UUID
+        let isReviewed: Bool
+        let isFinished: Bool
+        let scheduledDate: Date
+    }
+
+    private var sessionChangeTokens: [SessionChangeToken] {
+        sessions.map { SessionChangeToken(id: $0.id, isReviewed: $0.isReviewed, isFinished: $0.isFinished, scheduledDate: $0.scheduledDate) }
+    }
+
+    private struct DictationHomeSnapshot {
+        let todayAndOverdue: [DictationSession]
+        let upcoming: [DictationSession]
+        let completed: [DictationSession]
+        let entriesBySessionID: [UUID: [DictationEntry]]
+
+        func entries(for session: DictationSession) -> [DictationEntry] {
+            entriesBySessionID[session.id] ?? []
+        }
+
+        static var empty: DictationHomeSnapshot {
+            DictationHomeSnapshot(todayAndOverdue: [], upcoming: [], completed: [], entriesBySessionID: [:])
+        }
     }
     
     var body: some View {
@@ -36,29 +57,29 @@ struct DictationHomeView: View {
                     )
                 }
             } else {
-                let todaySessions = todayAndOverdue
+                let todaySessions = snapshot.todayAndOverdue
                 if !todaySessions.isEmpty {
                     Section("今日及待办") {
                         ForEach(todaySessions) { session in
-                            sessionRow(for: session)
+                            sessionRow(for: session, entries: snapshot.entries(for: session))
                         }
                     }
                 }
 
-                let upcomingSessions = upcoming
+                let upcomingSessions = snapshot.upcoming
                 if !upcomingSessions.isEmpty {
                     Section("未来计划") {
                         ForEach(upcomingSessions) { session in
-                            sessionRow(for: session)
+                            sessionRow(for: session, entries: snapshot.entries(for: session))
                         }
                     }
                 }
 
-                let completedSessions = completed
+                let completedSessions = snapshot.completed
                 if !completedSessions.isEmpty {
                     Section("已完成") {
                         ForEach(completedSessions) { session in
-                            sessionRow(for: session)
+                            sessionRow(for: session, entries: snapshot.entries(for: session))
                         }
                     }
                 }
@@ -68,10 +89,19 @@ struct DictationHomeView: View {
         .background(Color(uiColor: .systemGroupedBackground))
         .navigationTitle("听写安排")
         .navigationBarTitleDisplayMode(.large)
+        .task {
+            snapshot = makeSnapshot()
+        }
+        .onChange(of: sessionChangeTokens) { _, _ in
+            snapshot = makeSnapshot()
+        }
+        .onChange(of: allEntries.count) { _, _ in
+            snapshot = makeSnapshot()
+        }
         .sheet(item: $previewSession) { session in
             DictationPreviewView(
                 session: session,
-                entries: entries(for: session),
+                entries: snapshot.entries(for: session),
                 onStartSession: {
                     activeSession = session
                 },
@@ -84,13 +114,27 @@ struct DictationHomeView: View {
             )
         }
         .navigationDestination(item: $activeSession) { session in
-            DictationSessionView(session: session, entries: entries(for: session))
+            DictationSessionView(session: session, entries: snapshot.entries(for: session))
         }
         .sheet(item: $editingSession) { session in
             NavigationStack {
-                AddDictationSessionView(editingSession: session, existingEntries: entries(for: session))
+                AddDictationSessionView(editingSession: session, existingEntries: snapshot.entries(for: session))
             }
         }
+    }
+
+    private func makeSnapshot() -> DictationHomeSnapshot {
+        let entriesBySessionID = Dictionary(grouping: allEntries, by: \.sessionID)
+            .mapValues { entries in
+                entries.sorted { $0.sortOrder < $1.sortOrder }
+            }
+
+        return DictationHomeSnapshot(
+            todayAndOverdue: todayAndOverdue,
+            upcoming: upcoming,
+            completed: completed,
+            entriesBySessionID: entriesBySessionID
+        )
     }
 
     private var todayAndOverdue: [DictationSession] {
@@ -112,10 +156,10 @@ struct DictationHomeView: View {
             // Sort completed ones naturally by most recently created/scheduled (since SwiftData @Query sorting applies base, we can just use the provided inverted list)
     }
 
-    private func sessionRow(for session: DictationSession) -> some View {
+    private func sessionRow(for session: DictationSession, entries: [DictationEntry]) -> some View {
         HStack(spacing: 0) {
             NavigationLink {
-                destinationView(for: session)
+                destinationView(for: session, entries: entries)
             } label: {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
@@ -128,8 +172,7 @@ struct DictationHomeView: View {
                     }
 
                     HStack {
-                        let sessionEntries = entriesBySessionID[session.id] ?? []
-                        Text("\(session.type.displayName) · \(sessionEntries.count) 条")
+                        Text("\(session.type.displayName) · \(entries.count) 条")
                         Spacer()
                         Text(session.scheduledDate.formatted(date: .abbreviated, time: .omitted))
                             .font(.caption)
@@ -152,7 +195,7 @@ struct DictationHomeView: View {
                 .buttonStyle(.plain)
             }
         }
-        .swipeActions {
+        .iOS17SafeSwipeActions {
             Button(role: .destructive) {
                 modelContext.delete(session)
             } label: {
@@ -171,8 +214,7 @@ struct DictationHomeView: View {
     }
 
     @ViewBuilder
-    private func destinationView(for session: DictationSession) -> some View {
-        let sessionEntries = entriesBySessionID[session.id] ?? []
+    private func destinationView(for session: DictationSession, entries sessionEntries: [DictationEntry]) -> some View {
         if session.isReviewed {
             DictationReviewView(session: session, entries: sessionEntries)
         } else if session.isFinished {
@@ -183,7 +225,9 @@ struct DictationHomeView: View {
     }
 
     private func entries(for session: DictationSession) -> [DictationEntry] {
-        entriesBySessionID[session.id] ?? []
+        allEntries
+            .filter { $0.sessionID == session.id }
+            .sorted { $0.sortOrder < $1.sortOrder }
     }
 
     private func statusText(for session: DictationSession) -> String {

@@ -1,15 +1,13 @@
 import SwiftUI
 import SwiftData
 import WidgetKit
+import UIKit
 
 struct TaskDetailView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
 
     let task: TaskItem
-
-    @Query(sort: \TaskSubitem.sortOrder) private var allSubtasks: [TaskSubitem]
-    @Query(sort: \TaskExecutionRecord.occurrenceDate, order: .reverse) private var allExecutionRecords: [TaskExecutionRecord]
-    @Query(sort: \TaskSubitemExecutionRecord.updatedAt, order: .reverse) private var legacySubtaskExecutionRecords: [TaskSubitemExecutionRecord]
 
     @State private var selectedOccurrenceDate: Date?
     @State private var preferredExecutionRecordID: UUID?
@@ -26,78 +24,56 @@ struct TaskDetailView: View {
     @State private var subtaskCompletedDraft = false
     @FocusState private var quickSubtaskFieldFocused: Bool
     @State private var weekOffset: Int = 0
+    @State private var occurrenceSnapshotState = OccurrenceSnapshotState.empty
+    @State private var occurrenceSnapshotRefreshTask: Task<Void, Never>?
+    @State private var detailDataActivationTask: Task<Void, Never>?
+    @State private var deferredPersistenceTask: Task<Void, Never>?
+    @State private var isDetailDataActive = false
+    @State private var allSubtasks: [TaskSubitemProjection] = []
+    @State private var allExecutionRecords: [TaskExecutionRecordProjection] = []
+    @State private var currentOccurrenceSubtasks: [TaskSubitemProjection] = []
+    @State private var currentExecutionRecord: TaskExecutionRecordProjection? = nil
 
     private struct SubtaskEditorTarget: Identifiable {
         let id = UUID()
         let subtaskID: UUID?
     }
 
-    private var executionRecords: [TaskExecutionRecord] {
-        allExecutionRecords.filter { $0.taskID == task.id }
-    }
+    private struct OccurrenceSnapshotState: Sendable {
+        let pending: [TaskOccurrenceSnapshot]
+        let completed: [TaskOccurrenceSnapshot]
+        let upcoming: [TaskOccurrenceSnapshot]
 
-    private var occurrenceSnapshots: [TaskOccurrenceSnapshot] {
-        TaskExecutionSupport.occurrenceSnapshots(
-            for: task,
-            executions: executionRecords,
-            subtasks: allSubtasks,
-            subtaskExecutions: legacySubtaskExecutionRecords
+        static let empty = OccurrenceSnapshotState(
+            pending: [],
+            completed: [],
+            upcoming: []
         )
+
+        var selection: [TaskOccurrenceSnapshot] {
+            pending + upcoming + completed
+        }
+
+        var timeline: [TaskOccurrenceSnapshot] {
+            pending + upcoming + completed
+        }
     }
 
-    private var pendingOccurrences: [TaskOccurrenceSnapshot] {
-        occurrenceSnapshots
-            .filter { !$0.isCompleted }
-            .sorted { $0.occurrenceDate < $1.occurrenceDate }
+    // MARK: - Computed Properties
+    
+    private var canRenderLiveContent: Bool {
+        scenePhase == .active
     }
 
-    private var completedOccurrences: [TaskOccurrenceSnapshot] {
-        occurrenceSnapshots
-            .filter(\.isCompleted)
-            .sorted { $0.occurrenceDate > $1.occurrenceDate }
+    private var canReadDetailQueries: Bool {
+        canRenderLiveContent && isDetailDataActive
     }
 
-    private var upcomingOccurrences: [TaskOccurrenceSnapshot] {
-        let calendar = Calendar.current
-        let today = TaskExecutionSupport.day(for: .now)
-        guard let endDate = calendar.date(byAdding: .day, value: 7, to: today) else { return [] }
-
-        return task.scheduledOccurrenceDates(upTo: endDate)
-            .filter { $0 > today }
-            .compactMap { occurrenceDate in
-                let record = TaskExecutionSupport.executionRecord(
-                    for: task.id,
-                    on: occurrenceDate,
-                    in: executionRecords
-                )
-                let occurrenceSubtasks = TaskExecutionSupport.executionSubtasks(
-                    for: record,
-                    in: allSubtasks
-                )
-                let completed = TaskExecutionSupport.isOccurrenceCompleted(
-                    task: task,
-                    occurrenceDate: occurrenceDate,
-                    executions: executionRecords,
-                    subtasks: allSubtasks
-                )
-                guard !completed else { return nil }
-
-                return TaskOccurrenceSnapshot(
-                    task: task,
-                    occurrenceDate: occurrenceDate,
-                    isCompleted: false,
-                    overdueOriginText: nil,
-                    executionRecord: record,
-                    totalSubtaskCount: occurrenceSubtasks.count,
-                    completedSubtaskCount: occurrenceSubtasks.filter { $0.status == .completed }.count
-                )
-            }
-            .sorted { $0.occurrenceDate < $1.occurrenceDate }
-    }
-
-    private var selectionSnapshots: [TaskOccurrenceSnapshot] {
-        pendingOccurrences + upcomingOccurrences + completedOccurrences
-    }
+    private var pendingOccurrences: [TaskOccurrenceSnapshot] { occurrenceSnapshotState.pending }
+    private var completedOccurrences: [TaskOccurrenceSnapshot] { occurrenceSnapshotState.completed }
+    private var upcomingOccurrences: [TaskOccurrenceSnapshot] { occurrenceSnapshotState.upcoming }
+    private var selectionSnapshots: [TaskOccurrenceSnapshot] { occurrenceSnapshotState.selection }
+    private var timelineSnapshots: [TaskOccurrenceSnapshot] { occurrenceSnapshotState.timeline }
 
     private var selectedSnapshot: TaskOccurrenceSnapshot? {
         if let selectedOccurrenceDate {
@@ -108,8 +84,150 @@ struct TaskDetailView: View {
         return pendingOccurrences.first ?? upcomingOccurrences.first ?? completedOccurrences.first
     }
 
-    private var timelineSnapshots: [TaskOccurrenceSnapshot] {
-        pendingOccurrences + upcomingOccurrences + completedOccurrences
+    private var currentOccurrenceDate: Date? { selectedSnapshot?.occurrenceDate }
+
+    private var subtaskProgressText: String? {
+        guard !currentOccurrenceSubtasks.isEmpty else { return nil }
+        let completed = currentOccurrenceSubtasks.filter { $0.status == .completed }.count
+        return "\(completed)/\(currentOccurrenceSubtasks.count) 子任务已完成"
+    }
+
+    private var isCurrentOccurrenceFuture: Bool {
+        guard let date = currentOccurrenceDate else { return false }
+        return isFutureOccurrence(date: date)
+    }
+
+    private func isFutureOccurrence(date: Date) -> Bool {
+        date > TaskExecutionSupport.day(for: .now)
+    }
+
+    private func isFutureOccurrence(_ snapshot: TaskOccurrenceSnapshot) -> Bool {
+        isFutureOccurrence(date: snapshot.occurrenceDate)
+    }
+
+    // MARK: - Body
+    
+    var body: some View {
+        List {
+            summarySection
+            
+            if isDetailDataActive {
+                occurrenceCalendarGrid
+                
+                if let snapshot = selectedSnapshot {
+                    currentOccurrenceSection(snapshot)
+                    subtasksSection
+                } else {
+                    emptyStateSection
+                }
+                
+                if !pendingOccurrences.isEmpty {
+                    occurrenceSwitcherSection(title: "待处理记录", snapshots: pendingOccurrences)
+                }
+                
+                if !completedOccurrences.isEmpty {
+                    occurrenceSwitcherSection(title: "已完成历史", snapshots: completedOccurrences)
+                }
+            } else {
+                detailLoadingSection
+            }
+        }
+        .navigationTitle("任务详情")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink { AddTaskView(task: task) } label: { Text("编辑任务") }
+            }
+        }
+        .onAppear { activateDetailDataAfterNavigationSettles() }
+        .onDisappear {
+            detailDataActivationTask?.cancel()
+            occurrenceSnapshotRefreshTask?.cancel()
+            deferredPersistenceTask?.cancel()
+            saveParentDetail()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            handleScenePhaseChange(newPhase)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("appDataDidMutate"))) { _ in
+            refreshDetailModelsAndSnapshot()
+        }
+        .onChange(of: allSubtasks.count) { _, _ in refreshDetailModelsAndSnapshot() }
+        .onChange(of: allExecutionRecords.count) { _, _ in refreshDetailModelsAndSnapshot() }
+        .onChange(of: selectedOccurrenceDate) { _, _ in
+            let t0 = CACurrentMediaTime()
+            syncCalendarToSelectedDate()
+            refreshParentDetailDraft()
+            print("🕰️ [DEBUG - DateSwitch] MAIN THREAD UNBLOCKED IN: \(String(format: "%.4fs", CACurrentMediaTime() - t0))")
+        }
+        .sheet(isPresented: $isEditingParentDetail) { parentDetailEditorSheet }
+        .sheet(item: $subtaskEditorTarget) { target in subtaskEditorSheet(target) }
+        .alert("保存失败", isPresented: Binding(get: { persistenceErrorMessage != nil }, set: { if !$0 { persistenceErrorMessage = nil } })) {
+            Button("知道了") { persistenceErrorMessage = nil }
+        } message: { Text(persistenceErrorMessage ?? "发生未知错误") }
+    }
+
+    // MARK: - Sections
+
+    private var summarySection: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(task.title).font(.title3.weight(.bold))
+                HStack(spacing: 3) {
+                    Text(task.recurrenceShortLabel).font(.caption).foregroundStyle(.secondary)
+                    if let label = task.effectiveDateRangeLabel {
+                        Text("·").font(.caption2).foregroundStyle(.tertiary)
+                        Text(label).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }.padding(.vertical, 4)
+        }
+    }
+
+    private var detailLoadingSection: some View {
+        Section {
+            HStack(spacing: 12) {
+                ProgressView()
+                Text("正在加载...").foregroundStyle(.secondary)
+            }.frame(maxWidth: .infinity).padding(.vertical, 20)
+        }
+    }
+
+    private var occurrenceCalendarGrid: some View {
+        Section {
+            VStack(spacing: 12) {
+                headerView
+                weekdayLabels
+                dateGrid
+            }.padding(.vertical, 8)
+        }
+    }
+
+    private var headerView: some View {
+        HStack {
+            Button { withAnimation { weekOffset -= 1 } } label: { Image(systemName: "chevron.left").padding(8).background(Circle().fill(.quaternary)) }
+            Spacer()
+            Text(calendarMonthYearLabel).font(.headline)
+            Spacer()
+            Button { withAnimation { weekOffset += 1 } } label: { Image(systemName: "chevron.right").padding(8).background(Circle().fill(.quaternary)) }
+        }.buttonStyle(.plain).padding(.horizontal)
+    }
+
+    private var weekdayLabels: some View {
+        HStack {
+            ForEach(["日", "一", "二", "三", "四", "五", "六"], id: \.self) { day in
+                Text(day).font(.caption2.bold()).foregroundStyle(.secondary).frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    private var dateGrid: some View {
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 6), count: 7)
+        return LazyVGrid(columns: columns, spacing: 6) {
+            ForEach(gridDates, id: \.self) { date in
+                calendarCell(for: date)
+            }
+        }
     }
 
     private var gridStartDate: Date {
@@ -121,478 +239,14 @@ struct TaskDetailView: View {
     }
 
     private var gridDates: [Date] {
-        let calendar = Calendar.current
-        let start = gridStartDate
-        return (0..<14).compactMap { dayOffset in
-            calendar.date(byAdding: .day, value: dayOffset, to: start)
-        }
+        (0..<14).compactMap { Calendar.current.date(byAdding: .day, value: $0, to: gridStartDate) }
     }
 
     private var calendarMonthYearLabel: String {
-        let calendar = Calendar.current
-        let middleDate = calendar.date(byAdding: .day, value: 7, to: gridStartDate)!
+        let middleDate = Calendar.current.date(byAdding: .day, value: 7, to: gridStartDate)!
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy年 M月"
         return formatter.string(from: middleDate)
-    }
-
-    private var currentOccurrenceDate: Date? {
-        selectedSnapshot?.occurrenceDate
-    }
-
-    private var currentExecutionRecord: TaskExecutionRecord? {
-        guard let currentOccurrenceDate else { return nil }
-        return bestExecutionRecord(for: currentOccurrenceDate)
-    }
-
-    private var currentOccurrenceSubtasks: [TaskSubitem] {
-        if let executionID = currentExecutionRecord?.id {
-            return occurrenceSubtasks(forExecutionID: executionID)
-        }
-        return []
-    }
-
-    private var subtaskProgressText: String? {
-        guard !currentOccurrenceSubtasks.isEmpty else { return nil }
-        let completed = currentOccurrenceSubtasks.filter { $0.status == .completed }.count
-        return "\(completed)/\(currentOccurrenceSubtasks.count) 子任务已完成"
-    }
-
-    private var occurrenceSelectionIDs: [String] {
-        selectionSnapshots.map(\.id)
-    }
-
-    private var isCurrentOccurrenceFuture: Bool {
-        guard let currentOccurrenceDate else { return false }
-        return currentOccurrenceDate > TaskExecutionSupport.day(for: .now)
-    }
-
-    var body: some View {
-        List {
-            summarySection
-
-            occurrenceCalendarGrid
-
-            if let selectedSnapshot {
-                currentOccurrenceSection(selectedSnapshot)
-                subtasksSection
-            } else {
-                emptyStateSection
-            }
-
-            if !pendingOccurrences.isEmpty {
-                occurrenceSwitcherSection(title: "待处理记录", snapshots: pendingOccurrences)
-            }
-
-            if !completedOccurrences.isEmpty {
-                occurrenceSwitcherSection(title: "已完成历史", snapshots: completedOccurrences)
-            }
-        }
-        .navigationTitle("任务详情")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                NavigationLink {
-                    AddTaskView(task: task)
-                } label: {
-                    Text("编辑任务")
-                }
-            }
-        }
-        .onAppear {
-            syncSelectedOccurrence()
-            syncCalendarToSelectedDate()
-            refreshParentDetailDraft()
-        }
-        .onChange(of: occurrenceSelectionIDs) { _, _ in
-            syncSelectedOccurrence()
-            refreshParentDetailDraft()
-        }
-        .onChange(of: selectedOccurrenceDate) { _, _ in
-            syncCalendarToSelectedDate()
-            refreshParentDetailDraft()
-        }
-        .onDisappear {
-            saveParentDetail()
-        }
-        .alert("保存失败", isPresented: Binding(
-            get: { persistenceErrorMessage != nil },
-            set: { shouldShow in
-                if !shouldShow {
-                    persistenceErrorMessage = nil
-                }
-            }
-        )) {
-            Button("知道了") {
-                persistenceErrorMessage = nil
-            }
-        } message: {
-            Text(persistenceErrorMessage ?? "发生未知错误")
-        }
-        .sheet(isPresented: $isEditingParentDetail) {
-            NavigationStack {
-                Form {
-                    Section("本次说明") {
-                        TextEditor(text: $parentDetailDraft)
-                            .frame(minHeight: 180)
-
-                        Text("这里记录这一次执行的情况；长期固定补充仍然放在任务备注里。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .navigationTitle("编辑本次说明")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("取消") {
-                            isEditingParentDetail = false
-                            refreshParentDetailDraft()
-                        }
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("保存") {
-                            saveParentDetail()
-                            isEditingParentDetail = false
-                        }
-                    }
-                }
-            }
-        }
-        .sheet(item: $subtaskEditorTarget) { target in
-            NavigationStack {
-                Form {
-                    Section("子任务名称") {
-                        TextField("例如：检查作业、签字、整理书包", text: $subtaskTitleDraft)
-                    }
-
-                    Section("子任务备注") {
-                        TextField("相对固定的补充说明（可选）", text: $subtaskNoteDraft, axis: .vertical)
-                    }
-
-                    Section("这次说明") {
-                        TextEditor(text: $subtaskDetailDraft)
-                            .frame(minHeight: 150)
-                    }
-
-                    if !isCurrentOccurrenceFuture {
-                        Section("完成状态") {
-                            Toggle("标记为已完成", isOn: $subtaskCompletedDraft)
-                        }
-                    } else {
-                        Section {
-                            Text("未来日期可以先写子任务和备注，但不能提前完成。")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .navigationTitle(target.subtaskID == nil ? "添加子任务" : "编辑子任务")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("取消") {
-                            subtaskEditorTarget = nil
-                        }
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("保存") {
-                            saveSubtaskEditor(target)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private var summarySection: some View {
-        Section {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(task.title)
-                    .font(.title3.weight(.bold))
-
-                HStack(spacing: 3) {
-                    Text(task.recurrenceShortLabel)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    if let _ = task.effectiveDateRangeLabel {
-                        Text("·")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                        
-                        Text(task.effectiveDateRangeLabel!)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if task.skipPolicy == .unskippable {
-                        Text("·")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                    }
-                }
-            }
-            .padding(.vertical, 4)
-        }
-    }
-
-    private func currentOccurrenceSection(_ snapshot: TaskOccurrenceSnapshot) -> some View {
-        Section("当前处理") {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(snapshot.occurrenceDate.formatted(.dateTime.month().day()))
-                            .font(.headline)
-                        
-                        HStack(spacing: 3) {
-                            Text(snapshot.isCompleted ? "已完成" : (isFutureOccurrence(snapshot) ? "未来" : "待处理"))
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(snapshot.isCompleted ? .green : (isFutureOccurrence(snapshot) ? .blue : .orange))
-
-                            if let progress = snapshot.simpleProgressText {
-                                Text("·")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                                
-                                Text(progress)
-                                    .font(.caption.weight(.bold))
-                                    .foregroundStyle(snapshot.isCompleted ? .green : .blue)
-                            }
-                            
-                            if occurrenceHasDetail(snapshot.occurrenceDate) || currentOccurrenceSubtasks.contains(where: { !$0.note.isEmpty }) {
-                                Text("·")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                                
-                                Image(systemName: "doc.text.fill")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-
-                    Spacer()
-
-                    Button {
-                        isEditingParentDetail = true
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: occurrenceHasDetail(snapshot.occurrenceDate) ? "square.and.pencil" : "plus.bubble")
-                            Text(occurrenceHasDetail(snapshot.occurrenceDate) ? "编辑说明" : "添加说明")
-                        }
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.blue)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.blue.opacity(0.10), in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                if !task.note.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("任务备注")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.secondary)
-                        Text(task.note)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
-                }
-
-                if isCurrentOccurrenceFuture {
-                    Text("可以先为这一天准备子任务和备注，完成要等到当天。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(14)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(currentOccurrenceCardBackground(for: snapshot))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(currentOccurrenceCardBorder(for: snapshot), lineWidth: 1)
-            )
-            .padding(.vertical, 4)
-            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-        }
-    }
-
-    private var subtasksSection: some View {
-        Section("本次子任务") {
-            if !isCreatingSubtask {
-                Button {
-                    startQuickSubtaskCreation()
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.subheadline)
-                            .foregroundStyle(.blue)
-
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text("添加子任务")
-                                .font(.subheadline)
-                                .foregroundStyle(.primary)
-                        }
-                        Spacer()
-                    }
-                }
-                .buttonStyle(.plain)
-                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-            }
-
-            if isCreatingSubtask {
-                quickCreateSubtaskRow
-            }
-
-            if currentOccurrenceSubtasks.isEmpty {
-                Text("这一天还没有子任务。你可以先添加需要执行的步骤，再逐条完成。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(currentOccurrenceSubtasks) { subtask in
-                    subtaskRow(subtask)
-                        .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 2, trailing: 16))
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button("删除", systemImage: "trash", role: .destructive) {
-                                deleteSubtask(subtask)
-                            }
-                        }
-                }
-            }
-        }
-    }
-
-    private var quickCreateSubtaskRow: some View {
-        VStack(spacing: 8) {
-            HStack(alignment: .center, spacing: 12) {
-                Image(systemName: "square.and.pencil")
-                    .font(.title3)
-                    .foregroundStyle(.blue)
-                    .frame(width: 28, height: 28)
-
-                TextField("输入子任务标题，输完点下方按钮", text: $quickSubtaskTitleDraft)
-                    .textInputAutocapitalization(.sentences)
-                    .focused($quickSubtaskFieldFocused)
-                    .submitLabel(.done)
-            }
-
-            HStack(spacing: 16) {
-                Spacer()
-
-                Button("取消") {
-                    cancelQuickSubtaskCreation()
-                }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-                Button {
-                    commitIMEAndSave()
-                } label: {
-                    Text("添加子任务")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(quickSubtaskTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.gray : Color.blue, in: Capsule())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    /// Force-commit any Chinese IME composition text, then save.
-    private func commitIMEAndSave() {
-        // Force iOS to commit any in-progress IME composition by ending editing
-        UIApplication.shared.sendAction(
-            #selector(UIResponder.resignFirstResponder),
-            to: nil, from: nil, for: nil
-        )
-
-        // Wait for the binding to update after IME commits
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            saveQuickSubtask()
-        }
-    }
-
-    private var emptyStateSection: some View {
-        Section {
-            ContentUnavailableView(
-                "还没有执行记录",
-                systemImage: "checklist",
-                description: Text("任务开始后，这里会显示每次执行情况和本次子任务。")
-            )
-        }
-    }
-
-    private var occurrenceCalendarGrid: some View {
-        Section {
-            VStack(spacing: 0) {
-                // Calendar Header: Month + Arrows
-                HStack {
-                    Button {
-                        withAnimation { weekOffset -= 1 }
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 14, weight: .bold))
-                            .padding(10)
-                            .background(Color.secondary.opacity(0.12), in: Circle())
-                    }
-                    .buttonStyle(BorderlessButtonStyle())
-                    
-                    Spacer()
-                    
-                    Text(calendarMonthYearLabel)
-                        .font(.headline)
-                    
-                    Spacer()
-                    
-                    Button {
-                        withAnimation { weekOffset += 1 }
-                    } label: {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 14, weight: .bold))
-                            .padding(10)
-                            .background(Color.secondary.opacity(0.12), in: Circle())
-                    }
-                    .buttonStyle(BorderlessButtonStyle())
-                }
-                .padding(.horizontal)
-                .padding(.bottom, 12)
-
-                // Weekday Labels
-                let days = ["日", "一", "二", "三", "四", "五", "六"]
-                HStack {
-                    ForEach(days, id: \.self) { day in
-                        Text(day)
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
-                    }
-                }
-                .padding(.bottom, 8)
-
-                // Grid of Dates
-                let columns = Array(repeating: GridItem(.flexible(), spacing: 6), count: 7)
-                LazyVGrid(columns: columns, spacing: 6) {
-                    ForEach(gridDates, id: \.self) { date in
-                        calendarCell(for: date)
-                    }
-                }
-            }
-            .padding(.vertical, 12)
-        }
     }
 
     private func calendarCell(for date: Date) -> some View {
@@ -601,357 +255,276 @@ struct TaskDetailView: View {
         let isToday = Calendar.current.isDateInToday(date)
         
         return Button {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                selectedOccurrenceDate = date
-            }
+            withAnimation(.spring(response: 0.3)) { selectedOccurrenceDate = date }
         } label: {
-            VStack(spacing: 2) {
+            VStack {
                 Text("\(Calendar.current.component(.day, from: date))")
                     .font(.system(size: 16, weight: isToday ? .black : .medium, design: .rounded))
-                    .foregroundStyle(isToday && !isSelected ? .red : cellContentColor(snapshot, isSelected: isSelected))
+                    .foregroundStyle(isSelected ? .white : (isToday ? .red : cellContentColor(snapshot)))
             }
-            .frame(maxWidth: .infinity)
-            .frame(height: 42)
-            .overlay(alignment: .topTrailing) {
-                if let snapshot, snapshot.totalSubtaskCount > 0 {
-                    Text("\(snapshot.totalSubtaskCount)")
-                        .font(.system(size: 9, weight: .black, design: .rounded))
-                        .foregroundStyle(isSelected ? .white.opacity(0.8) : .blue.opacity(0.8))
-                        .padding(5)
+            .frame(maxWidth: .infinity).frame(height: 40)
+            .background(RoundedRectangle(cornerRadius: 10).fill(isSelected ? Color.accentColor : cellBackgroundColor(snapshot)))
+        }.buttonStyle(.plain)
+    }
+
+    private func cellBackgroundColor(_ snapshot: TaskOccurrenceSnapshot?) -> Color {
+        guard let s = snapshot else { return Color(uiColor: .systemGray6).opacity(0.4) }
+        if s.isCompleted { return .green.opacity(0.15) }
+        return s.occurrenceDate < TaskExecutionSupport.day(for: .now) ? .orange.opacity(0.15) : .blue.opacity(0.15)
+    }
+
+    private func cellContentColor(_ snapshot: TaskOccurrenceSnapshot?) -> Color {
+        guard let s = snapshot else { return .secondary.opacity(0.4) }
+        if s.isCompleted { return .green }
+        return s.occurrenceDate < TaskExecutionSupport.day(for: .now) ? .orange : .blue
+    }
+
+    private func currentOccurrenceSection(_ snapshot: TaskOccurrenceSnapshot) -> some View {
+        Section("当前处理") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text(snapshot.occurrenceDate.formatted(.dateTime.month().day())).font(.headline)
+                        Text(snapshot.isCompleted ? "已完成" : (isFutureOccurrence(snapshot) ? "未来" : "待处理"))
+                            .font(.caption.bold())
+                            .foregroundStyle(snapshot.isCompleted ? .green : (isFutureOccurrence(snapshot) ? .blue : .orange))
+                    }
+                    Spacer()
+                    Button { isEditingParentDetail = true } label: {
+                        Label(snapshot.hasDetail ? "编辑说明" : "添加说明", systemImage: "plus.bubble")
+                            .font(.caption.bold()).padding(.horizontal, 10).padding(.vertical, 6)
+                            .background(Capsule().fill(Color.accentColor.opacity(0.1)))
+                    }.buttonStyle(.plain)
+                }
+                if !task.note.isEmpty {
+                    Text(task.note).font(.caption).foregroundStyle(.secondary).padding(8).background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.3)))
+                }
+            }.padding(12)
+        }
+    }
+
+    private var subtasksSection: some View {
+        Section("本次子任务") {
+            if !isCreatingSubtask {
+                Button { startQuickSubtaskCreation() } label: {
+                    Label("添加子任务", systemImage: "plus.circle.fill").font(.subheadline).foregroundStyle(.blue)
+                }.buttonStyle(.plain).padding(.vertical, 4)
+            } else {
+                quickCreateSubtaskRow
+            }
+
+            ForEach(currentOccurrenceSubtasks) { subtask in
+                subtaskRow(subtask)
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) { deleteSubtask(subtask) } label: { Label("删除", systemImage: "trash") }
+                    }
+            }
+        }
+    }
+
+    private func subtaskRow(_ subtask: TaskSubitemProjection) -> some View {
+        let isDone = subtask.status == .completed
+        return HStack(spacing: 0) {
+            // 左侧：独立勾选区
+            Image(systemName: isDone ? "checkmark.circle.fill" : "circle")
+                .font(.title3.weight(.bold))
+                .foregroundStyle(isDone ? .green : .secondary)
+                .frame(width: 44, height: 44) // 增大物理触感区域
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    if !isCurrentOccurrenceFuture {
+                        toggleSubtaskCompletion(subtask)
+                    }
+                }
+                .opacity(isCurrentOccurrenceFuture ? 0.5 : 1.0)
+            
+            // 中间：编辑区
+            VStack(alignment: .leading, spacing: 2) {
+                Text(subtask.title)
+                    .strikethrough(isDone)
+                    .foregroundStyle(isDone ? .secondary : .primary)
+                if !subtask.note.isEmpty {
+                    Text(subtask.note)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
             }
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(cellBackgroundColor(snapshot, isSelected: isSelected))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(isSelected ? Color.accentColor : (isToday ? Color.red.opacity(0.4) : Color.clear), lineWidth: isSelected ? 2 : 1.5)
-            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                // 打开编辑器时由于需要模型，这里通过 ID 查找
+                openEditSubtaskEditor(subtaskID: subtask.id)
+            }
+            
+            // 右侧：详情图标
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.quaternary)
+                .padding(.trailing, 4)
         }
-        .buttonStyle(.plain)
+        .padding(.vertical, 2)
     }
 
-    private func cellBackgroundColor(_ snapshot: TaskOccurrenceSnapshot?, isSelected: Bool) -> Color {
-        guard let snapshot else {
-            return Color(uiColor: .systemGray6).opacity(0.3)
-        }
-        
-        if snapshot.isCompleted {
-            return .green.opacity(isSelected ? 0.9 : 0.35)
-        }
-        if snapshot.occurrenceDate < TaskExecutionSupport.day(for: .now) {
-            return .orange.opacity(isSelected ? 0.9 : 0.35)
-        }
-        return .blue.opacity(isSelected ? 0.9 : 0.35)
+    private var quickCreateSubtaskRow: some View {
+        VStack(spacing: 8) {
+            TextField("输入子任务...", text: $quickSubtaskTitleDraft).focused($quickSubtaskFieldFocused)
+            HStack {
+                Spacer()
+                Button("取消") { cancelQuickSubtaskCreation() }.font(.subheadline)
+                Button("添加") { saveQuickSubtask() }.font(.subheadline.bold()).disabled(quickSubtaskTitleDraft.isEmpty)
+            }
+        }.padding(.vertical, 4)
     }
 
-    private func cellContentColor(_ snapshot: TaskOccurrenceSnapshot?, isSelected: Bool) -> Color {
-        if isSelected { return .white } // Selected background is dark, use white text
-        guard let snapshot else { return .secondary.opacity(0.5) }
-        
-        if snapshot.isCompleted { return .green }
-        if snapshot.occurrenceDate < TaskExecutionSupport.day(for: .now) { return .orange }
-        return .blue
-    }
-
-    private func occurrenceSwitcherSection(
-        title: String,
-        snapshots: [TaskOccurrenceSnapshot]
-    ) -> some View {
+    private func occurrenceSwitcherSection(title: String, snapshots: [TaskOccurrenceSnapshot]) -> some View {
         Section(title) {
             ForEach(snapshots) { snapshot in
-                HStack(spacing: 12) {
-                    occurrenceLeadingButton(snapshot)
-
-                    Button {
-                        selectedOccurrenceDate = snapshot.occurrenceDate
-                    } label: {
-                        HStack(spacing: 12) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                occurrenceRow(snapshot)
-                            }
-
-                            Spacer()
-
-                            if isSelected(snapshot) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(.blue)
+                HStack(spacing: 0) {
+                    // 左侧：状态勾选点
+                    Image(systemName: snapshot.isCompleted ? "checkmark.circle.fill" : "circle")
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(snapshot.isCompleted ? .green : .secondary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if !isFutureOccurrence(snapshot) && !snapshot.hasSubtasks {
+                                toggleOccurrenceCompletion(snapshot)
                             }
                         }
-                        .padding(12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .fill(occurrenceListCardBackground(for: snapshot))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .stroke(occurrenceListCardBorder(for: snapshot), lineWidth: isSelected(snapshot) ? 1.5 : 1)
-                        )
-                        .contentShape(Rectangle())
+                        .opacity((isFutureOccurrence(snapshot) || snapshot.hasSubtasks) ? 0.5 : 1.0)
+                    
+                    // 右侧：切换点
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(snapshot.occurrenceDate.formatted(.dateTime.year().month().day()))
+                            .font(.subheadline.weight(.semibold))
+                        if !snapshot.executionDetail.isEmpty {
+                            Text(snapshot.executionDetail)
+                                .font(.caption)
+                                .lineLimit(1)
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.spring(response: 0.3)) {
+                            selectedOccurrenceDate = snapshot.occurrenceDate
+                        }
+                    }
+                    
+                    if let sel = selectedOccurrenceDate, Calendar.current.isDate(snapshot.occurrenceDate, inSameDayAs: sel) {
+                        Image(systemName: "checkmark").font(.caption.bold()).foregroundStyle(.blue)
+                    }
                 }
-                .listRowSeparator(.hidden)
-                .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                .padding(.vertical, 2)
             }
         }
     }
 
-    private func occurrenceLeadingButton(_ snapshot: TaskOccurrenceSnapshot) -> some View {
-        let canToggle = !snapshot.hasSubtasks && !isFutureOccurrence(snapshot)
+    private var emptyStateSection: some View {
+        Section { Text("暂无记录").foregroundStyle(.secondary).frame(maxWidth: .infinity).padding() }
+    }
 
-        return Button {
-            guard canToggle else {
-                selectedOccurrenceDate = snapshot.occurrenceDate
-                return
+    // MARK: - Sheets
+
+    private var parentDetailEditorSheet: some View {
+        NavigationStack {
+            Form { Section("本次说明") { TextEditor(text: $parentDetailDraft).frame(minHeight: 150) } }
+            .navigationTitle("编辑本次说明").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { isEditingParentDetail = false } }
+                ToolbarItem(placement: .confirmationAction) { Button("保存") { saveParentDetail(); isEditingParentDetail = false } }
             }
-            selectedOccurrenceDate = snapshot.occurrenceDate
-            toggleOccurrenceCompletion(snapshot)
-        } label: {
-            Image(systemName: leadingSymbol(for: snapshot))
-                .font(.title3)
-                .foregroundStyle(leadingColor(for: snapshot))
-                .frame(width: 28, height: 28)
         }
-        .buttonStyle(.plain)
     }
 
-    private func leadingSymbol(for snapshot: TaskOccurrenceSnapshot) -> String {
-        if isFutureOccurrence(snapshot) && !snapshot.isCompleted {
-            return "clock"
+    private func subtaskEditorSheet(_ target: SubtaskEditorTarget) -> some View {
+        NavigationStack {
+            Form {
+                Section("内容") { TextField("标题", text: $subtaskTitleDraft); TextField("备注", text: $subtaskNoteDraft) }
+                Section("说明") { TextEditor(text: $subtaskDetailDraft).frame(minHeight: 100) }
+                if !isCurrentOccurrenceFuture { Toggle("已完成", isOn: $subtaskCompletedDraft) }
+            }
+            .navigationTitle(target.subtaskID == nil ? "添加子任务" : "编辑子任务").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { subtaskEditorTarget = nil } }
+                ToolbarItem(placement: .confirmationAction) { Button("保存") { saveSubtaskEditor(target) } }
+            }
         }
-        if snapshot.hasSubtasks {
-            return snapshot.isCompleted ? "checkmark.circle.fill" : "list.bullet.circle"
-        }
-        return snapshot.isCompleted ? "checkmark.circle.fill" : "circle"
     }
 
-    private func leadingColor(for snapshot: TaskOccurrenceSnapshot) -> Color {
-        if isFutureOccurrence(snapshot) && !snapshot.isCompleted {
-            return .blue
-        }
-        if snapshot.isCompleted {
-            return .green
-        }
-        return .secondary
+    // MARK: - Logic & Actions
+
+    private func handleScenePhaseChange(_ phase: ScenePhase) {
+        if phase == .active { if !isDetailDataActive { activateDetailDataAfterNavigationSettles() } }
+        else if phase == .background { isDetailDataActive = false }
     }
 
-    private func occurrenceRow(_ snapshot: TaskOccurrenceSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Text(snapshot.occurrenceDate.formatted(.dateTime.year().month().day()))
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
+    private func activateDetailDataAfterNavigationSettles() {
+        detailDataActivationTask?.cancel()
+        isDetailDataActive = false
+        detailDataActivationTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            guard !Task.isCancelled else { return }
+            isDetailDataActive = true
+            refreshDetailModelsAndSnapshot()
+        }
+    }
 
-                Text(snapshot.isCompleted ? "已完成" : (isFutureOccurrence(snapshot) ? "未来" : "待处理"))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(snapshot.isCompleted ? .green : (isFutureOccurrence(snapshot) ? .blue : .orange))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(
-                        (snapshot.isCompleted ? Color.green.opacity(0.14) : (isFutureOccurrence(snapshot) ? Color.blue.opacity(0.12) : Color.orange.opacity(0.14))),
-                        in: Capsule()
+    private func refreshDetailModelsAndSnapshot() {
+        occurrenceSnapshotRefreshTask?.cancel()
+        guard canRenderLiveContent else { return }
+        
+        let tid = task.id
+        let container = modelContext.container
+        let selectedDate = selectedOccurrenceDate ?? .now
+        
+        occurrenceSnapshotRefreshTask = Task(priority: .userInitiated) {
+            // 显式声明返回类型以解决 nil 推断问题
+            typealias RefreshResult = ([TaskOccurrenceSnapshot], [TaskSubitemProjection], [TaskExecutionRecordProjection], [TaskSubitemProjection], TaskExecutionRecordProjection?)
+            
+            let results: RefreshResult? = try? await Task.detached(priority: .userInitiated) {
+                let ctx = ModelContext(container)
+                let t = (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))?.first
+                guard let t else { return nil }
+                
+                let records = (try? ctx.fetch(FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.taskID == tid }))) ?? []
+                let subtasks = (try? ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))) ?? []
+                
+                let snapshots = TaskExecutionSupport.occurrenceSnapshots(for: t, executions: records, subtasks: subtasks, subtaskExecutions: [])
+                let subProjections = subtasks.filter { !$0.isArchived }.map(TaskSubitemProjection.init)
+                let recProjections = records.map(TaskExecutionRecordProjection.init)
+                
+                let targetDay = TaskExecutionSupport.day(for: selectedDate)
+                let curRec = recProjections.first { Calendar.current.isDate($0.occurrenceDate, inSameDayAs: targetDay) }
+                
+                let curSubProjections: [TaskSubitemProjection]
+                if let rid = curRec?.id {
+                     curSubProjections = subProjections.filter { $0.taskExecutionID == rid }
+                                                     .sorted { $0.sortOrder < $1.sortOrder }
+                } else {
+                     curSubProjections = []
+                }
+                
+                return (snapshots, subProjections, recProjections, curSubProjections, curRec)
+            }.value
+            
+            guard !Task.isCancelled, let res = results else { return }
+            
+            await MainActor.run {
+                withAnimation(.smooth(duration: 0.2)) {
+                    occurrenceSnapshotState = OccurrenceSnapshotState(
+                        pending: res.0.filter { !$0.isCompleted && $0.occurrenceDate < TaskExecutionSupport.day(for: .now) },
+                        completed: res.0.filter { $0.isCompleted }.sorted { $0.occurrenceDate > $1.occurrenceDate },
+                        upcoming: res.0.filter { !$0.isCompleted && $0.occurrenceDate >= TaskExecutionSupport.day(for: .now) }
                     )
-
-                if occurrenceHasDetail(snapshot.occurrenceDate) {
-                    noteBadge("有说明")
+                    allSubtasks = res.1
+                    allExecutionRecords = res.2
+                    currentOccurrenceSubtasks = res.3
+                    currentExecutionRecord = res.4
+                    isDetailDataActive = true
                 }
             }
-
-            if let subtaskProgressText = snapshot.subtaskProgressText {
-                Text(subtaskProgressText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if let detail = snapshot.executionRecord?.detail,
-               !detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-        }
-        .padding(.vertical, 2)
-    }
-
-    private func noteBadge(_ text: String) -> some View {
-        Text(text)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.blue)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(Color.blue.opacity(0.12), in: Capsule())
-    }
-
-    private func occurrenceHasDetail(_ occurrenceDate: Date) -> Bool {
-        let trimmedParentDetail = TaskExecutionSupport
-            .executionRecord(for: task.id, on: occurrenceDate, in: executionRecords)?
-            .detail
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !trimmedParentDetail.isEmpty {
-            return true
-        }
-
-        let record = TaskExecutionSupport.executionRecord(
-            for: task.id,
-            on: occurrenceDate,
-            in: executionRecords
-        )
-        return TaskExecutionSupport.executionSubtasks(for: record, in: allSubtasks).contains {
-            !$0.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-            !$0.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
-    }
-
-    private func subtaskRow(_ subtask: TaskSubitem) -> some View {
-        let isDone = subtask.status == .completed
-
-        return HStack(alignment: .center, spacing: 10) {
-            Button {
-                toggleSubtaskCompletion(subtask)
-            } label: {
-                Image(systemName: leadingSymbol(for: subtask, isDone: isDone))
-                    .font(.body.weight(.bold))
-                    .foregroundStyle(leadingColor(for: subtask, isDone: isDone))
-                    .frame(width: 24, height: 24)
-            }
-            .buttonStyle(.plain)
-            .disabled(isCurrentOccurrenceFuture)
-
-            Button {
-                openEditSubtaskEditor(subtask)
-            } label: {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(subtask.title)
-                        .font(.subheadline)
-                        .foregroundStyle(isDone ? .secondary : .primary)
-                        .strikethrough(isDone)
-
-                    if !subtask.note.isEmpty {
-                        Text(subtask.note)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.plain)
-
-            HStack(spacing: 6) {
-                Button {
-                    moveSubtaskUp(subtask)
-                } label: {
-                    Image(systemName: "chevron.up")
-                        .font(.caption2.weight(.bold))
-                }
-                .buttonStyle(.plain)
-                .disabled(isFirstSubtask(subtask))
-
-                Button {
-                    moveSubtaskDown(subtask)
-                } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.caption2.weight(.bold))
-                }
-                .buttonStyle(.plain)
-                .disabled(isLastSubtask(subtask))
-            }
-            .foregroundStyle(.tertiary)
-        }
-        .padding(.vertical, 2)
-    }
-
-    private func leadingSymbol(for subtask: TaskSubitem, isDone: Bool) -> String {
-        if isCurrentOccurrenceFuture {
-            return "clock"
-        }
-        return isDone ? "checkmark.circle.fill" : "circle"
-    }
-
-    private func leadingColor(for subtask: TaskSubitem, isDone: Bool) -> Color {
-        if isCurrentOccurrenceFuture {
-            return .blue
-        }
-        return isDone ? .green : .secondary
-    }
-
-    private func isSelected(_ snapshot: TaskOccurrenceSnapshot) -> Bool {
-        guard let selectedOccurrenceDate else { return false }
-        return Calendar.current.isDate(snapshot.occurrenceDate, inSameDayAs: selectedOccurrenceDate)
-    }
-
-    private func currentOccurrenceCardBackground(for snapshot: TaskOccurrenceSnapshot) -> Color {
-        if snapshot.isCompleted {
-            return Color.green.opacity(0.10)
-        }
-        if isFutureOccurrence(snapshot) {
-            return Color.blue.opacity(0.08)
-        }
-        return Color.orange.opacity(0.10)
-    }
-
-    private func currentOccurrenceCardBorder(for snapshot: TaskOccurrenceSnapshot) -> Color {
-        if snapshot.isCompleted {
-            return Color.green.opacity(0.25)
-        }
-        if isFutureOccurrence(snapshot) {
-            return Color.blue.opacity(0.25)
-        }
-        return Color.orange.opacity(0.28)
-    }
-
-    private func occurrenceListCardBackground(for snapshot: TaskOccurrenceSnapshot) -> Color {
-        if isSelected(snapshot) {
-            return Color.blue.opacity(0.08)
-        }
-        if snapshot.isCompleted {
-            return Color.green.opacity(0.05)
-        }
-        if isFutureOccurrence(snapshot) {
-            return Color.blue.opacity(0.04)
-        }
-        return Color(.secondarySystemGroupedBackground)
-    }
-
-    private func occurrenceListCardBorder(for snapshot: TaskOccurrenceSnapshot) -> Color {
-        if isSelected(snapshot) {
-            return Color.blue.opacity(0.45)
-        }
-        if snapshot.isCompleted {
-            return Color.green.opacity(0.12)
-        }
-        if isFutureOccurrence(snapshot) {
-            return Color.blue.opacity(0.12)
-        }
-        return Color.black.opacity(0.05)
-    }
-
-    private func isFutureOccurrence(_ snapshot: TaskOccurrenceSnapshot) -> Bool {
-        snapshot.occurrenceDate > TaskExecutionSupport.day(for: .now)
-    }
-
-    private func syncSelectedOccurrence() {
-        if let selectedOccurrenceDate,
-           selectionSnapshots.contains(where: {
-               Calendar.current.isDate($0.occurrenceDate, inSameDayAs: selectedOccurrenceDate)
-           }) {
-            if let resolvedExecutionID = bestExecutionRecord(for: selectedOccurrenceDate)?.id {
-                preferredExecutionRecordID = resolvedExecutionID
-            }
-            return
-        }
-
-        selectedOccurrenceDate = pendingOccurrences.first?.occurrenceDate
-            ?? upcomingOccurrences.first?.occurrenceDate
-            ?? completedOccurrences.first?.occurrenceDate
-        if let selectedOccurrenceDate,
-           let resolvedExecutionID = bestExecutionRecord(for: selectedOccurrenceDate)?.id {
-            preferredExecutionRecordID = resolvedExecutionID
-        } else {
-            preferredExecutionRecordID = nil
         }
     }
 
@@ -959,366 +532,285 @@ struct TaskDetailView: View {
         guard let date = selectedOccurrenceDate else { return }
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: .now)
-        
-        // Find the start of the week for today (reference week 0)
-        let components = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: today)
-        guard let startOfThisWeek = calendar.date(from: components) else { return }
-        
-        // Find the start of the week for the target date
-        let targetComponents = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: date)
-        guard let startOfTargetWeek = calendar.date(from: targetComponents) else { return }
-        
-        // Calculate the week difference
-        let weekDiff = calendar.dateComponents([.weekOfYear], from: startOfThisWeek, to: startOfTargetWeek).weekOfYear ?? 0
-        
-        // Update weekOffset if the target date is outside the currently visible 2-week range
-        if weekDiff < weekOffset || weekDiff >= weekOffset + 2 {
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                weekOffset = weekDiff
-            }
-        }
+        let diff = calendar.dateComponents([.weekOfYear], from: today, to: date).weekOfYear ?? 0
+        if diff < weekOffset || diff >= weekOffset + 2 { withAnimation { weekOffset = diff } }
     }
 
-    private func refreshParentDetailDraft() {
-        parentDetailDraft = currentExecutionRecord?.detail ?? ""
-    }
-
-    private func executionRecord(withID id: UUID) -> TaskExecutionRecord? {
-        if let record = executionRecords.first(where: { $0.id == id }) {
-            return record
-        }
-
-        let descriptor = FetchDescriptor<TaskExecutionRecord>(
-            predicate: #Predicate { $0.id == id }
-        )
-        return try? modelContext.fetch(descriptor).first
-    }
-
-    private func storedExecutionRecords() -> [TaskExecutionRecord] {
-        let taskID = task.id
-        let descriptor = FetchDescriptor<TaskExecutionRecord>(
-            predicate: #Predicate { record in
-                record.taskID == taskID
-            },
-            sortBy: [
-                SortDescriptor(\TaskExecutionRecord.updatedAt, order: .reverse),
-                SortDescriptor(\TaskExecutionRecord.createdAt, order: .reverse)
-            ]
-        )
-        return (try? modelContext.fetch(descriptor)) ?? []
-    }
-
-    private func bestExecutionRecord(for occurrenceDate: Date) -> TaskExecutionRecord? {
-        let sameDay = TaskExecutionSupport.day(for: occurrenceDate)
-
-        // Use @Query results only (avoid redundant SwiftData fetch)
-        let candidates = executionRecords.filter {
-            Calendar.current.isDate($0.occurrenceDate, inSameDayAs: sameDay)
-        }
-
-        // If there's a preferred record for this day, use it directly
-        if let preferredID = preferredExecutionRecordID,
-           let preferred = candidates.first(where: { $0.id == preferredID }) {
-            return preferred
-        }
-
-        // Otherwise pick the best one by content richness
-        return candidates.max { lhs, rhs in
-            ranking(for: lhs) < ranking(for: rhs)
-        }
-    }
-
-    private func ranking(for record: TaskExecutionRecord) -> (Int, Date, Date) {
-        let hasDetail = record.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1
-        return (hasDetail, record.updatedAt, record.createdAt)
-    }
-
-    private func ensureCurrentExecutionRecord(for occurrenceDate: Date) -> TaskExecutionRecord {
-        if let existing = bestExecutionRecord(for: occurrenceDate) {
-            preferredExecutionRecordID = existing.id
-            return existing
-        }
-
-        let record = TaskExecutionSupport.ensureExecutionRecord(
-            for: task,
-            occurrenceDate: occurrenceDate,
-            existingExecutions: storedExecutionRecords(),
-            modelContext: modelContext
-        )
-        preferredExecutionRecordID = record.id
-        return record
-    }
-
-    private func occurrenceSubtasks(forExecutionID executionID: UUID) -> [TaskSubitem] {
-        let descriptor = FetchDescriptor<TaskSubitem>(
-            predicate: #Predicate { subtask in
-                subtask.taskExecutionIDRawValue == executionID.uuidString && subtask.isArchived == false
-            },
-            sortBy: [
-                SortDescriptor(\TaskSubitem.sortOrder),
-                SortDescriptor(\TaskSubitem.createdAt)
-            ]
-        )
-
-        if let fetched = try? modelContext.fetch(descriptor), !fetched.isEmpty {
-            return fetched
-        }
-
-        return allSubtasks
-            .filter { $0.taskExecutionID == executionID && !$0.isArchived }
-            .sorted {
-                if $0.sortOrder == $1.sortOrder {
-                    return $0.createdAt < $1.createdAt
-                }
-                return $0.sortOrder < $1.sortOrder
-            }
-    }
-
-    private func openEditSubtaskEditor(_ subtask: TaskSubitem) {
-        subtaskTitleDraft = subtask.title
-        subtaskNoteDraft = subtask.note
-        subtaskDetailDraft = subtask.detail
-        subtaskCompletedDraft = subtask.status == .completed
-        subtaskEditorTarget = SubtaskEditorTarget(subtaskID: subtask.id)
-    }
+    private func refreshParentDetailDraft() { parentDetailDraft = selectedSnapshot?.executionDetail ?? "" }
 
     private func saveParentDetail() {
-        guard let currentOccurrenceDate else { return }
+        guard let date = currentOccurrenceDate else { return }
+        let tid = task.id
+        let container = modelContext.container
+        let noteDraft = parentDetailDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        Task.detached(priority: .utility) {
+            let ctx = ModelContext(container)
+            // 后台获取或创建 record
+            let ed = FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.taskID == tid })
+            let recs = (try? ctx.fetch(ed)) ?? []
+            let record = TaskExecutionSupport.ensureExecutionRecord(for: (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))!.first!, occurrenceDate: date, existingExecutions: recs, modelContext: ctx)
+            
+            record.detail = noteDraft
+            record.updatedAt = .now
+            
+            let allS = (try? ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))) ?? []
+            TaskExecutionSupport.syncExecutionStatus(record: record, task: (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))!.first!, subtasks: allS)
+            
+            try? ctx.save()
+            await MainActor.run {
+                NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
+            }
+        }
+    }
 
-        let trimmed = parentDetailDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || currentExecutionRecord != nil else { return }
 
-        let record = ensureCurrentExecutionRecord(for: currentOccurrenceDate)
-        record.detail = trimmed
-        record.updatedAt = .now
-        TaskExecutionSupport.syncExecutionStatus(
-            record: record,
-            task: task,
-            subtasks: allSubtasks
-        )
-        guard saveModelContext() else { return }
+
+    private func toggleSubtaskCompletion(_ subtask: TaskSubitemProjection) {
+        guard !isCurrentOccurrenceFuture, let date = currentOccurrenceDate else { return }
+        
+        let targetSID = subtask.id
+        let targetStatus: TaskExecutionStatus = (subtask.status == .completed) ? .pending : .completed
+        let targetCompletedAt: Date? = (targetStatus == .completed) ? .now : nil
+        
+        // 1. UI 立即响应投影数据变化（Optimistic UI）
+        withAnimation(.easeInOut(duration: 0.12)) {
+            if let idx = currentOccurrenceSubtasks.firstIndex(where: { $0.id == targetSID }) {
+               var updated = currentOccurrenceSubtasks[idx]
+               updated.status = targetStatus
+               currentOccurrenceSubtasks[idx] = updated
+            }
+        }
+        
+        let tid = task.id
+        let container = modelContext.container
+        
+        // 2. 后台强同步真正的模型
+        Task.detached(priority: .userInitiated) {
+            let ctx = ModelContext(container)
+            do {
+                guard let t = (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))?.first else { return }
+                let allRecs = (try? ctx.fetch(FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.taskID == tid }))) ?? []
+                let record = TaskExecutionSupport.ensureExecutionRecord(for: t, occurrenceDate: date, existingExecutions: allRecs, modelContext: ctx)
+                
+                let allS = (try? ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))) ?? []
+                
+                if let targetS = allS.first(where: { $0.id == targetSID }) {
+                    targetS.status = targetStatus
+                    targetS.completedAt = targetCompletedAt
+                    targetS.updatedAt = .now
+                    
+                    // 关键：如果子任务以前没关联这个 record（比如刚从旧模板迁移），在这里关联上
+                    if targetS.taskExecutionID == nil {
+                        targetS.taskExecutionID = record.id
+                    }
+                }
+                
+                // 同步 execution 状态
+                TaskExecutionSupport.syncExecutionStatus(record: record, task: t, subtasks: allS)
+                
+                try? ctx.save()
+                
+                await MainActor.run {
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
+                }
+            } catch {
+                print("Toggle subtask background sync failed: \(error)")
+            }
+        }
     }
 
     private func startQuickSubtaskCreation() {
-        guard !isCreatingSubtask else { return }
-        withAnimation(.easeInOut(duration: 0.2)) {
-            isCreatingSubtask = true
-        }
-        quickSubtaskOccurrenceDate = currentOccurrenceDate
-        quickSubtaskTitleDraft = ""
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            quickSubtaskFieldFocused = true
-        }
+        isCreatingSubtask = true
+        quickSubtaskFieldFocused = true
     }
 
     private func cancelQuickSubtaskCreation() {
-        quickSubtaskFieldFocused = false
+        isCreatingSubtask = false
         quickSubtaskTitleDraft = ""
-        quickSubtaskOccurrenceDate = nil
-        withAnimation(.easeInOut(duration: 0.2)) {
-            isCreatingSubtask = false
-        }
     }
 
     private func saveQuickSubtask() {
-        guard let occurrenceDate = quickSubtaskOccurrenceDate ?? currentOccurrenceDate else { return }
-        let trimmedTitle = quickSubtaskTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTitle.isEmpty else { return }
-
-        let executionRecord = ensureCurrentExecutionRecord(for: occurrenceDate)
-
-        let trimmedDetail = parentDetailDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedDetail.isEmpty {
-            executionRecord.detail = trimmedDetail
-            executionRecord.updatedAt = .now
+        guard let date = currentOccurrenceDate, !quickSubtaskTitleDraft.isEmpty else { return }
+        let tid = task.id
+        let container = modelContext.container
+        let titleDraft = quickSubtaskTitleDraft
+        
+        Task.detached(priority: .userInitiated) {
+            let ctx = ModelContext(container)
+            // 找当前 task 和 record
+            guard let task = (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))?.first else { return }
+            let ed = FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.taskID == tid })
+            let recs = (try? ctx.fetch(ed)) ?? []
+            let record = TaskExecutionSupport.ensureExecutionRecord(for: task, occurrenceDate: date, existingExecutions: recs, modelContext: ctx)
+            
+            // 下发子任务
+            let allS = (try? ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))) ?? []
+            let occurrenceS = allS.filter { $0.taskExecutionID == record.id && !$0.isArchived }
+            
+            let newSub = TaskSubitem(
+                parentTaskID: tid,
+                taskExecutionID: record.id,
+                title: titleDraft,
+                note: "",
+                detail: "",
+                status: .pending,
+                sortOrder: occurrenceS.count
+            )
+            ctx.insert(newSub)
+            
+            // 同步状态并存储
+            let updatedAllS = allS + [newSub]
+            TaskExecutionSupport.syncExecutionStatus(record: record, task: task, subtasks: updatedAllS)
+            
+            try? ctx.save()
+            await MainActor.run {
+                NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
+            }
         }
-
-        selectedOccurrenceDate = occurrenceDate
-
-        let newSubtask = TaskSubitem(
-            parentTaskID: task.id,
-            taskExecutionID: executionRecord.id,
-            title: trimmedTitle,
-            note: "",
-            detail: "",
-            status: .pending,
-            sortOrder: currentOccurrenceSubtasks.count,
-            isArchived: false
-        )
-        modelContext.insert(newSubtask)
-
-        TaskExecutionSupport.syncExecutionStatus(
-            record: executionRecord,
-            task: task,
-            subtasks: allSubtasks + [newSubtask]
-        )
-
-        preferredExecutionRecordID = executionRecord.id
-        guard saveModelContext() else { return }
-
-        // Clear title but keep row open to allow adding more subtasks
+        
         quickSubtaskTitleDraft = ""
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            quickSubtaskFieldFocused = true
+        isCreatingSubtask = false
+    }
+
+    private func openEditSubtaskEditor(subtaskID: UUID) {
+        // 先找到对应的投影来初始化编辑器状态（草图相关可以暂时放在主线程）
+        if let proj = allSubtasks.first(where: { $0.id == subtaskID }) {
+            subtaskTitleDraft = proj.title
+            subtaskNoteDraft = proj.note
+            subtaskDetailDraft = proj.detail
+            subtaskCompletedDraft = proj.status == .completed
+            subtaskEditorTarget = SubtaskEditorTarget(subtaskID: subtaskID)
         }
     }
 
     private func saveSubtaskEditor(_ target: SubtaskEditorTarget) {
-        guard let currentOccurrenceDate else { return }
-        let trimmedTitle = subtaskTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTitle.isEmpty else { return }
-
-        // Ensure execution record first, reuse it for both detail and subtask
-        let executionRecord = ensureCurrentExecutionRecord(for: currentOccurrenceDate)
-
-        // Save parent detail onto the same record
-        let trimmedDetail = parentDetailDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedDetail.isEmpty {
-            executionRecord.detail = trimmedDetail
-            executionRecord.updatedAt = .now
+        guard let sid = target.subtaskID else { return }
+        let tid = task.id
+        let container = modelContext.container
+        let (title, note, detail, isCompleted) = (subtaskTitleDraft, subtaskNoteDraft, subtaskDetailDraft, subtaskCompletedDraft)
+        
+        Task.detached(priority: .utility) {
+            let ctx = ModelContext(container)
+            let descriptor = FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.id == sid })
+            if let sub = (try? ctx.fetch(descriptor))?.first {
+                sub.title = title
+                sub.note = note
+                sub.detail = detail
+                sub.status = isCompleted ? .completed : .pending
+                sub.completedAt = isCompleted ? .now : nil
+                sub.updatedAt = .now
+                
+                // 给 execution 同步
+                if let rid = sub.taskExecutionID {
+                    let er = (try? ctx.fetch(FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.id == rid })))?.first
+                    let t = (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))?.first
+                    let allS = (try? ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))) ?? []
+                    if let er, let t {
+                        TaskExecutionSupport.syncExecutionStatus(record: er, task: t, subtasks: allS)
+                    }
+                }
+                
+                try? ctx.save()
+                await MainActor.run {
+                    NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
+                }
+            }
         }
-
-        let status: TaskExecutionStatus = (isCurrentOccurrenceFuture || !subtaskCompletedDraft) ? .pending : .completed
-        let completedAt: Date? = status == .completed ? .now : nil
-
-        let affectedSubtask: TaskSubitem
-        if let subtaskID = target.subtaskID,
-           let existingSubtask = allSubtasks.first(where: { $0.id == subtaskID }) {
-            existingSubtask.title = trimmedTitle
-            existingSubtask.note = subtaskNoteDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-            existingSubtask.detail = subtaskDetailDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-            existingSubtask.status = status
-            existingSubtask.completedAt = completedAt
-            existingSubtask.updatedAt = .now
-            affectedSubtask = existingSubtask
-        } else {
-            let newSubtask = TaskSubitem(
-                parentTaskID: task.id,
-                taskExecutionID: executionRecord.id,
-                title: trimmedTitle,
-                note: subtaskNoteDraft.trimmingCharacters(in: .whitespacesAndNewlines),
-                detail: subtaskDetailDraft.trimmingCharacters(in: .whitespacesAndNewlines),
-                status: status,
-                sortOrder: currentOccurrenceSubtasks.count,
-                isArchived: false,
-                completedAt: completedAt
-            )
-            modelContext.insert(newSubtask)
-            affectedSubtask = newSubtask
-        }
-
-        TaskExecutionSupport.syncExecutionStatus(
-            record: executionRecord,
-            task: task,
-            subtasks: allSubtasks.filter { $0.id != affectedSubtask.id } + [affectedSubtask]
-        )
-        guard saveModelContext() else { return }
         subtaskEditorTarget = nil
     }
 
-    private func toggleSubtaskCompletion(_ subtask: TaskSubitem) {
-        guard !isCurrentOccurrenceFuture else { return }
-        guard let currentExecutionRecord else { return }
-
-        saveParentDetail()
-
-        let shouldComplete = subtask.status != .completed
-        subtask.status = shouldComplete ? .completed : .pending
-        subtask.completedAt = shouldComplete ? (subtask.completedAt ?? .now) : nil
-        subtask.updatedAt = .now
-
-        TaskExecutionSupport.syncExecutionStatus(
-            record: currentExecutionRecord,
-            task: task,
-            subtasks: allSubtasks
-        )
-        _ = saveModelContext()
-    }
-
-    private func deleteSubtask(_ subtask: TaskSubitem) {
-        let executionRecord = currentExecutionRecord
-        modelContext.delete(subtask)
-        resequenceCurrentOccurrenceSubtasks(excluding: subtask.id)
-
-        if let executionRecord {
-            TaskExecutionSupport.syncExecutionStatus(
-                record: executionRecord,
-                task: task,
-                subtasks: allSubtasks.filter { $0.id != subtask.id }
-            )
+    private func deleteSubtask(_ sub: TaskSubitemProjection) {
+        let sid = sub.id
+        let tid = task.id
+        let container = modelContext.container
+        
+        Task.detached(priority: .utility) {
+            let ctx = ModelContext(container)
+            let descriptor = FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.id == sid })
+            if let target = (try? ctx.fetch(descriptor))?.first {
+                // 如果有关联的执行记录，同步一下状态
+                let rid = target.taskExecutionID
+                ctx.delete(target)
+                
+                if let rid {
+                    let er = (try? ctx.fetch(FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.id == rid })))?.first
+                    let t = (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))?.first
+                    let allS = (try? ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))) ?? []
+                    if let er, let t {
+                        TaskExecutionSupport.syncExecutionStatus(record: er, task: t, subtasks: allS)
+                    }
+                }
+                
+                try? ctx.save()
+                await MainActor.run {
+                    NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
+                }
+            }
         }
-
-        _ = saveModelContext()
-    }
-
-    private func moveSubtaskUp(_ subtask: TaskSubitem) {
-        guard let index = currentOccurrenceSubtasks.firstIndex(where: { $0.id == subtask.id }), index > 0 else { return }
-        let previous = currentOccurrenceSubtasks[index - 1]
-        swap(&subtask.sortOrder, &previous.sortOrder)
-        subtask.updatedAt = .now
-        previous.updatedAt = .now
-        _ = saveModelContext(reloadWidgets: false)
-    }
-
-    private func moveSubtaskDown(_ subtask: TaskSubitem) {
-        guard let index = currentOccurrenceSubtasks.firstIndex(where: { $0.id == subtask.id }),
-              index < currentOccurrenceSubtasks.count - 1 else { return }
-        let next = currentOccurrenceSubtasks[index + 1]
-        swap(&subtask.sortOrder, &next.sortOrder)
-        subtask.updatedAt = .now
-        next.updatedAt = .now
-        _ = saveModelContext(reloadWidgets: false)
-    }
-
-    private func resequenceCurrentOccurrenceSubtasks(excluding subtaskID: UUID) {
-        let remaining = currentOccurrenceSubtasks.filter { $0.id != subtaskID }
-        for (index, item) in remaining.enumerated() {
-            item.sortOrder = index
-            item.updatedAt = .now
-        }
-    }
-
-    private func isFirstSubtask(_ subtask: TaskSubitem) -> Bool {
-        currentOccurrenceSubtasks.first?.id == subtask.id
-    }
-
-    private func isLastSubtask(_ subtask: TaskSubitem) -> Bool {
-        currentOccurrenceSubtasks.last?.id == subtask.id
     }
 
     private func toggleOccurrenceCompletion(_ snapshot: TaskOccurrenceSnapshot) {
-        if snapshot.isCompleted {
-            TaskExecutionSupport.reopenTaskCompletion(
-                task: task,
-                occurrenceDate: snapshot.occurrenceDate,
-                existingExecutions: executionRecords,
-                modelContext: modelContext
-            )
-        } else {
-            TaskExecutionSupport.markTaskCompleted(
-                task: task,
-                occurrenceDate: snapshot.occurrenceDate,
-                existingExecutions: executionRecords,
-                modelContext: modelContext
+        guard !isFutureOccurrence(snapshot) else { return }
+        
+        // 1. 主线程 UI 抢跑：直接修改本地内存快照状态以实现瞬时反馈
+        let isReopening = snapshot.isCompleted
+        let occurrenceDate = snapshot.occurrenceDate
+        
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+            // 在内存中移动快照，让用户立刻看到圆圈变色
+            var nextPending = occurrenceSnapshotState.pending
+            var nextCompleted = occurrenceSnapshotState.completed
+            
+            if isReopening {
+                // 已完成 -> 待处理
+                if let idx = nextCompleted.firstIndex(where: { Calendar.current.isDate($0.occurrenceDate, inSameDayAs: occurrenceDate) }) {
+                    var item = nextCompleted.remove(at: idx)
+                    item.isCompleted = false
+                    nextPending.append(item)
+                    nextPending.sort { $0.occurrenceDate < $1.occurrenceDate }
+                }
+            } else {
+                // 待处理 -> 已完成
+                if let idx = nextPending.firstIndex(where: { Calendar.current.isDate($0.occurrenceDate, inSameDayAs: occurrenceDate) }) {
+                    var item = nextPending.remove(at: idx)
+                    item.isCompleted = true
+                    nextCompleted.append(item)
+                    nextCompleted.sort { $0.occurrenceDate > $1.occurrenceDate }
+                }
+            }
+            
+            occurrenceSnapshotState = OccurrenceSnapshotState(
+                pending: nextPending,
+                completed: nextCompleted,
+                upcoming: occurrenceSnapshotState.upcoming
             )
         }
-
-        _ = saveModelContext()
-        refreshParentDetailDraft()
-    }
-
-    @discardableResult
-    private func saveModelContext(reloadWidgets: Bool = true) -> Bool {
-        do {
-            try modelContext.save()
-            if reloadWidgets {
-                WidgetCenter.shared.reloadAllTimelines()
+        
+        let tid = task.id
+        let container = modelContext.container
+        
+        // 2. 将沉重的业务逻辑推到后台执行真正的存盘
+        Task.detached(priority: .userInitiated) {
+            let ctx = ModelContext(container)
+            // ... (后台逻辑保持不变)
+            let bgTask = (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))?.first
+            let bgExecutions = (try? ctx.fetch(FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.taskID == tid }))) ?? []
+            
+            guard let validTask = bgTask else { return }
+            
+            if isReopening {
+                TaskExecutionSupport.reopenTaskCompletion(task: validTask, occurrenceDate: occurrenceDate, existingExecutions: bgExecutions, modelContext: ctx)
+            } else {
+                TaskExecutionSupport.markTaskCompleted(task: validTask, occurrenceDate: occurrenceDate, existingExecutions: bgExecutions, modelContext: ctx)
             }
-            return true
-        } catch {
-            persistenceErrorMessage = error.localizedDescription
-            return false
+            
+            try? ctx.save()
+            
+            await MainActor.run {
+                NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
+            }
         }
     }
 }
-

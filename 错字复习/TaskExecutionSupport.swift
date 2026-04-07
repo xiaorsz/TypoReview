@@ -24,6 +24,18 @@ struct TaskProjection: Sendable {
         skipPolicy = task.skipPolicy
     }
 
+    // 后台上下文安全的构造器
+    init?(id: UUID, context: ModelContext) {
+        let descriptor = FetchDescriptor<TaskItem>(predicate: #Predicate<TaskItem> { $0.id == id })
+        guard let task = (try? context.fetch(descriptor))?.first else { return nil }
+        self.id = task.id
+        self.createdAt = task.createdAt
+        self.startDate = task.startDate
+        self.endDate = task.endDate
+        self.recurrence = task.recurrence
+        self.skipPolicy = task.skipPolicy
+    }
+
     func originText(for pendingDate: Date, relativeTo date: Date) -> String {
         let calendar = Calendar.current
         let targetDay = calendar.startOfDay(for: date)
@@ -75,18 +87,28 @@ struct TaskProjection: Sendable {
     }
 }
 
-struct TaskSubitemProjection: Sendable {
+struct TaskSubitemProjection: Identifiable, Sendable {
+    let id: UUID
     let parentTaskID: UUID
     let taskExecutionID: UUID?
-    let status: TaskExecutionStatus
+    let title: String
+    let note: String
+    let detail: String
+    var status: TaskExecutionStatus
     let sortOrder: Int
+    let isArchived: Bool
     let createdAt: Date
 
     init(_ subtask: TaskSubitem) {
+        id = subtask.id
         parentTaskID = subtask.parentTaskID
         taskExecutionID = subtask.taskExecutionID
+        title = subtask.title
+        note = subtask.note
+        detail = subtask.detail
         status = subtask.status
         sortOrder = subtask.sortOrder
+        isArchived = subtask.isArchived
         createdAt = subtask.createdAt
     }
 }
@@ -95,12 +117,14 @@ struct TaskExecutionRecordProjection: Sendable {
     let id: UUID
     let taskID: UUID
     let occurrenceDate: Date
+    let detail: String
     let status: TaskExecutionStatus
 
     init(_ record: TaskExecutionRecord) {
         id = record.id
         taskID = record.taskID
         occurrenceDate = record.occurrenceDate
+        detail = record.detail
         status = record.status
     }
 }
@@ -138,7 +162,7 @@ struct TodayTaskDisplayItem: Identifiable, Equatable {
     }
 
     var id: String {
-        "\(task.id.uuidString)-\(section)-\(occurrenceDate.timeIntervalSince1970)"
+        "\(task.id.uuidString)-\(occurrenceDate.timeIntervalSince1970)"
     }
 
     var hasSubtasks: Bool {
@@ -156,17 +180,19 @@ struct TodayTaskDisplayItem: Identifiable, Equatable {
     }
 }
 
-struct TaskOccurrenceSnapshot: Identifiable {
-    let task: TaskItem
+struct TaskOccurrenceSnapshot: Identifiable, Sendable {
+    let taskID: UUID
     let occurrenceDate: Date
-    let isCompleted: Bool
+    var isCompleted: Bool
     let overdueOriginText: String?
-    let executionRecord: TaskExecutionRecord?
+    let executionRecordID: UUID?
+    let executionDetail: String
+    let hasDetail: Bool
     let totalSubtaskCount: Int
     let completedSubtaskCount: Int
 
     var id: String {
-        "\(task.id.uuidString)-\(occurrenceDate.timeIntervalSince1970)-\(isCompleted)"
+        "\(taskID.uuidString)-\(occurrenceDate.timeIntervalSince1970)-\(isCompleted)"
     }
 
     var hasSubtasks: Bool {
@@ -262,15 +288,29 @@ enum TaskExecutionSupport {
         let calendar = Calendar.current
         let today = day(for: date)
 
+        // 优化：使用字典分组，完全避免在循环内访问 SwiftData PersistentModel 导致的 CoreData 锁
+        let taskExecutions = executions.filter { $0.taskID == task.id }
+        let executionsByDate = Dictionary(grouping: taskExecutions) { day(for: $0.occurrenceDate) }
+        
+        let validSubtasks = allSubtasks.filter { $0.parentTaskID == task.id && $0.taskExecutionID != nil && !$0.isArchived }
+        let subtasksByExecutionID = Dictionary(grouping: validSubtasks) { $0.taskExecutionID! }
+
         return task.scheduledOccurrenceDates(upTo: date).compactMap { occurrenceDate in
-            let record = executionRecord(for: task.id, on: occurrenceDate, in: executions)
-            let completed = isOccurrenceCompleted(
-                task: task,
-                occurrenceDate: occurrenceDate,
-                executions: executions,
-                subtasks: allSubtasks,
-                subtaskExecutions: subtaskExecutions
-            )
+            let dateKey = day(for: occurrenceDate)
+            let record = executionsByDate[dateKey]?.first
+
+            // O(1) 获取子任务，避免 O(M) 次读取数据库对象属性
+            let occurrenceSubtasks: [TaskSubitem] = {
+                guard let executionID = record?.id else { return [] }
+                return (subtasksByExecutionID[executionID] ?? []).sorted(by: sortSubtasks)
+            }()
+            
+            let completed: Bool
+            if occurrenceSubtasks.isEmpty {
+                completed = record?.status == .completed
+            } else {
+                completed = occurrenceSubtasks.allSatisfy { $0.status == .completed }
+            }
 
             if !completed &&
                 task.skipPolicy == .skippable &&
@@ -279,23 +319,82 @@ enum TaskExecutionSupport {
                 return nil
             }
 
-            let progress = subtaskProgress(
-                for: record,
-                in: allSubtasks
-            )
+            let completedSubtasksCount = occurrenceSubtasks.filter { $0.status == .completed }.count
+
             let overdueOriginText: String? = {
                 guard task.skipPolicy == .unskippable, occurrenceDate < today else { return nil }
                 return task.originText(for: occurrenceDate, relativeTo: today)
             }()
 
             return TaskOccurrenceSnapshot(
-                task: task,
+                taskID: task.id,
                 occurrenceDate: occurrenceDate,
                 isCompleted: completed,
                 overdueOriginText: completed ? nil : overdueOriginText,
-                executionRecord: record,
-                totalSubtaskCount: progress.total,
-                completedSubtaskCount: progress.completed
+                executionRecordID: record?.id,
+                executionDetail: record?.detail ?? "",
+                hasDetail: recordHasDetail(record) || occurrenceSubtasks.contains(where: subtaskHasDetail),
+                totalSubtaskCount: occurrenceSubtasks.count,
+                completedSubtaskCount: completedSubtasksCount
+            )
+        }
+    }
+
+    static func occurrenceSnapshots(
+        for task: TaskProjection,
+        executions: [TaskExecutionRecordProjection],
+        subtasks allSubtasks: [TaskSubitemProjection],
+        on date: Date = .now
+    ) -> [TaskOccurrenceSnapshot] {
+        let calendar = Calendar.current
+        let today = day(for: date)
+        let taskExecutions = executions.filter { $0.taskID == task.id }
+        let executionsByDate = Dictionary(grouping: taskExecutions) { day(for: $0.occurrenceDate) }
+        let validSubtasks = allSubtasks.filter {
+            $0.parentTaskID == task.id &&
+            $0.taskExecutionID != nil &&
+            !$0.isArchived
+        }
+        let subtasksByExecutionID = Dictionary(grouping: validSubtasks) { $0.taskExecutionID! }
+
+        return task.scheduledOccurrenceDates(upTo: date).compactMap { occurrenceDate in
+            let dateKey = day(for: occurrenceDate)
+            let record = executionsByDate[dateKey]?.first
+            let occurrenceSubtasks: [TaskSubitemProjection] = {
+                guard let executionID = record?.id else { return [] }
+                return (subtasksByExecutionID[executionID] ?? []).sorted(by: sortSubtasks)
+            }()
+
+            let completed: Bool
+            if occurrenceSubtasks.isEmpty {
+                completed = record?.status == .completed
+            } else {
+                completed = occurrenceSubtasks.allSatisfy { $0.status == .completed }
+            }
+
+            if !completed &&
+                task.skipPolicy == .skippable &&
+                !calendar.isDate(occurrenceDate, inSameDayAs: today) &&
+                record == nil {
+                return nil
+            }
+
+            let completedSubtasksCount = occurrenceSubtasks.filter { $0.status == .completed }.count
+            let overdueOriginText: String? = {
+                guard task.skipPolicy == .unskippable, occurrenceDate < today else { return nil }
+                return task.originText(for: occurrenceDate, relativeTo: today)
+            }()
+
+            return TaskOccurrenceSnapshot(
+                taskID: task.id,
+                occurrenceDate: occurrenceDate,
+                isCompleted: completed,
+                overdueOriginText: completed ? nil : overdueOriginText,
+                executionRecordID: record?.id,
+                executionDetail: record?.detail ?? "",
+                hasDetail: recordHasDetail(record) || occurrenceSubtasks.contains(where: subtaskHasDetail),
+                totalSubtaskCount: occurrenceSubtasks.count,
+                completedSubtaskCount: completedSubtasksCount
             )
         }
     }
@@ -309,12 +408,18 @@ enum TaskExecutionSupport {
     ) -> [TodayTaskDisplayItem] {
         let calendar = Calendar.current
         let today = day(for: date)
+        
+        // --- 核心性能优化：在任务百日大循环之外，一次性将全库的记录按照 taskID 切分好！
+        // 从而彻底防止内部每次检查 task.id 而导致读取 CoreData PersistentModel 发生锁耗时（会导致 Watchdog）
+        let validSubtasks = subtasks.filter { !$0.isArchived }
+        let subtasksByTask = Dictionary(grouping: validSubtasks, by: \.parentTaskID)
+        let executionsByTask = Dictionary(grouping: executions, by: \.taskID)
 
         return tasks.flatMap { task -> [TodayTaskDisplayItem] in
             let snapshots = occurrenceSnapshots(
                 for: task,
-                executions: executions,
-                subtasks: subtasks,
+                executions: executionsByTask[task.id] ?? [],
+                subtasks: subtasksByTask[task.id] ?? [],
                 subtaskExecutions: subtaskExecutions,
                 on: date
             )
@@ -573,6 +678,31 @@ enum TaskExecutionSupport {
         }
         return lhs.sortOrder < rhs.sortOrder
     }
+
+    private static func sortSubtasks(_ lhs: TaskSubitemProjection, _ rhs: TaskSubitemProjection) -> Bool {
+        if lhs.sortOrder == rhs.sortOrder {
+            return lhs.createdAt < rhs.createdAt
+        }
+        return lhs.sortOrder < rhs.sortOrder
+    }
+
+    private static func recordHasDetail(_ record: TaskExecutionRecord?) -> Bool {
+        record?.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    private static func recordHasDetail(_ record: TaskExecutionRecordProjection?) -> Bool {
+        record?.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    private static func subtaskHasDetail(_ subtask: TaskSubitem) -> Bool {
+        !subtask.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+        !subtask.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private static func subtaskHasDetail(_ subtask: TaskSubitemProjection) -> Bool {
+        !subtask.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+        !subtask.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 }
 
 enum TodayTaskListBuilder {
@@ -629,11 +759,14 @@ enum TodayTaskProjectionBuilder {
         let calendar = Calendar.current
         let today = Calendar.current.startOfDay(for: date)
 
+        let executionsByTask = Dictionary(grouping: executions, by: \.taskID)
+        let subtasksByTask = Dictionary(grouping: subtasks, by: \.parentTaskID)
+
         return tasks.flatMap { task -> [TodayTaskProjectionResult] in
             let snapshots = occurrenceSnapshots(
                 for: task,
-                executions: executions,
-                subtasks: subtasks,
+                executions: executionsByTask[task.id] ?? [],
+                subtasks: subtasksByTask[task.id] ?? [],
                 on: date
             )
             let pendingCount = snapshots.filter { !$0.isCompleted }.count
@@ -691,14 +824,32 @@ enum TodayTaskProjectionBuilder {
         let calendar = Calendar.current
         let today = Calendar.current.startOfDay(for: date)
 
+        // 优化：使用字典分组，避免 O(N*M) 性能问题和属性读取阻塞
+        let taskExecutions = executions.filter { $0.taskID == task.id }
+        let executionsByDate = Dictionary(grouping: taskExecutions) { Calendar.current.startOfDay(for: $0.occurrenceDate) }
+
+        let validSubtasks = subtasks.filter {
+            $0.parentTaskID == task.id &&
+            $0.taskExecutionID != nil &&
+            !$0.isArchived
+        }
+        let subtasksByExecutionID = Dictionary(grouping: validSubtasks) { $0.taskExecutionID! }
+
         return task.scheduledOccurrenceDates(upTo: date).compactMap { occurrenceDate in
-            let record = executionRecord(for: task.id, on: occurrenceDate, in: executions)
-            let completed = isOccurrenceCompleted(
-                task: task,
-                occurrenceDate: occurrenceDate,
-                executions: executions,
-                subtasks: subtasks
-            )
+            let dateKey = Calendar.current.startOfDay(for: occurrenceDate)
+            let record = executionsByDate[dateKey]?.first
+            
+            let occurrenceSubtasks: [TaskSubitemProjection] = {
+                guard let executionID = record?.id else { return [] }
+                return (subtasksByExecutionID[executionID] ?? []).sorted(by: sortSubtasks)
+            }()
+            
+            let completed: Bool
+            if occurrenceSubtasks.isEmpty {
+                completed = record?.status == .completed
+            } else {
+                completed = occurrenceSubtasks.allSatisfy { $0.status == .completed }
+            }
 
             if !completed &&
                 task.skipPolicy == .skippable &&
@@ -707,10 +858,8 @@ enum TodayTaskProjectionBuilder {
                 return nil
             }
 
-            let progress = subtaskProgress(
-                for: record,
-                in: subtasks
-            )
+            let completedSubtasksCount = occurrenceSubtasks.filter { $0.status == .completed }.count
+
             let overdueOriginText: String? = {
                 guard task.skipPolicy == .unskippable, occurrenceDate < today else { return nil }
                 return task.originText(for: occurrenceDate, relativeTo: today)
@@ -722,8 +871,8 @@ enum TodayTaskProjectionBuilder {
                 occurrenceDate: occurrenceDate,
                 isCompleted: completed,
                 overdueOriginText: completed ? nil : overdueOriginText,
-                totalSubtaskCount: progress.total,
-                completedSubtaskCount: progress.completed
+                totalSubtaskCount: occurrenceSubtasks.count,
+                completedSubtaskCount: completedSubtasksCount
             )
         }
     }
