@@ -19,10 +19,18 @@ struct TasksView: View {
     @State private var isViewVisible = false
     @State private var isSnapshotRefreshInFlight = false
     @State private var needsSnapshotRefreshAfterCurrent = false
+    @State private var activeAddRoute: AddRoute?
 
     private struct TaskDetailRoute: Hashable {
         let taskID: UUID
         let title: String
+    }
+
+    private enum AddRoute: String, Identifiable {
+        case task
+        case schedule
+
+        var id: String { rawValue }
     }
 
     private var canRenderLiveContent: Bool {
@@ -61,15 +69,9 @@ struct TasksView: View {
             .filter { $0.section == .todayDone }
     }
 
-    private var todayTaskIds: Set<UUID> {
-        Set(todayTasksSnapshot.map(\.task.id))
-    }
-
-
-
-    private var otherTasks: [TaskItem] {
+    private var allTasks: [TaskItem] {
         guard canRenderLiveContent else { return [] }
-        return activeTasks.filter { !todayTaskIds.contains($0.id) }
+        return activeTasks
     }
 
     private var todaySchedules: [ScheduleItem] {
@@ -133,6 +135,14 @@ struct TasksView: View {
             .navigationDestination(for: TaskDetailRoute.self) { route in
                 DeferredTaskDetailView(route: route)
             }
+            .navigationDestination(item: $activeAddRoute) { route in
+                switch route {
+                case .task:
+                    AddTaskView()
+                case .schedule:
+                    AddScheduleView()
+                }
+            }
             .onDisappear {
                 isViewVisible = false
                 #if DEBUG
@@ -192,8 +202,8 @@ struct TasksView: View {
             todayTaskSection("今日已完成", items: todayDone)
         }
 
-        if !otherTasks.isEmpty {
-            otherTaskSection("其它任务", tasks: otherTasks)
+        if !allTasks.isEmpty {
+            otherTaskSection("所有任务", tasks: allTasks)
         }
 
         if !otherSchedules.isEmpty {
@@ -248,17 +258,19 @@ struct TasksView: View {
             }
         } else {
             HStack(spacing: 14) {
-                NavigationLink {
-                    AddTaskView()
+                Button {
+                    activeAddRoute = .task
                 } label: {
                     Image(systemName: "checklist")
                 }
+                .buttonStyle(.plain)
 
-                NavigationLink {
-                    AddScheduleView()
+                Button {
+                    activeAddRoute = .schedule
                 } label: {
                     Image(systemName: "calendar.badge.plus")
                 }
+                .buttonStyle(.plain)
             }
         }
     }

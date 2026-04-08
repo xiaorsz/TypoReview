@@ -142,12 +142,21 @@ struct RootTabView: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         NavigationStack {
-            content()
-                .onAppear {
-                    #if DEBUG
-                    DebugPerf.mark("RootTabView legacy tab content appear \(tab)")
-                    #endif
-                }
+            if selectedLegacyTab == tab {
+                content()
+                    .onAppear {
+                        #if DEBUG
+                        DebugPerf.mark("RootTabView legacy tab content appear \(tab)")
+                        #endif
+                    }
+            } else {
+                Color.clear
+                    .onAppear {
+                        #if DEBUG
+                        DebugPerf.mark("RootTabView legacy tab placeholder appear \(tab)")
+                        #endif
+                    }
+            }
         }
     }
 
