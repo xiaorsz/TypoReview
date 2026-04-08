@@ -4,11 +4,14 @@ import SwiftData
 enum TodayTaskDisplaySection: Sendable {
     case todayPending
     case historicalPending
+    case upcomingPending
     case todayDone
 }
 
 struct TaskProjection: Sendable {
     let id: UUID
+    let title: String
+    let note: String
     let createdAt: Date
     let startDate: Date
     let endDate: Date?
@@ -17,6 +20,8 @@ struct TaskProjection: Sendable {
 
     init(_ task: TaskItem) {
         id = task.id
+        title = task.title
+        note = task.note
         createdAt = task.createdAt
         startDate = task.startDate
         endDate = task.endDate
@@ -24,11 +29,33 @@ struct TaskProjection: Sendable {
         skipPolicy = task.skipPolicy
     }
 
+    init(
+        id: UUID,
+        title: String,
+        note: String = "",
+        createdAt: Date = .now,
+        startDate: Date = .now,
+        endDate: Date? = nil,
+        recurrence: TaskRecurrence = .once,
+        skipPolicy: TaskSkipPolicy = .skippable
+    ) {
+        self.id = id
+        self.title = title
+        self.note = note
+        self.createdAt = createdAt
+        self.startDate = startDate
+        self.endDate = endDate
+        self.recurrence = recurrence
+        self.skipPolicy = skipPolicy
+    }
+
     // 后台上下文安全的构造器
     init?(id: UUID, context: ModelContext) {
         let descriptor = FetchDescriptor<TaskItem>(predicate: #Predicate<TaskItem> { $0.id == id })
         guard let task = (try? context.fetch(descriptor))?.first else { return nil }
         self.id = task.id
+        self.title = task.title
+        self.note = task.note
         self.createdAt = task.createdAt
         self.startDate = task.startDate
         self.endDate = task.endDate
@@ -84,6 +111,53 @@ struct TaskProjection: Sendable {
     private var effectiveEndDay: Date? {
         guard let endDate else { return nil }
         return Calendar.current.startOfDay(for: endDate)
+    }
+
+    var effectiveDateRangeLabel: String? {
+        guard recurrence.kind != .once, let effectiveEndDay else { return nil }
+
+        let calendar = Calendar.current
+        let startDay = calendar.startOfDay(for: startDate)
+        if calendar.isDate(startDay, equalTo: effectiveEndDay, toGranularity: .year) {
+            return "\(startDay.formatted(.dateTime.month().day())) - \(effectiveEndDay.formatted(.dateTime.month().day()))"
+        }
+        return "\(startDay.formatted(.dateTime.year().month().day())) - \(effectiveEndDay.formatted(.dateTime.year().month().day()))"
+    }
+
+    var recurrenceLabel: String {
+        switch recurrence.kind {
+        case .once:
+            return "单次"
+        case .daily:
+            return "每天"
+        case .weekly:
+            let names = ["日", "一", "二", "三", "四", "五", "六"]
+            let days = recurrence.weekdays.sorted().compactMap { wd -> String? in
+                guard wd >= 1, wd <= 7 else { return nil }
+                return "周\(names[wd - 1])"
+            }
+            return "每周 \(days.joined(separator: "、"))"
+        }
+    }
+
+    var recurrenceShortLabel: String {
+        switch recurrence.kind {
+        case .once:
+            return "单次"
+        case .daily:
+            return "每天"
+        case .weekly:
+            let names = ["日", "一", "二", "三", "四", "五", "六"]
+            let days = recurrence.weekdays.sorted().compactMap { wd -> String? in
+                guard wd >= 1, wd <= 7 else { return nil }
+                return names[wd - 1]
+            }
+            return "周" + days.joined(separator: "、")
+        }
+    }
+
+    func originShortText(for pendingDate: Date) -> String {
+        pendingDate.formatted(.dateTime.month().day())
     }
 }
 
@@ -285,7 +359,6 @@ enum TaskExecutionSupport {
         subtaskExecutions: [TaskSubitemExecutionRecord],
         on date: Date = .now
     ) -> [TaskOccurrenceSnapshot] {
-        let calendar = Calendar.current
         let today = day(for: date)
 
         // 优化：使用字典分组，完全避免在循环内访问 SwiftData PersistentModel 导致的 CoreData 锁
@@ -314,7 +387,7 @@ enum TaskExecutionSupport {
 
             if !completed &&
                 task.skipPolicy == .skippable &&
-                !calendar.isDate(occurrenceDate, inSameDayAs: today) &&
+                occurrenceDate < today &&
                 record == nil {
                 return nil
             }
@@ -346,7 +419,6 @@ enum TaskExecutionSupport {
         subtasks allSubtasks: [TaskSubitemProjection],
         on date: Date = .now
     ) -> [TaskOccurrenceSnapshot] {
-        let calendar = Calendar.current
         let today = day(for: date)
         let taskExecutions = executions.filter { $0.taskID == task.id }
         let executionsByDate = Dictionary(grouping: taskExecutions) { day(for: $0.occurrenceDate) }
@@ -374,7 +446,7 @@ enum TaskExecutionSupport {
 
             if !completed &&
                 task.skipPolicy == .skippable &&
-                !calendar.isDate(occurrenceDate, inSameDayAs: today) &&
+                occurrenceDate < today &&
                 record == nil {
                 return nil
             }
@@ -408,6 +480,7 @@ enum TaskExecutionSupport {
     ) -> [TodayTaskDisplayItem] {
         let calendar = Calendar.current
         let today = day(for: date)
+        let lookaheadDay = calendar.date(byAdding: .day, value: 7, to: today) ?? today
         
         // --- 核心性能优化：在任务百日大循环之外，一次性将全库的记录按照 taskID 切分好！
         // 从而彻底防止内部每次检查 task.id 而导致读取 CoreData PersistentModel 发生锁耗时（会导致 Watchdog）
@@ -421,7 +494,7 @@ enum TaskExecutionSupport {
                 executions: executionsByTask[task.id] ?? [],
                 subtasks: subtasksByTask[task.id] ?? [],
                 subtaskExecutions: subtaskExecutions,
-                on: date
+                on: lookaheadDay
             )
             let pendingCount = snapshots.filter { !$0.isCompleted }.count
 
@@ -432,6 +505,8 @@ enum TaskExecutionSupport {
                     section = .todayDone
                 } else if calendar.isDate(snapshot.occurrenceDate, inSameDayAs: today) {
                     section = .todayPending
+                } else if snapshot.occurrenceDate > today {
+                    section = .upcomingPending
                 } else {
                     section = .historicalPending
                 }
@@ -758,6 +833,7 @@ enum TodayTaskProjectionBuilder {
     ) -> [TodayTaskProjectionResult] {
         let calendar = Calendar.current
         let today = Calendar.current.startOfDay(for: date)
+        let lookaheadDay = calendar.date(byAdding: .day, value: 7, to: today) ?? today
 
         let executionsByTask = Dictionary(grouping: executions, by: \.taskID)
         let subtasksByTask = Dictionary(grouping: subtasks, by: \.parentTaskID)
@@ -767,7 +843,7 @@ enum TodayTaskProjectionBuilder {
                 for: task,
                 executions: executionsByTask[task.id] ?? [],
                 subtasks: subtasksByTask[task.id] ?? [],
-                on: date
+                on: lookaheadDay
             )
             let pendingCount = snapshots.filter { !$0.isCompleted }.count
 
@@ -778,6 +854,8 @@ enum TodayTaskProjectionBuilder {
                     section = .todayDone
                 } else if calendar.isDate(snapshot.occurrenceDate, inSameDayAs: today) {
                     section = .todayPending
+                } else if snapshot.occurrenceDate > today {
+                    section = .upcomingPending
                 } else {
                     section = .historicalPending
                 }

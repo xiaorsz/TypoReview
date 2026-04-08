@@ -16,12 +16,16 @@ struct TypoReviewApp: App {
     private let sharedModelContainer: ModelContainer
 
     init() {
+        #if DEBUG
+        DebugPerf.replayPreviousRunTrace()
+        DebugPerf.mark("TypoReviewApp init begin")
+        #endif
+        #if DEBUG
         if #available(iOS 18.0, *) {
         } else {
-            Task { @MainActor in
-                IOS17BackgroundSceneShield.shared.start()
-            }
+            DebugPerf.mark("TypoReviewApp defer iOS17 background scene shield to RootTabView")
         }
+        #endif
 
         _appSettingsStore = State(
             initialValue: AppSettingsStore(appGroupIdentifier: Self.appGroupIdentifierValue)
@@ -82,7 +86,13 @@ struct TypoReviewApp: App {
         }
 
         do {
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp ModelContainer cloud init begin")
+            #endif
             let container = try ModelContainer(for: schema, configurations: [cloudConfiguration])
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp ModelContainer cloud init success")
+            #endif
             Self.migrateLegacyTaskExecutionsIfNeeded(in: container.mainContext)
             TaskExecutionSupport.migrateLegacySubtasksIfNeeded(in: container.mainContext)
             _ = try? AppSettings.ensureSingleton(in: container.mainContext)
@@ -98,14 +108,26 @@ struct TypoReviewApp: App {
             }())
         } catch {
             let nsError1 = error as NSError
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp ModelContainer cloud init failed domain=\(nsError1.domain) code=\(nsError1.code)")
+            #endif
 
             let container: ModelContainer
             do {
+                #if DEBUG
+                DebugPerf.mark("TypoReviewApp ModelContainer fallback init begin")
+                #endif
                 container = try ModelContainer(for: schema, configurations: [fallbackConfiguration])
+                #if DEBUG
+                DebugPerf.mark("TypoReviewApp ModelContainer fallback init success")
+                #endif
                 Self.migrateLegacyTaskExecutionsIfNeeded(in: container.mainContext)
                 TaskExecutionSupport.migrateLegacySubtasksIfNeeded(in: container.mainContext)
                 _ = try? AppSettings.ensureSingleton(in: container.mainContext)
             } catch {
+                #if DEBUG
+                DebugPerf.mark("TypoReviewApp ModelContainer fallback init failed error=\(error.localizedDescription)")
+                #endif
                 print("Fallback ModelContainer also failed: \(error)")
                 let inMemoryConfig = ModelConfiguration(isStoredInMemoryOnly: true)
                 container = try! ModelContainer(for: schema, configurations: [inMemoryConfig])
@@ -131,6 +153,10 @@ struct TypoReviewApp: App {
                 return store
             }())
         }
+
+        #if DEBUG
+        DebugPerf.mark("TypoReviewApp init end")
+        #endif
     }
 
     private static func migrateLegacyStoreIfNeeded(
@@ -299,13 +325,23 @@ struct TypoReviewApp: App {
                 .environment(mediaLibraryStore)
                 .environment(appSettingsStore)
                 .environment(\.locale, Locale(identifier: "zh_Hans"))
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+                    #if DEBUG
+                    DebugPerf.flushRecentEvents()
+                    #endif
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
+                    #if DEBUG
+                    DebugPerf.flushRecentEvents()
+                    #endif
+                }
         }
         .modelContainer(sharedModelContainer)
     }
 }
 
 @MainActor
-private final class IOS17BackgroundSceneShield {
+final class IOS17BackgroundSceneShield {
     static let shared = IOS17BackgroundSceneShield()
 
     private struct ShieldedWindow {

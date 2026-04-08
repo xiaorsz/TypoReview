@@ -4,6 +4,7 @@ import SwiftData
 
 struct DictationSessionView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
 
     @State private var currentIndex = 0
     @State private var navigateToReview = false
@@ -250,6 +251,8 @@ struct DictationSessionView: View {
         let now = Date()
         session.finishedAt = now
         session.updatedAt = now
+        try? modelContext.save()
+        NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
         navigateToReview = true
     }
 }

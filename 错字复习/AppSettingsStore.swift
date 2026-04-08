@@ -140,16 +140,19 @@ final class AppSettingsStore {
         hasBootstrapped = true
 
         if loadSnapshotFromDefaults() != nil {
-            markChanged()
             return
         }
+
+        let previousSnapshot = snapshot
 
         if let migratedSnapshot = loadSnapshotFromSwiftData(using: modelContext) {
             apply(snapshot: migratedSnapshot, incrementRevision: false)
         }
 
         persistToDefaults()
-        markChanged()
+        if snapshot != previousSnapshot {
+            markChanged()
+        }
     }
 
     func refreshFromSwiftDataIfPossible(using modelContext: ModelContext) {

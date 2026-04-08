@@ -280,6 +280,7 @@ struct DictationReviewView: View {
 
         do {
             try modelContext.save()
+            NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
             submittedSummaries = summaries
             navigateToSummary = true
         } catch {

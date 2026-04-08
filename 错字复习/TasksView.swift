@@ -16,6 +16,9 @@ struct TasksView: View {
     @State private var todayTasksSnapshot: [TodayTaskDisplayItem] = []
     @State private var snapshotRefreshTask: Task<Void, Never>?
     @State private var deferredSaveTask: Task<Void, Never>?
+    @State private var isViewVisible = false
+    @State private var isSnapshotRefreshInFlight = false
+    @State private var needsSnapshotRefreshAfterCurrent = false
 
     private struct TaskDetailRoute: Hashable {
         let taskID: UUID
@@ -23,7 +26,7 @@ struct TasksView: View {
     }
 
     private var canRenderLiveContent: Bool {
-        scenePhase == .active
+        scenePhase == .active && isViewVisible
     }
 
     private var todayPending: [TodayTaskDisplayItem] {
@@ -34,6 +37,17 @@ struct TasksView: View {
     private var historicalPending: [TodayTaskDisplayItem] {
         todayTasksSnapshot
             .filter { $0.section == .historicalPending }
+            .sorted { lhs, rhs in
+                if lhs.occurrenceDate == rhs.occurrenceDate {
+                    return lhs.task.createdAt < rhs.task.createdAt
+                }
+                return lhs.occurrenceDate < rhs.occurrenceDate
+            }
+    }
+
+    private var upcomingPending: [TodayTaskDisplayItem] {
+        todayTasksSnapshot
+            .filter { $0.section == .upcomingPending }
             .sorted { lhs, rhs in
                 if lhs.occurrenceDate == rhs.occurrenceDate {
                     return lhs.task.createdAt < rhs.task.createdAt
@@ -90,27 +104,40 @@ struct TasksView: View {
                     addMenu
                 }
             }
-            .task {
-                scheduleSnapshotRefresh()
+            .onAppear {
+                isViewVisible = true
+                #if DEBUG
+                DebugPerf.mark("TasksView onAppear")
+                #endif
+                requestSnapshotRefresh(reason: "onAppear")
             }
             .onChange(of: scenePhase) { _, newPhase in
+                #if DEBUG
+                DebugPerf.mark("TasksView scenePhase=\(newPhase)")
+                #endif
                 if newPhase == .active {
-                    scheduleSnapshotRefresh()
+                    requestSnapshotRefresh(reason: "scenePhase active", delay: todayTasksSnapshot.isEmpty ? 0.08 : 0.02)
                 } else {
                     snapshotRefreshTask?.cancel()
                 }
             }
-            .onChange(of: activeTasks) { _, _ in scheduleSnapshotRefresh() }
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("appDataDidMutate"))) { _ in
-                scheduleSnapshotRefresh()
+            .onChange(of: activeTasks) { _, _ in
+                requestSnapshotRefresh(reason: "activeTasks")
             }
-            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
-                scheduleSnapshotRefresh()
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("appDataDidMutate"))) { _ in
+                #if DEBUG
+                DebugPerf.mark("TasksView received appDataDidMutate")
+                #endif
+                requestSnapshotRefresh(reason: "appDataDidMutate")
             }
             .navigationDestination(for: TaskDetailRoute.self) { route in
                 DeferredTaskDetailView(route: route)
             }
             .onDisappear {
+                isViewVisible = false
+                #if DEBUG
+                DebugPerf.mark("TasksView onDisappear")
+                #endif
                 snapshotRefreshTask?.cancel()
             }
     }
@@ -155,6 +182,10 @@ struct TasksView: View {
 
         if !historicalPending.isEmpty {
             todayTaskSection("历史待完成", items: historicalPending)
+        }
+
+        if !upcomingPending.isEmpty {
+            todayTaskSection("未来一周", items: upcomingPending)
         }
 
         if !todayDone.isEmpty {
@@ -281,7 +312,25 @@ struct TasksView: View {
         }
     }
     
-    private func scheduleSnapshotRefresh() {
+    private func requestSnapshotRefresh(reason: String, delay: TimeInterval = 0.08) {
+        #if DEBUG
+        DebugPerf.mark("TasksView requestSnapshotRefresh reason=\(reason) delay=\(delay)")
+        #endif
+        guard canRenderLiveContent else { return }
+        if isSnapshotRefreshInFlight {
+            needsSnapshotRefreshAfterCurrent = true
+            #if DEBUG
+            DebugPerf.mark("TasksView refresh queued reason=\(reason)")
+            #endif
+            return
+        }
+        scheduleSnapshotRefresh(delay: delay)
+    }
+
+    private func scheduleSnapshotRefresh(delay: TimeInterval = 0.08) {
+        #if DEBUG
+        DebugPerf.mark("TasksView scheduleSnapshotRefresh delay=\(delay)")
+        #endif
         snapshotRefreshTask?.cancel()
         guard canRenderLiveContent else { return }
         
@@ -289,10 +338,20 @@ struct TasksView: View {
         let taskModels = activeTasks
 
         snapshotRefreshTask = Task(priority: .utility) {
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
             await Task.yield()
             guard !Task.isCancelled else { return }
+            guard canRenderLiveContent else { return }
+            await MainActor.run {
+                isSnapshotRefreshInFlight = true
+            }
             
             let projectedItems = try? await Task.detached(priority: .utility) {
+                #if DEBUG
+                DebugPerf.mark("TasksView background snapshot begin")
+                #endif
                 let backgroundContext = ModelContext(container)
                 
                 // 完全在后台线程里进行取数据和投影，绝对不阻塞主线程
@@ -308,11 +367,15 @@ struct TasksView: View {
                 let executionProjections = safeExecutions.map(TaskExecutionRecordProjection.init)
                 let subtaskProjections = safeSubtasks.map(TaskSubitemProjection.init)
 
-                return TodayTaskProjectionBuilder.build(
+                let result = TodayTaskProjectionBuilder.build(
                     from: taskProjections,
                     executions: executionProjections,
                     subtasks: subtaskProjections
                 )
+                #if DEBUG
+                DebugPerf.mark("TasksView background snapshot end tasks=\(safeTasks.count) records=\(safeExecutions.count) subtasks=\(safeSubtasks.count)")
+                #endif
+                return result
             }.value
 
             guard !Task.isCancelled else { return }
@@ -326,6 +389,14 @@ struct TasksView: View {
                 from: validProjectedItems,
                 tasksByID: tasksByID
             )
+            #if DEBUG
+            DebugPerf.mark("TasksView snapshot applied items=\(todayTasksSnapshot.count)")
+            #endif
+            isSnapshotRefreshInFlight = false
+            if needsSnapshotRefreshAfterCurrent {
+                needsSnapshotRefreshAfterCurrent = false
+                requestSnapshotRefresh(reason: "coalesced", delay: 0.02)
+            }
         }
     }
 
@@ -525,7 +596,13 @@ struct TasksView: View {
                 if nowCompleted {
                     newSection = .todayDone
                 } else {
-                    newSection = (oldItem.occurrenceDate < today) ? .historicalPending : .todayPending
+                    if oldItem.occurrenceDate < today {
+                        newSection = .historicalPending
+                    } else if Calendar.current.isDate(oldItem.occurrenceDate, inSameDayAs: today) {
+                        newSection = .todayPending
+                    } else {
+                        newSection = .upcomingPending
+                    }
                 }
                 
                 let newItem = TodayTaskDisplayItem(
@@ -689,13 +766,11 @@ struct TasksView: View {
 
     private struct DeferredTaskDetailView: View {
         @Environment(\.scenePhase) private var scenePhase
-        @Environment(\.modelContext) private var modelContext
 
         let route: TaskDetailRoute
 
-        @State private var task: TaskItem?
         @State private var loadTask: Task<Void, Never>?
-        @State private var loadFailed = false
+        @State private var isReady = false
 
         private var canLoad: Bool {
             scenePhase == .active && UIApplication.shared.applicationState == .active
@@ -703,10 +778,8 @@ struct TasksView: View {
 
         var body: some View {
             Group {
-                if let task {
-                    TaskDetailView(task: task)
-                } else if loadFailed {
-                    ContentUnavailableView("任务不存在", systemImage: "exclamationmark.triangle")
+                if isReady {
+                    TaskDetailView(taskID: route.taskID, initialTitle: route.title)
                 } else {
                     VStack(spacing: 12) {
                         ProgressView()
@@ -721,9 +794,15 @@ struct TasksView: View {
             .navigationTitle(route.title)
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
+                #if DEBUG
+                DebugPerf.mark("DeferredTaskDetailView onAppear title=\(route.title)")
+                #endif
                 loadTaskAfterNavigationSettles()
             }
             .onChange(of: scenePhase) { _, newPhase in
+                #if DEBUG
+                DebugPerf.mark("DeferredTaskDetailView scenePhase=\(newPhase) title=\(route.title)")
+                #endif
                 if newPhase == .active {
                     loadTaskAfterNavigationSettles()
                 } else {
@@ -731,32 +810,30 @@ struct TasksView: View {
                 }
             }
             .onDisappear {
+                #if DEBUG
+                DebugPerf.mark("DeferredTaskDetailView onDisappear title=\(route.title)")
+                #endif
                 loadTask?.cancel()
             }
         }
 
         private func loadTaskAfterNavigationSettles() {
+            #if DEBUG
+            DebugPerf.mark("DeferredTaskDetailView load requested title=\(route.title)")
+            #endif
             loadTask?.cancel()
-            guard task == nil else { return }
+            guard !isReady else { return }
             guard canLoad else { return }
 
             loadTask = Task { @MainActor in
+                #if DEBUG
+                DebugPerf.mark("DeferredTaskDetailView load task started title=\(route.title)")
+                #endif
                 await Task.yield()
                 try? await Task.sleep(nanoseconds: 80_000_000)
                 guard !Task.isCancelled else { return }
                 guard canLoad else { return }
-
-                do {
-                    let taskID = route.taskID
-                    var descriptor = FetchDescriptor<TaskItem>(
-                        predicate: #Predicate<TaskItem> { $0.id == taskID }
-                    )
-                    descriptor.fetchLimit = 1
-                    task = try modelContext.fetch(descriptor).first
-                    loadFailed = task == nil
-                } catch {
-                    loadFailed = true
-                }
+                isReady = true
             }
         }
     }

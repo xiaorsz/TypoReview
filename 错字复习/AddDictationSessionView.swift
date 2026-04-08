@@ -436,6 +436,7 @@ struct AddDictationSessionView: View {
 
         do {
             try modelContext.save()
+            NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
             isSaving = false
             dismiss()
         } catch {

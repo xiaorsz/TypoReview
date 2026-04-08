@@ -1,5 +1,124 @@
 import SwiftUI
 import WidgetKit
+import QuartzCore
+import Foundation
+
+#if DEBUG
+enum DebugPerf {
+    private static let defaultsKey = "DebugPerf.recentEvents.v1"
+    private static let maxStoredEvents = 160
+    private static let lock = NSLock()
+    private static var memoryEntries: [String] = []
+
+    private final class WatchdogState {
+        private let lock = NSLock()
+        private var didRunMainCallback = false
+
+        func markMainCallbackDidRun() {
+            lock.lock()
+            didRunMainCallback = true
+            lock.unlock()
+        }
+
+        func hasMainCallbackRun() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return didRunMainCallback
+        }
+    }
+
+    static func mark(_ message: String, file: StaticString = #fileID, line: UInt = #line) {
+        let timestamp = String(format: "%.3f", CACurrentMediaTime())
+        let thread = Thread.isMainThread ? "main" : "background"
+        let entry = "[DEBUG-PERF] \(timestamp) [\(thread)] \(message) @\(file):\(line)"
+        NSLog("%@", entry)
+        appendToMemory(entry)
+    }
+
+    static func replayPreviousRunTrace() {
+        lock.lock()
+        let entries = UserDefaults.standard.stringArray(forKey: defaultsKey) ?? []
+        UserDefaults.standard.removeObject(forKey: defaultsKey)
+        _ = UserDefaults.standard.synchronize()
+        lock.unlock()
+
+        guard !entries.isEmpty else { return }
+        NSLog("[DEBUG-PERF] PREVIOUS RUN TRACE BEGIN count=%d", entries.count)
+        entries.suffix(80).forEach { entry in
+            NSLog("[DEBUG-PERF-PREV] %@", entry)
+        }
+        NSLog("[DEBUG-PERF] PREVIOUS RUN TRACE END")
+    }
+
+    static func recentEvents(limit: Int = 40) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let entries = memoryEntries
+        guard limit > 0 else { return entries }
+        return Array(entries.suffix(limit))
+    }
+
+    static func flushRecentEvents() {
+        lock.lock()
+        let entries = memoryEntries
+        lock.unlock()
+        persistSnapshot(entries)
+    }
+
+    static func clearRecentEvents() {
+        lock.lock()
+        defer { lock.unlock() }
+
+        memoryEntries.removeAll()
+        UserDefaults.standard.removeObject(forKey: defaultsKey)
+        _ = UserDefaults.standard.synchronize()
+    }
+
+    static func watchMainThread(_ label: String, threshold: TimeInterval = 0.8) {
+        let startedAt = CACurrentMediaTime()
+        let token = UUID()
+        let state = WatchdogState()
+
+        mark("WATCHDOG start \(label) token=\(token.uuidString)")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + threshold) {
+            state.markMainCallbackDidRun()
+            let elapsed = CACurrentMediaTime() - startedAt
+            mark("WATCHDOG main callback reached \(label) elapsed=\(String(format: "%.3fs", elapsed)) token=\(token.uuidString)")
+        }
+
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + threshold + 0.2) {
+            if !state.hasMainCallbackRun() {
+                let elapsed = CACurrentMediaTime() - startedAt
+                mark("WATCHDOG POSSIBLE MAIN THREAD STALL \(label) elapsed=\(String(format: "%.3fs", elapsed)) token=\(token.uuidString)")
+            }
+        }
+    }
+
+    private static func appendToMemory(_ entry: String) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        memoryEntries.append(entry)
+        if memoryEntries.count > maxStoredEvents {
+            memoryEntries.removeFirst(memoryEntries.count - maxStoredEvents)
+        }
+    }
+
+    private static func persistSnapshot(_ entries: [String]) {
+        let trimmedEntries: [String]
+        if entries.count > maxStoredEvents {
+            trimmedEntries = Array(entries.suffix(maxStoredEvents))
+        } else {
+            trimmedEntries = entries
+        }
+
+        UserDefaults.standard.set(trimmedEntries, forKey: defaultsKey)
+        _ = UserDefaults.standard.synchronize()
+    }
+}
+#endif
 
 // MARK: - WidgetCenter Background Reload
 // On iOS 17, WidgetCenter.shared.reloadAllTimelines() blocks the main thread

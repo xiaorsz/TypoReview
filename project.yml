@@ -62,6 +62,9 @@ targets:
         INFOPLIST_KEY_CFBundleLocalizations:
           - zh_Hans
           - en
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
 
   TypoWidget:
     type: app-extension
@@ -112,3 +115,6 @@ targets:
         DEVELOPMENT_TEAM: FCAW792CJD
         MARKETING_VERSION: 1.2.1
         CURRENT_PROJECT_VERSION: 2
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG

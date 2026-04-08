@@ -10,6 +10,24 @@ final class SyncStatusStore {
         case cloudAccountStatusTimeout
     }
 
+    private struct LocalDataCounts {
+        let reviewItemCount: Int
+        let reviewRecordCount: Int
+        let taskCount: Int
+        let scheduleCount: Int
+        let dictationSessionCount: Int
+        let dictationEntryCount: Int
+
+        var summaryText: String {
+            "题库 \(reviewItemCount) 条，记录 \(reviewRecordCount) 条，待办 \(taskCount) 条，日程 \(scheduleCount) 条，听写 \(dictationSessionCount) 组 / \(dictationEntryCount) 条"
+        }
+    }
+
+    private struct LocalDataSummaryResult {
+        let counts: LocalDataCounts?
+        let errorDescription: String?
+    }
+
     enum SyncNoticeKind {
         case checking
         case ready
@@ -97,27 +115,59 @@ final class SyncStatusStore {
         lastErrorMessage = ""
         localDataSummary = "检查中..."
 
-        do {
-            if modelContext.hasChanges {
-                try modelContext.save()
-            }
+        #if DEBUG
+        DebugPerf.mark("SyncStatusStore refresh begin trigger=\(trigger)")
+        DebugPerf.watchMainThread("SyncStatusStore refresh \(trigger)")
+        #endif
 
-            modelContext.processPendingChanges()
-            let reviewItemCount = try modelContext.fetchCount(FetchDescriptor<ReviewItem>())
-            let reviewRecordCount = try modelContext.fetchCount(FetchDescriptor<ReviewRecord>())
-            let taskCount = try modelContext.fetchCount(FetchDescriptor<TaskItem>())
-            let scheduleCount = try modelContext.fetchCount(FetchDescriptor<ScheduleItem>())
-            let dictationSessionCount = try modelContext.fetchCount(FetchDescriptor<DictationSession>())
-            let dictationEntryCount = try modelContext.fetchCount(FetchDescriptor<DictationEntry>())
-
-            localDataSummary = "题库 \(reviewItemCount) 条，记录 \(reviewRecordCount) 条，待办 \(taskCount) 条，日程 \(scheduleCount) 条，听写 \(dictationSessionCount) 组 / \(dictationEntryCount) 条"
+        let summaryResult = await fetchLocalDataSummary(using: modelContext.container)
+        if let counts = summaryResult.counts {
+            localDataSummary = counts.summaryText
             lastRefreshAt = .now
-        } catch {
-            lastErrorMessage = error.localizedDescription
+        } else {
+            lastErrorMessage = summaryResult.errorDescription ?? "未知错误"
             localDataSummary = "本地数据检查失败"
         }
 
         await refreshCloudAccountState()
+
+        #if DEBUG
+        DebugPerf.mark("SyncStatusStore refresh end trigger=\(trigger) localSummary=\(localDataSummary)")
+        #endif
+    }
+
+    private func fetchLocalDataSummary(using container: ModelContainer) async -> LocalDataSummaryResult {
+        #if DEBUG
+        DebugPerf.mark("SyncStatusStore local summary fetch begin")
+        #endif
+
+        let result = await Task.detached(priority: .utility) {
+            let backgroundContext = ModelContext(container)
+
+            do {
+                let counts = LocalDataCounts(
+                    reviewItemCount: try backgroundContext.fetchCount(FetchDescriptor<ReviewItem>()),
+                    reviewRecordCount: try backgroundContext.fetchCount(FetchDescriptor<ReviewRecord>()),
+                    taskCount: try backgroundContext.fetchCount(FetchDescriptor<TaskItem>()),
+                    scheduleCount: try backgroundContext.fetchCount(FetchDescriptor<ScheduleItem>()),
+                    dictationSessionCount: try backgroundContext.fetchCount(FetchDescriptor<DictationSession>()),
+                    dictationEntryCount: try backgroundContext.fetchCount(FetchDescriptor<DictationEntry>())
+                )
+                return LocalDataSummaryResult(counts: counts, errorDescription: nil)
+            } catch {
+                return LocalDataSummaryResult(counts: nil, errorDescription: error.localizedDescription)
+            }
+        }.value
+
+        #if DEBUG
+        if let counts = result.counts {
+            DebugPerf.mark("SyncStatusStore local summary fetch end success reviews=\(counts.reviewItemCount) records=\(counts.reviewRecordCount) tasks=\(counts.taskCount) schedules=\(counts.scheduleCount) sessions=\(counts.dictationSessionCount) entries=\(counts.dictationEntryCount)")
+        } else {
+            DebugPerf.mark("SyncStatusStore local summary fetch end failed error=\(result.errorDescription ?? "unknown")")
+        }
+        #endif
+
+        return result
     }
 
     private func refreshCloudAccountState() async {

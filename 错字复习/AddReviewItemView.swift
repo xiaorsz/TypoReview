@@ -1,6 +1,72 @@
 import SwiftUI
 import SwiftData
 
+struct DeferredAddReviewItemView: View {
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var isReady = false
+    @State private var activationTask: Task<Void, Never>?
+
+    var body: some View {
+        Group {
+            if isReady {
+                AddReviewItemView()
+            } else {
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("正在打开新增错题...")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(uiColor: .systemGroupedBackground))
+                .navigationTitle("新增错题")
+                .navigationBarTitleDisplayMode(.inline)
+            }
+        }
+        .onAppear {
+            #if DEBUG
+            DebugPerf.mark("DeferredAddReviewItemView onAppear")
+            DebugPerf.watchMainThread("DeferredAddReviewItemView activation")
+            #endif
+            activateAfterNavigationSettles()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            #if DEBUG
+            DebugPerf.mark("DeferredAddReviewItemView scenePhase=\(newPhase)")
+            #endif
+            if newPhase == .active {
+                activateAfterNavigationSettles()
+            } else {
+                activationTask?.cancel()
+                isReady = false
+            }
+        }
+        .onDisappear {
+            #if DEBUG
+            DebugPerf.mark("DeferredAddReviewItemView onDisappear")
+            #endif
+            activationTask?.cancel()
+        }
+    }
+
+    private func activateAfterNavigationSettles() {
+        activationTask?.cancel()
+        guard !isReady else { return }
+        guard scenePhase == .active else { return }
+
+        activationTask = Task { @MainActor in
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            guard !Task.isCancelled else { return }
+            guard scenePhase == .active else { return }
+            #if DEBUG
+            DebugPerf.mark("DeferredAddReviewItemView showing AddReviewItemView")
+            #endif
+            isReady = true
+        }
+    }
+}
+
 struct AddReviewItemView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -56,6 +122,17 @@ struct AddReviewItemView: View {
         .toast("已保存 ✓", isPresented: $showSaveToast, duration: 0.8)
         .navigationTitle(existingItem == nil ? "新增错题" : "编辑错题")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            #if DEBUG
+            DebugPerf.mark("AddReviewItemView onAppear existing=\(existingItem != nil)")
+            DebugPerf.watchMainThread("AddReviewItemView first frame")
+            #endif
+        }
+        .onDisappear {
+            #if DEBUG
+            DebugPerf.mark("AddReviewItemView onDisappear existing=\(existingItem != nil)")
+            #endif
+        }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 if existingItem == nil {
@@ -252,6 +329,11 @@ struct AddReviewItemView: View {
     }
 
     private func save(keepOpen: Bool = false) {
+        #if DEBUG
+        DebugPerf.mark("AddReviewItemView save tapped keepOpen=\(keepOpen)")
+        DebugPerf.watchMainThread("AddReviewItemView save")
+        #endif
+
         let trimmedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedContent.isEmpty else { return }
         guard let selectedType = type else {
@@ -264,6 +346,9 @@ struct AddReviewItemView: View {
         let trimmedSource = source.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if let existingItem {
+            #if DEBUG
+            DebugPerf.mark("AddReviewItemView updating existing item")
+            #endif
             existingItem.type = selectedType
             existingItem.content = trimmedContent
             existingItem.prompt = trimmedPrompt
@@ -271,6 +356,9 @@ struct AddReviewItemView: View {
             existingItem.source = trimmedSource
             existingItem.updatedAt = .now
         } else {
+            #if DEBUG
+            DebugPerf.mark("AddReviewItemView inserting new ReviewItem")
+            #endif
             modelContext.insert(
                 ReviewItem(
                     type: selectedType,
@@ -299,6 +387,9 @@ struct AddReviewItemView: View {
                 showSaveToast = true
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                #if DEBUG
+                DebugPerf.mark("AddReviewItemView delayed dismiss")
+                #endif
                 dismiss()
             }
         }

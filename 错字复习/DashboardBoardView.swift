@@ -675,6 +675,8 @@ struct DashboardBoardView: View {
             "已完成"
         case .historicalPending:
             item.overdueOriginText ?? "历史待完成"
+        case .upcomingPending:
+            "未来一周"
         case .todayPending:
             nil
         }
