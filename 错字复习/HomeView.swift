@@ -748,8 +748,10 @@ struct HomeView: View {
             #if DEBUG
             DebugPerf.mark("HomeView background snapshot fetch begin")
             #endif
+            let referenceDate = Date()
             let snapshot = await Task.detached(priority: .utility) {
                 let backgroundContext = ModelContext(container)
+                let calendar = Calendar.current
 
                 let reviewModels = (try? backgroundContext.fetch(FetchDescriptor<ReviewItem>())) ?? []
                 let reviewRecordModels = (try? backgroundContext.fetch(FetchDescriptor<ReviewRecord>())) ?? []
@@ -758,19 +760,28 @@ struct HomeView: View {
                 let scheduleModels = (try? backgroundContext.fetch(
                     FetchDescriptor<ScheduleItem>(predicate: #Predicate<ScheduleItem> { !$0.isArchived })
                 )) ?? []
-                let taskModels = (try? backgroundContext.fetch(
-                    FetchDescriptor<TaskItem>(predicate: #Predicate<TaskItem> { !$0.isArchived })
-                )) ?? []
+                let allTaskModels = (try? backgroundContext.fetch(FetchDescriptor<TaskItem>())) ?? []
                 let executionModels = (try? backgroundContext.fetch(FetchDescriptor<TaskExecutionRecord>())) ?? []
                 let subtaskModels = (try? backgroundContext.fetch(
                     FetchDescriptor<TaskSubitem>(predicate: #Predicate<TaskSubitem> { !$0.isArchived })
                 )) ?? []
 
-                let taskProjections = taskModels.map(TaskProjection.init)
+                let completedTodayTaskIDs = Set(
+                    executionModels
+                        .filter { $0.status == .completed && calendar.isDate($0.occurrenceDate, inSameDayAs: referenceDate) }
+                        .map(\.taskID)
+                )
+                let activeTaskModels = allTaskModels.filter { !$0.isArchived }
+                let visibleTaskModels = allTaskModels.filter {
+                    !$0.isArchived || completedTodayTaskIDs.contains($0.id)
+                }
+
+                let taskProjections = visibleTaskModels.map(TaskProjection.init)
                 let taskProjectionResults = TodayTaskProjectionBuilder.build(
                     from: taskProjections,
                     executions: executionModels.map(TaskExecutionRecordProjection.init),
-                    subtasks: subtaskModels.map(TaskSubitemProjection.init)
+                    subtasks: subtaskModels.map(TaskSubitemProjection.init),
+                    on: referenceDate
                 )
                 let tasksByID = Dictionary(
                     taskProjections.map { ($0.id, $0) },
@@ -782,7 +793,7 @@ struct HomeView: View {
                 }
 
                 #if DEBUG
-                DebugPerf.mark("HomeView background snapshot fetch end reviews=\(reviewModels.count) records=\(reviewRecordModels.count) sessions=\(sessionModels.count) entries=\(entryModels.count) schedules=\(scheduleModels.count) tasks=\(taskModels.count)")
+                DebugPerf.mark("HomeView background snapshot fetch end reviews=\(reviewModels.count) records=\(reviewRecordModels.count) sessions=\(sessionModels.count) entries=\(entryModels.count) schedules=\(scheduleModels.count) tasks=\(visibleTaskModels.count)")
                 #endif
 
                 return DashboardSnapshot.make(
@@ -794,7 +805,8 @@ struct HomeView: View {
                     dictationEntries: entryModels.map(HomeDictationEntryProjection.init),
                     schedules: scheduleModels.map(HomeScheduleProjection.init),
                     taskItems: taskDisplayItems,
-                    activeTaskCount: taskModels.count
+                    activeTaskCount: activeTaskModels.count,
+                    referenceDate: referenceDate
                 )
             }.value
 
@@ -1469,41 +1481,30 @@ struct HomeView: View {
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         
         let tid = task.id
-        let container = modelContext.container
         
         // 1. 立即乐观更新 UI
         optimisticCompleteHomeTask(taskID: tid, occurrenceDate: occurrenceDate)
         
-        // 2. 后台处理同步
-        Task.detached(priority: .userInitiated) {
-            let ctx = ModelContext(container)
+        // 2. 主线程同步更新数据库，避免后台 Context 跨线程读写导致瞬时回闪（Flash back）
+        do {
+            let descriptor = FetchDescriptor<TaskExecutionRecord>(
+                predicate: #Predicate<TaskExecutionRecord> { $0.taskID == tid }
+            )
+            let relevantExecutions = (try? modelContext.fetch(descriptor)) ?? []
             
-            do {
-                let descriptor = FetchDescriptor<TaskExecutionRecord>(
-                    predicate: #Predicate<TaskExecutionRecord> { $0.taskID == tid }
+            // 直接在主线程获取对象
+            if let validTask = (try? modelContext.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid }))).flatMap({ $0.first }) {
+                TaskExecutionSupport.markTaskCompleted(
+                    task: validTask,
+                    occurrenceDate: occurrenceDate,
+                    existingExecutions: relevantExecutions,
+                    modelContext: modelContext
                 )
-                let relevantExecutions = (try? ctx.fetch(descriptor)) ?? []
                 
-                // 后台重新获取对象
-                let bgTask = (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))?.first
+                try? modelContext.save()
                 
-                if let validTask = bgTask {
-                    TaskExecutionSupport.markTaskCompleted(
-                        task: validTask,
-                        occurrenceDate: occurrenceDate,
-                        existingExecutions: relevantExecutions,
-                        modelContext: ctx
-                    )
-                    
-                    try? ctx.save()
-                    
-                    await MainActor.run {
-                        // 告知全应用数据已变动，刷新必要 UI
-                        NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
-                    }
-                }
-            } catch {
-                print("Home task complete background sync failed: \(error)")
+                // 告知全应用数据已变动，刷新必要 UI
+                NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
             }
         }
     }

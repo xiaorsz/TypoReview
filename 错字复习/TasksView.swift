@@ -347,9 +347,9 @@ struct TasksView: View {
         guard canRenderLiveContent else { return }
         
         let container = modelContext.container
-        let taskModels = activeTasks
 
         snapshotRefreshTask = Task(priority: .utility) {
+            let referenceDate = Date()
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
@@ -365,27 +365,38 @@ struct TasksView: View {
                 DebugPerf.mark("TasksView background snapshot begin")
                 #endif
                 let backgroundContext = ModelContext(container)
+                let calendar = Calendar.current
                 
                 // 完全在后台线程里进行取数据和投影，绝对不阻塞主线程
-                let tasksDesc = FetchDescriptor<TaskItem>(predicate: #Predicate<TaskItem> { !$0.isArchived })
+                let tasksDesc = FetchDescriptor<TaskItem>()
                 let executesDesc = FetchDescriptor<TaskExecutionRecord>()
                 let subtasksDesc = FetchDescriptor<TaskSubitem>(predicate: #Predicate<TaskSubitem> { !$0.isArchived })
                 
-                let safeTasks = (try? backgroundContext.fetch(tasksDesc)) ?? []
+                let allTasks = (try? backgroundContext.fetch(tasksDesc)) ?? []
                 let safeExecutions = (try? backgroundContext.fetch(executesDesc)) ?? []
                 let safeSubtasks = (try? backgroundContext.fetch(subtasksDesc)) ?? []
 
-                let taskProjections = safeTasks.map(TaskProjection.init)
+                let completedTodayTaskIDs = Set(
+                    safeExecutions
+                        .filter { $0.status == .completed && calendar.isDate($0.occurrenceDate, inSameDayAs: referenceDate) }
+                        .map(\.taskID)
+                )
+                let visibleTasks = allTasks.filter {
+                    !$0.isArchived || completedTodayTaskIDs.contains($0.id)
+                }
+
+                let taskProjections = visibleTasks.map(TaskProjection.init)
                 let executionProjections = safeExecutions.map(TaskExecutionRecordProjection.init)
                 let subtaskProjections = safeSubtasks.map(TaskSubitemProjection.init)
 
                 let result = TodayTaskProjectionBuilder.build(
                     from: taskProjections,
                     executions: executionProjections,
-                    subtasks: subtaskProjections
+                    subtasks: subtaskProjections,
+                    on: referenceDate
                 )
                 #if DEBUG
-                DebugPerf.mark("TasksView background snapshot end tasks=\(safeTasks.count) records=\(safeExecutions.count) subtasks=\(safeSubtasks.count)")
+                DebugPerf.mark("TasksView background snapshot end tasks=\(visibleTasks.count) records=\(safeExecutions.count) subtasks=\(safeSubtasks.count)")
                 #endif
                 return result
             }.value
@@ -394,7 +405,7 @@ struct TasksView: View {
             guard let validProjectedItems = projectedItems else { return }
             guard canRenderLiveContent else { return }
             let tasksByID = Dictionary(
-                taskModels.map { ($0.id, $0) },
+                (activeTasks + archivedTasks).map { ($0.id, $0) },
                 uniquingKeysWith: { first, _ in first }
             )
             todayTasksSnapshot = TodayTaskProjectionBuilder.displayItems(
@@ -540,50 +551,36 @@ struct TasksView: View {
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         
         let tid = task.id
-        let container = modelContext.container
         
         // 1. 立即乐观更新 UI
         optimisticToggleTask(taskID: tid, occurrenceDate: occurrenceDate, isDone: isDone)
         
-        // 2. 后台处理同步
-        Task.detached(priority: .userInitiated) {
-            let ctx = ModelContext(container)
+        // 2. 主线程同步更新数据库，避免后台 Context 跨线程读写导致瞬时回闪（Flash back）
+        do {
+            let descriptor = FetchDescriptor<TaskExecutionRecord>(
+                predicate: #Predicate<TaskExecutionRecord> { $0.taskID == tid }
+            )
+            let relevantExecutions = (try? modelContext.fetch(descriptor)) ?? []
             
-            do {
-                let descriptor = FetchDescriptor<TaskExecutionRecord>(
-                    predicate: #Predicate<TaskExecutionRecord> { $0.taskID == tid }
+            if isDone {
+                TaskExecutionSupport.reopenTaskCompletion(
+                    task: task,
+                    occurrenceDate: occurrenceDate,
+                    existingExecutions: relevantExecutions,
+                    modelContext: modelContext
                 )
-                let relevantExecutions = (try? ctx.fetch(descriptor)) ?? []
-                
-                // 后台重新获取对象
-                let bgTask = (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))?.first
-                
-                if let validTask = bgTask {
-                    if isDone {
-                        TaskExecutionSupport.reopenTaskCompletion(
-                            task: validTask,
-                            occurrenceDate: occurrenceDate,
-                            existingExecutions: relevantExecutions,
-                            modelContext: ctx
-                        )
-                    } else {
-                        TaskExecutionSupport.markTaskCompleted(
-                            task: validTask,
-                            occurrenceDate: occurrenceDate,
-                            existingExecutions: relevantExecutions,
-                            modelContext: ctx
-                        )
-                    }
-                    
-                    try? ctx.save()
-                    
-                    await MainActor.run {
-                        NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
-                    }
-                }
-            } catch {
-                print("Task manager toggle background sync failed: \(error)")
+            } else {
+                TaskExecutionSupport.markTaskCompleted(
+                    task: task,
+                    occurrenceDate: occurrenceDate,
+                    existingExecutions: relevantExecutions,
+                    modelContext: modelContext
+                )
             }
+            
+            try? modelContext.save()
+            saveAndReloadWidgetsDeferred()
+            NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
         }
     }
 
