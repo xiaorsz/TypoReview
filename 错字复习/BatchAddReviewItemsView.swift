@@ -364,6 +364,7 @@ struct BatchAddReviewItemsView: View {
         if importedCount > 0 {
             rawText = ""
             defaultSource = ""
+            NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
         }
     }
 

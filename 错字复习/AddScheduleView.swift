@@ -327,6 +327,7 @@ struct AddScheduleView: View {
         Task { @MainActor in
             try? modelContext.save()
             WidgetCenter.shared.reloadAllTimelinesInBackground()
+            NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
         }
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {

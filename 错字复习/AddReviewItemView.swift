@@ -371,6 +371,8 @@ struct AddReviewItemView: View {
                 )
             )
         }
+        
+        NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
 
         let generator = UINotificationFeedbackGenerator()
         generator.notificationOccurred(.success)
