@@ -1692,9 +1692,13 @@ struct HomeView: View {
                 let filtered = fetched
                     .filter { order[$0.id] != nil }
                     .sorted { (order[$0.id] ?? 0) < (order[$1.id] ?? 0) }
+                var seenIDs = Set<UUID>()
+                let deduplicated = filtered.filter { item in
+                    seenIDs.insert(item.id).inserted
+                }
 
-                items = filtered
-                loadFailed = filtered.isEmpty
+                items = deduplicated
+                loadFailed = deduplicated.isEmpty
             }
         }
     }
