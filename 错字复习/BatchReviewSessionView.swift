@@ -168,12 +168,12 @@ struct BatchReviewSessionView: View {
                 HStack(spacing: 8) {
                     TypeBadge(type: item.type)
 
-                    Label("阶段 \(item.stage)", systemImage: "square.stack.3d.up.fill")
+                    Label(item.stageBadgeText, systemImage: "square.stack.3d.up.fill")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(item.stage.stageColor)
+                        .foregroundStyle(item.stageBadgeColor)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
-                        .background(item.stage.stageColor.opacity(0.12), in: Capsule())
+                        .background(item.stageBadgeColor.opacity(0.12), in: Capsule())
                 }
             }
 
@@ -252,6 +252,17 @@ struct BatchReviewSessionView: View {
     }
 
     private func helperText(for item: ReviewItem) -> String {
+        if item.reviewTrack == .dictationFollowUp {
+            switch item.resolvedDictationFollowUpStep {
+            case 1:
+                return "这是听写通过后的第3天复习。今天没做，明天仍会停留在这一步。"
+            case 2:
+                return "这是听写通过后的第7天复习。今天没做，明天仍会停留在这一步。"
+            default:
+                return "这是听写通过后的跟进复习。"
+            }
+        }
+
         if item.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "会直接播放要写的内容，孩子整轮写完后，家长再统一判定。"
         }

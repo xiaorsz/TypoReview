@@ -111,10 +111,10 @@ struct LibraryView: View {
 
                             // Stage indicator
                             VStack(spacing: 4) {
-                                Text("\(item.stage)")
+                                Text(item.reviewTrack == .dictationFollowUp ? "\(item.resolvedDictationFollowUpStep)" : "\(item.stage)")
                                     .font(.system(.title3, design: .rounded, weight: .bold))
-                                    .foregroundStyle(item.stage.stageColor)
-                                Text("阶段")
+                                    .foregroundStyle(item.stageBadgeColor)
+                                Text(item.reviewTrack == .dictationFollowUp ? "跟进" : "阶段")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }
@@ -156,6 +156,10 @@ struct LibraryView: View {
     }
 
     private func subtitle(for item: ReviewItem) -> String {
+        if item.reviewTrack == .dictationFollowUp {
+            return item.trackingSummaryText
+        }
+
         let prompt = item.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         if !prompt.isEmpty {
             return prompt

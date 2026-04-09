@@ -146,6 +146,108 @@ extension View {
     }
 }
 
+extension ReviewItem {
+    var stageBadgeText: String {
+        if reviewTrack == .dictationFollowUp {
+            guard dictationFollowUpStep > 0 else {
+                return "听写跟进"
+            }
+            switch resolvedDictationFollowUpStep {
+            case 1:
+                return "第3天"
+            case 2:
+                return "第7天"
+            default:
+                return "听写跟进"
+            }
+        }
+
+        if isDictationPass {
+            return "听写跟进"
+        }
+
+        return "阶段 \(stage)"
+    }
+
+    var stageBadgeColor: Color {
+        if reviewTrack == .dictationFollowUp {
+            return resolvedDictationFollowUpStep == 2 ? .teal : .blue
+        }
+
+        if isDictationPass {
+            return .blue
+        }
+
+        return stage.stageColor
+    }
+
+    var trackingSummaryText: String {
+        if reviewTrack == .dictationFollowUp {
+            guard dictationFollowUpStep > 0 else {
+                return "听写通过后的跟进复习"
+            }
+            switch resolvedDictationFollowUpStep {
+            case 1:
+                return "听写通过后，第3天复习"
+            case 2:
+                return "听写通过后，第7天复习"
+            default:
+                return "听写通过后的跟进复习"
+            }
+        }
+
+        if isDictationPass {
+            return "听写通过后的跟进复习"
+        }
+
+        return "阶段 \(stage)"
+    }
+
+    func reviewTransitionDetail(
+        result: ReviewResult,
+        oldStage: Int,
+        oldTrack: ReviewTrack,
+        oldFollowUpStep: Int
+    ) -> String {
+        if oldTrack == .dictationFollowUp || reviewTrack == .dictationFollowUp {
+            let oldLabel = Self.followUpLabel(for: oldTrack, step: oldFollowUpStep)
+            let newLabel = Self.followUpLabel(for: reviewTrack, step: resolvedDictationFollowUpStep)
+
+            if result == .correct {
+                if oldTrack == .dictationFollowUp && reviewTrack == .standard && stage >= ReviewScheduler.intervals.count - 1 {
+                    return "已完成听写跟进，当前标记为已掌握"
+                }
+                if !oldLabel.isEmpty && !newLabel.isEmpty {
+                    return "已从\(oldLabel)进入\(newLabel)"
+                }
+                if !newLabel.isEmpty {
+                    return "已安排到\(newLabel)"
+                }
+                return "已完成本轮听写跟进"
+            }
+
+            return "本次判错，已从第二天开始进入错题复习"
+        }
+
+        if result == .correct {
+            return "已从阶段 \(oldStage) 进入阶段 \(stage)"
+        }
+        return "本次判错，已调整到阶段 \(stage)"
+    }
+
+    private static func followUpLabel(for track: ReviewTrack, step: Int) -> String {
+        guard track == .dictationFollowUp else { return "" }
+        switch step {
+        case 1:
+            return "第3天复习"
+        case 2:
+            return "第7天复习"
+        default:
+            return "听写跟进"
+        }
+    }
+}
+
 // MARK: - Result Button Style
 
 struct ResultButtonStyle: ButtonStyle {

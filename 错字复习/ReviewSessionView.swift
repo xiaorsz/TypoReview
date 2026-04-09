@@ -58,12 +58,12 @@ struct ReviewSessionView: View {
                                 HStack {
                                     TypeBadge(type: item.type)
                                     Spacer()
-                                    Text("阶段 \(item.stage)")
+                                    Text(item.stageBadgeText)
                                         .font(.caption.weight(.semibold))
-                                        .foregroundStyle(item.stage.stageColor)
+                                        .foregroundStyle(item.stageBadgeColor)
                                         .padding(.horizontal, 10)
                                         .padding(.vertical, 4)
-                                        .background(item.stage.stageColor.opacity(0.12), in: Capsule())
+                                        .background(item.stageBadgeColor.opacity(0.12), in: Capsule())
                                 }
 
                                 Text(headlineText(for: item))
@@ -300,17 +300,26 @@ struct ReviewSessionView: View {
             oldConsecutiveCorrectCount: item.consecutiveCorrectCount,
             oldConsecutiveWrongCount: item.consecutiveWrongCount,
             oldIsPriority: item.isPriority,
+            oldReviewTrackRawValue: item.reviewTrackRawValue,
+            oldDictationFollowUpStep: item.dictationFollowUpStep,
+            oldIsDictationPass: item.isDictationPass,
             result: result
         )
 
+        let oldTrack = item.reviewTrack
+        let oldFollowUpStep = item.resolvedDictationFollowUpStep
         let output = scheduler.handle(item: item, result: result)
         modelContext.insert(output.record)
         reviewedSummaries.append(
             SessionReviewSummary(
                 content: item.content,
                 result: result,
-                oldStage: output.record.oldStage,
-                newStage: output.record.newStage
+                detail: item.reviewTransitionDetail(
+                    result: result,
+                    oldStage: output.record.oldStage,
+                    oldTrack: oldTrack,
+                    oldFollowUpStep: oldFollowUpStep
+                )
             )
         )
 
@@ -351,6 +360,9 @@ struct ReviewSessionView: View {
         item.consecutiveCorrectCount = entry.oldConsecutiveCorrectCount
         item.consecutiveWrongCount = entry.oldConsecutiveWrongCount
         item.isPriority = entry.oldIsPriority
+        item.reviewTrackRawValue = entry.oldReviewTrackRawValue
+        item.dictationFollowUpStep = entry.oldDictationFollowUpStep
+        item.isDictationPass = entry.oldIsDictationPass
 
         // Delete the record
         if let recordID = entry.recordID {
@@ -390,6 +402,17 @@ struct ReviewSessionView: View {
     }
 
     private func helperText(for item: ReviewItem) -> String {
+        if item.reviewTrack == .dictationFollowUp {
+            switch item.resolvedDictationFollowUpStep {
+            case 1:
+                return "这是听写通过后的第3天复习。今天没做，明天仍会保持在这一步。"
+            case 2:
+                return "这是听写通过后的第7天复习。今天没做，明天仍会保持在这一步。"
+            default:
+                return "这是听写通过后的跟进复习。"
+            }
+        }
+
         if item.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "会直接播放要写的内容，孩子写完后，再由家长判定。"
         }
@@ -462,15 +485,7 @@ private struct SessionReviewSummary: Identifiable {
     let id = UUID()
     let content: String
     let result: ReviewResult
-    let oldStage: Int
-    let newStage: Int
-
-    var detail: String {
-        if result == .correct {
-            return "已从阶段 \(oldStage) 进入阶段 \(newStage)"
-        }
-        return "本次判错，已调整到阶段 \(newStage)"
-    }
+    let detail: String
 }
 
 private class UndoEntry {
@@ -481,10 +496,25 @@ private class UndoEntry {
     let oldConsecutiveCorrectCount: Int
     let oldConsecutiveWrongCount: Int
     let oldIsPriority: Bool
+    let oldReviewTrackRawValue: String
+    let oldDictationFollowUpStep: Int
+    let oldIsDictationPass: Bool
     let result: ReviewResult
     var recordID: UUID?
 
-    init(itemIndex: Int, oldStage: Int, oldNextReviewAt: Date, oldLastReviewedAt: Date?, oldConsecutiveCorrectCount: Int, oldConsecutiveWrongCount: Int, oldIsPriority: Bool, result: ReviewResult) {
+    init(
+        itemIndex: Int,
+        oldStage: Int,
+        oldNextReviewAt: Date,
+        oldLastReviewedAt: Date?,
+        oldConsecutiveCorrectCount: Int,
+        oldConsecutiveWrongCount: Int,
+        oldIsPriority: Bool,
+        oldReviewTrackRawValue: String,
+        oldDictationFollowUpStep: Int,
+        oldIsDictationPass: Bool,
+        result: ReviewResult
+    ) {
         self.itemIndex = itemIndex
         self.oldStage = oldStage
         self.oldNextReviewAt = oldNextReviewAt
@@ -492,6 +522,9 @@ private class UndoEntry {
         self.oldConsecutiveCorrectCount = oldConsecutiveCorrectCount
         self.oldConsecutiveWrongCount = oldConsecutiveWrongCount
         self.oldIsPriority = oldIsPriority
+        self.oldReviewTrackRawValue = oldReviewTrackRawValue
+        self.oldDictationFollowUpStep = oldDictationFollowUpStep
+        self.oldIsDictationPass = oldIsDictationPass
         self.result = result
     }
 }

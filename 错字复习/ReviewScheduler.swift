@@ -3,12 +3,12 @@ import Foundation
 struct ReviewScheduler {
     static let intervals: [TimeInterval] = [
         0,
-        20 * 60,
         24 * 60 * 60,
         2 * 24 * 60 * 60,
         4 * 24 * 60 * 60,
         7 * 24 * 60 * 60,
         15 * 24 * 60 * 60,
+        30 * 24 * 60 * 60,
         30 * 24 * 60 * 60
     ]
 
@@ -18,9 +18,22 @@ struct ReviewScheduler {
     }
 
     func nextDayStart(from date: Date = .now) -> Date {
+        dayStart(after: 1, from: date)
+    }
+
+    func dayStart(after days: Int, from date: Date = .now) -> Date {
         let calendar = Calendar.current
-        let tomorrow = calendar.date(byAdding: .day, value: 1, to: date) ?? date
-        return calendar.startOfDay(for: tomorrow)
+        let target = calendar.date(byAdding: .day, value: days, to: date) ?? date
+        return calendar.startOfDay(for: target)
+    }
+
+    func dictationFollowUpDate(for step: Int, from date: Date = .now) -> Date {
+        switch step {
+        case 1:
+            return dayStart(after: 3, from: date)
+        default:
+            return dayStart(after: 7, from: date)
+        }
     }
 
     func handle(
@@ -32,26 +45,35 @@ struct ReviewScheduler {
         item.lastReviewedAt = now
         item.updatedAt = now
 
-        if item.isDictationPass {
+        if item.reviewTrack == .dictationFollowUp || item.isDictationPass {
+            let currentStep = item.resolvedDictationFollowUpStep
             if result == .correct {
                 item.consecutiveCorrectCount += 1
                 item.consecutiveWrongCount = 0
-                if item.stage == 2 {
-                    item.stage = 5
-                    item.nextReviewAt = nextReviewDateAvoidingSameDay(for: item.stage, from: now)
+                item.isPriority = false
+
+                if currentStep <= 1 {
+                    item.reviewTrack = .dictationFollowUp
+                    item.dictationFollowUpStep = 2
+                    item.isDictationPass = true
+                    item.stage = max(item.stage, 2)
+                    item.nextReviewAt = dictationFollowUpDate(for: 2, from: now)
                 } else {
                     item.stage = Self.intervals.count - 1
+                    item.reviewTrack = .standard
+                    item.dictationFollowUpStep = 0
                     item.isDictationPass = false
-                    item.nextReviewAt = nextReviewDateAvoidingSameDay(for: item.stage, from: now)
+                    item.nextReviewAt = .distantFuture
                 }
-                item.isPriority = false
             } else {
+                item.reviewTrack = .standard
+                item.dictationFollowUpStep = 0
                 item.isDictationPass = false
                 item.consecutiveCorrectCount = 0
                 item.consecutiveWrongCount += 1
-                item.stage = max(oldStage - 1, 1)
-                item.nextReviewAt = nextReviewDateAvoidingSameDay(for: item.stage, from: now)
-                item.isPriority = item.consecutiveWrongCount >= 2
+                item.stage = 1
+                item.nextReviewAt = nextDayStart(from: now)
+                item.isPriority = true
             }
         } else {
             switch result {

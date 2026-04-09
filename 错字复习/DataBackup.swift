@@ -493,6 +493,8 @@ struct ReviewItemSnapshot: Codable {
     let consecutiveCorrectCount: Int
     let consecutiveWrongCount: Int
     let isPriority: Bool
+    let reviewTrackRawValue: String?
+    let dictationFollowUpStep: Int?
     let isDictationPassRaw: Bool?
     let createdAt: Date
     let updatedAt: Date
@@ -510,6 +512,8 @@ struct ReviewItemSnapshot: Codable {
         consecutiveCorrectCount = item.consecutiveCorrectCount
         consecutiveWrongCount = item.consecutiveWrongCount
         isPriority = item.isPriority
+        reviewTrackRawValue = item.reviewTrackRawValue
+        dictationFollowUpStep = item.dictationFollowUpStep
         isDictationPassRaw = item.isDictationPassRaw
         createdAt = item.createdAt
         updatedAt = item.updatedAt
@@ -529,11 +533,17 @@ struct ReviewItemSnapshot: Codable {
             consecutiveCorrectCount: consecutiveCorrectCount,
             consecutiveWrongCount: consecutiveWrongCount,
             isPriority: isPriority,
+            reviewTrack: ReviewTrack(rawValue: reviewTrackRawValue ?? "") ?? .standard,
+            dictationFollowUpStep: dictationFollowUpStep ?? 0,
             isDictationPass: isDictationPassRaw ?? false,
             createdAt: createdAt,
             updatedAt: updatedAt
         )
         item.typeRawValue = typeRawValue
+        if let reviewTrackRawValue {
+            item.reviewTrackRawValue = reviewTrackRawValue
+        }
+        item.dictationFollowUpStep = dictationFollowUpStep ?? item.dictationFollowUpStep
         item.isDictationPassRaw = isDictationPassRaw
         return item
     }

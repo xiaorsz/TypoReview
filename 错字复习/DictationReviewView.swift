@@ -231,18 +231,24 @@ struct DictationReviewView: View {
 
         let scheduler = ReviewScheduler()
         let nextReviewStart = scheduler.nextDayStart(from: now)
+        let firstFollowUpDate = scheduler.dictationFollowUpDate(for: 1, from: now)
 
         for entry in entries {
             if entry.result == .wrong {
                 if let existing = reviewItems.first(where: { $0.type == entry.type && $0.content == entry.content }) {
+                    let shouldPreserveStage = existing.reviewTrack == .standard && !scheduler.isMastered(existing)
                     existing.prompt = entry.prompt
                     existing.note = entry.note
                     existing.source = entry.source
                     existing.nextReviewAt = nextReviewStart
                     existing.isPriority = true
+                    existing.reviewTrack = .standard
+                    existing.dictationFollowUpStep = 0
                     existing.updatedAt = now
                     existing.isDictationPass = false
-                    existing.stage = max(existing.stage, 1)
+                    existing.stage = shouldPreserveStage ? existing.stage : 0
+                    existing.consecutiveCorrectCount = 0
+                    existing.consecutiveWrongCount = max(existing.consecutiveWrongCount, 1)
                 } else {
                     modelContext.insert(
                         ReviewItem(
@@ -253,20 +259,37 @@ struct DictationReviewView: View {
                             source: entry.source,
                             stage: 0,
                             nextReviewAt: nextReviewStart,
+                            reviewTrack: .standard,
                             updatedAt: now
                         )
                     )
                 }
             } else if entry.result == .correct {
-                if !reviewItems.contains(where: { $0.type == entry.type && $0.content == entry.content }) {
+                if let existing = reviewItems.first(where: { $0.type == entry.type && $0.content == entry.content }) {
+                    existing.prompt = entry.prompt
+                    existing.note = entry.note
+                    existing.source = entry.source
+                    existing.reviewTrack = .dictationFollowUp
+                    existing.dictationFollowUpStep = 1
+                    existing.isDictationPass = true
+                    existing.stage = 1
+                    existing.nextReviewAt = firstFollowUpDate
+                    existing.isPriority = false
+                    existing.lastReviewedAt = now
+                    existing.updatedAt = now
+                    existing.consecutiveCorrectCount = 0
+                    existing.consecutiveWrongCount = 0
+                } else {
                     let newItem = ReviewItem(
                         type: entry.type,
                         content: entry.content,
                         prompt: entry.prompt,
                         note: entry.note,
                         source: entry.source,
-                        stage: 2,
-                        nextReviewAt: scheduler.nextDate(for: 2, from: now),
+                        stage: 1,
+                        nextReviewAt: firstFollowUpDate,
+                        reviewTrack: .dictationFollowUp,
+                        dictationFollowUpStep: 1,
                         isDictationPass: true,
                         updatedAt: now
                     )
@@ -299,7 +322,7 @@ private struct DictationEntrySummary: Identifiable {
     var detail: String {
         switch result {
         case .correct:
-            return "本次听写通过"
+            return "本次听写通过，已安排到第3天复习"
         case .wrong:
             return "已加入错题复习，明天开始待复习"
         case .pending:
@@ -429,7 +452,7 @@ private struct DictationSummaryView: View {
 
     private var summaryText: String {
         if wrongCount == 0 {
-            return "这次听写全部答对，本轮内容已经完成。"
+            return "这次听写全部答对，系统会在第3天和第7天各安排一次复习。"
         }
 
         return "这次一共完成 \(totalCount) 条，其中答错 \(wrongCount) 条。答错内容会从明天开始进入待复习；如果第二天没复习，会继续保留在今日待复习中。"

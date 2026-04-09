@@ -178,6 +178,12 @@ struct DictationHomeView: View {
             entriesBySessionID[session.id] ?? []
         }
 
+        var todayAndOverdueEntryCount: Int {
+            todayAndOverdue.reduce(into: 0) { partialResult, session in
+                partialResult += entriesBySessionID[session.id]?.count ?? 0
+            }
+        }
+
         static var empty: DictationHomeSnapshot {
             DictationHomeSnapshot(todayAndOverdue: [], upcoming: [], completed: [], entriesBySessionID: [:])
         }
@@ -249,7 +255,7 @@ struct DictationHomeView: View {
             } else {
                 let todaySessions = snapshot.todayAndOverdue
                 if !todaySessions.isEmpty {
-                    Section("今日及待办") {
+                    Section("今日及待办（\(snapshot.todayAndOverdueEntryCount) 条）") {
                         ForEach(todaySessions) { session in
                             sessionRow(for: session, entries: snapshot.entries(for: session))
                         }

@@ -340,6 +340,7 @@ struct HomeView: View {
         let todayCorrectCount: Int
         let todayAccuracyText: String
         let pendingDictationCount: Int
+        let pendingDictationSessionCount: Int
         let latestDictationSession: HomeDictationSessionProjection?
         let latestDictationEntryCount: Int
         let dictationEntriesBySessionID: [UUID: [HomeDictationEntryProjection]]
@@ -394,6 +395,7 @@ struct HomeView: View {
             let pendingSessions = dictationSessions.filter {
                 !$0.isReviewed && calendar.startOfDay(for: $0.scheduledDate) <= todayStart
             }
+            let pendingDictationSessionCount = pendingSessions.count
             let latestDS: HomeDictationSessionProjection? = {
                 if let firstPending = pendingSessions.sorted(by: { $0.scheduledDate < $1.scheduledDate }).first {
                     return firstPending
@@ -453,7 +455,7 @@ struct HomeView: View {
                 if totPendingTaskCount > 0 { parts.append("\(totPendingTaskCount) 项任务") }
                 if !tSchedules.isEmpty { parts.append("\(tSchedules.count) 项日程") }
                 if !cappedDueContent.isEmpty { parts.append("\(cappedDueContent.count) 项复习") }
-                if let session = latestDS, !session.isReviewed { parts.append("1 场听写") }
+                if pendingDictationEntryCount > 0 { parts.append("\(pendingDictationEntryCount) 条听写") }
                 if parts.isEmpty { return "\(name)，今天没有待办事项" }
                 return "\(name) 今天还有 \(parts.joined(separator: "、"))"
             }()
@@ -461,7 +463,13 @@ struct HomeView: View {
             let hSubtitle: String = {
                 if tasksDone && reviewDone && dictationDone { return "表现太棒了！录入新错题或休息一下吧。明天见！" }
                 if let session = latestDS, !session.isReviewed {
-                    return session.isFinished ? "今天听写已完成，快让家长点击「统一判卷」吧！" : "别忘了还有一场「\(session.title)」听写在进行中。"
+                    if session.isFinished {
+                        return "今天听写已完成，快让家长点击「统一判卷」吧！"
+                    }
+                    if pendingDictationEntryCount > 0 {
+                        return "当前共有 \(pendingDictationEntryCount) 条待听写内容，先从「\(session.title)」开始。"
+                    }
+                    return "别忘了还有一场「\(session.title)」听写在进行中。"
                 }
                 if !hPendingTasks.isEmpty && tPendingTasks.isEmpty { return "还有 \(hPendingTasks.count) 项历史待完成，先清一清积压吧。" }
                 if totPendingTaskCount > 0 && !cappedDueContent.isEmpty { return "先完成今天的任务，再做错题复习。加油！" }
@@ -489,6 +497,7 @@ struct HomeView: View {
                 todayCorrectCount: tCorrect,
                 todayAccuracyText: tAccuracy,
                 pendingDictationCount: pendingDictationEntryCount,
+                pendingDictationSessionCount: pendingDictationSessionCount,
                 latestDictationSession: latestDS,
                 latestDictationEntryCount: latestDictationEntryCount,
                 dictationEntriesBySessionID: entriesBySessionID,
@@ -1193,8 +1202,8 @@ struct HomeView: View {
             status = "进行中"
         }
 
-        if snapshot.pendingDictationCount > count, !latestDictationSession.isReviewed {
-            return "待听写共 \(snapshot.pendingDictationCount) 条 · 当前「\(latestDictationSession.title)」\(count) 条 · \(status)"
+        if snapshot.pendingDictationCount > 0, !latestDictationSession.isReviewed {
+            return "待听写共 \(snapshot.pendingDictationCount) 条 · 共 \(snapshot.pendingDictationSessionCount) 组 · 当前「\(latestDictationSession.title)」\(count) 条 · \(status)"
         }
 
         return "\(latestDictationSession.title) · \(count) 条 · \(status)"
@@ -1526,6 +1535,7 @@ struct HomeView: View {
                 todayCorrectCount: snapshot.todayCorrectCount,
                 todayAccuracyText: snapshot.todayAccuracyText,
                 pendingDictationCount: snapshot.pendingDictationCount,
+                pendingDictationSessionCount: snapshot.pendingDictationSessionCount,
                 latestDictationSession: snapshot.latestDictationSession,
                 latestDictationEntryCount: snapshot.latestDictationEntryCount,
                 dictationEntriesBySessionID: snapshot.dictationEntriesBySessionID,

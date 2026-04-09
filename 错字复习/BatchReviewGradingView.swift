@@ -11,15 +11,7 @@ private struct SessionReviewSummary: Identifiable {
     let id = UUID()
     let content: String
     let result: ReviewResult
-    let oldStage: Int
-    let newStage: Int
-
-    var detail: String {
-        if result == .correct {
-            return "已从阶段 \(oldStage) 进入阶段 \(newStage)"
-        }
-        return "本次判错，已调整到阶段 \(newStage)"
-    }
+    let detail: String
 }
 
 struct BatchReviewGradingView: View {
@@ -341,16 +333,22 @@ struct BatchReviewGradingView: View {
         for state in entryStates {
             guard state.result != .pending else { continue }
             let reviewResult: ReviewResult = state.result == .correct ? .correct : .wrong
-            
+
+            let oldTrack = state.item.reviewTrack
+            let oldFollowUpStep = state.item.resolvedDictationFollowUpStep
             let output = scheduler.handle(item: state.item, result: reviewResult)
             modelContext.insert(output.record)
-            
+
             summaries.append(
                 SessionReviewSummary(
                     content: state.item.content,
                     result: reviewResult,
-                    oldStage: output.record.oldStage,
-                    newStage: output.record.newStage
+                    detail: state.item.reviewTransitionDetail(
+                        result: reviewResult,
+                        oldStage: output.record.oldStage,
+                        oldTrack: oldTrack,
+                        oldFollowUpStep: oldFollowUpStep
+                    )
                 )
             )
         }
