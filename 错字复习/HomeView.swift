@@ -1686,19 +1686,34 @@ struct HomeView: View {
                 guard !Task.isCancelled else { return }
                 guard canLoad else { return }
 
-                let ids = route.itemIDs
-                let order = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($0.element, $0.offset) })
-                let fetched = (try? modelContext.fetch(FetchDescriptor<ReviewItem>())) ?? []
-                let filtered = fetched
-                    .filter { order[$0.id] != nil }
-                    .sorted { (order[$0.id] ?? 0) < (order[$1.id] ?? 0) }
-                var seenIDs = Set<UUID>()
-                let deduplicated = filtered.filter { item in
-                    seenIDs.insert(item.id).inserted
+                let container = modelContext.container
+                let pids = await Task.detached(priority: .userInitiated) {
+                    let ctx = ModelContext(container)
+                    let ids = route.itemIDs
+                    let order = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($0.element, $0.offset) })
+                    let fetched = (try? ctx.fetch(FetchDescriptor<ReviewItem>())) ?? []
+                    let filtered = fetched
+                        .filter { order[$0.id] != nil }
+                        .sorted { (order[$0.id] ?? 0) < (order[$1.id] ?? 0) }
+                    var seenIDs = Set<UUID>()
+                    let deduplicated = filtered.filter { item in
+                        seenIDs.insert(item.id).inserted
+                    }
+                    return deduplicated.map { $0.persistentModelID }
+                }.value
+
+                guard !Task.isCancelled else { return }
+                guard canLoad else { return }
+
+                let resolvedItems: [ReviewItem] = pids.compactMap { pid in
+                    let registered: ReviewItem? = modelContext.registeredModel(for: pid)
+                    if let registered { return registered }
+                    
+                    return (try? modelContext.model(for: pid)) as? ReviewItem
                 }
 
-                items = deduplicated
-                loadFailed = deduplicated.isEmpty
+                items = resolvedItems
+                loadFailed = resolvedItems.isEmpty
             }
         }
     }

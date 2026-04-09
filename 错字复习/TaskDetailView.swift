@@ -18,12 +18,10 @@ struct TaskDetailView: View {
     @State private var subtaskEditorTarget: SubtaskEditorTarget?
     @State private var isCreatingSubtask = false
     @State private var quickSubtaskOccurrenceDate: Date?
-    @State private var quickSubtaskTitleDraft = ""
     @State private var subtaskTitleDraft = ""
     @State private var subtaskNoteDraft = ""
     @State private var subtaskDetailDraft = ""
     @State private var subtaskCompletedDraft = false
-    @FocusState private var quickSubtaskFieldFocused: Bool
     @State private var weekOffset: Int = 0
     @State private var occurrenceSnapshotState = OccurrenceSnapshotState.empty
     @State private var occurrenceSnapshotRefreshTask: Task<Void, Never>?
@@ -491,17 +489,8 @@ struct TaskDetailView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding(14)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(currentOccurrenceCardBackground(for: snapshot))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(currentOccurrenceCardBorder(for: snapshot), lineWidth: 1)
-            )
             .padding(.vertical, 4)
-            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+            .listRowBackground(currentOccurrenceCardBackground(for: snapshot))
         }
     }
 
@@ -618,83 +607,51 @@ struct TaskDetailView: View {
     }
 
     private var quickCreateSubtaskRow: some View {
-        VStack(spacing: 8) {
-            HStack(alignment: .center, spacing: 12) {
-                Image(systemName: "square.and.pencil")
-                    .font(.title3)
-                    .foregroundStyle(.blue)
-                    .frame(width: 28, height: 28)
-
-                TextField("输入子任务标题，输完点下方按钮", text: $quickSubtaskTitleDraft)
-                    .textInputAutocapitalization(.sentences)
-                    .focused($quickSubtaskFieldFocused)
-                    .submitLabel(.done)
+        QuickSubtaskInputView(
+            onSave: { title in
+                saveQuickSubtask(title: title)
+            },
+            onCancel: {
+                cancelQuickSubtaskCreation()
             }
-
-            HStack(spacing: 16) {
-                Spacer()
-
-                Button("取消") {
-                    cancelQuickSubtaskCreation()
-                }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-                Button {
-                    commitIMEAndSave()
-                } label: {
-                    Text("添加子任务")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(
-                            quickSubtaskTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.gray : Color.blue,
-                            in: Capsule()
-                        )
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.vertical, 4)
+        )
     }
 
     private func occurrenceSwitcherSection(title: String, snapshots: [TaskOccurrenceSnapshot]) -> some View {
         Section(title) {
             ForEach(snapshots) { snapshot in
-                HStack(spacing: 12) {
-                    occurrenceLeadingButton(snapshot)
-
-                    Button {
-                        selectedOccurrenceDate = snapshot.occurrenceDate
-                    } label: {
-                        HStack(spacing: 12) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                occurrenceRow(snapshot)
-                            }
-
-                            Spacer()
-
-                            if isSelected(snapshot) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(.blue)
-                            }
-                        }
-                        .padding(12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .fill(occurrenceListCardBackground(for: snapshot))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .stroke(occurrenceListCardBorder(for: snapshot), lineWidth: isSelected(snapshot) ? 1.5 : 1)
-                        )
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
+                occurrenceSwitcherRow(snapshot)
             }
         }
+    }
+
+    private func occurrenceSwitcherRow(_ snapshot: TaskOccurrenceSnapshot) -> some View {
+        HStack(spacing: 12) {
+            occurrenceLeadingButton(snapshot)
+
+            Button {
+                selectedOccurrenceDate = snapshot.occurrenceDate
+            } label: {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        occurrenceRow(snapshot)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Spacer()
+
+                    if isSelected(snapshot) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.blue)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 4)
+        .listRowBackground(occurrenceListCardBackground(for: snapshot))
     }
 
     private var emptyStateSection: some View {
@@ -1402,40 +1359,21 @@ struct TaskDetailView: View {
     private func startQuickSubtaskCreation() {
         guard !isCreatingSubtask else { return }
         quickSubtaskOccurrenceDate = currentOccurrenceDate
-        quickSubtaskTitleDraft = ""
         withAnimation(.easeInOut(duration: 0.2)) {
             isCreatingSubtask = true
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            quickSubtaskFieldFocused = true
         }
     }
 
     private func cancelQuickSubtaskCreation() {
-        quickSubtaskFieldFocused = false
-        quickSubtaskTitleDraft = ""
         quickSubtaskOccurrenceDate = nil
         withAnimation(.easeInOut(duration: 0.2)) {
             isCreatingSubtask = false
         }
     }
 
-    private func commitIMEAndSave() {
-        UIApplication.shared.sendAction(
-            #selector(UIResponder.resignFirstResponder),
-            to: nil,
-            from: nil,
-            for: nil
-        )
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            saveQuickSubtask()
-        }
-    }
-
-    private func saveQuickSubtask() {
+    private func saveQuickSubtask(title: String) {
         guard let date = quickSubtaskOccurrenceDate ?? currentOccurrenceDate else { return }
-        let trimmedTitle = quickSubtaskTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else { return }
         let tid = taskID
         let container = modelContext.container
@@ -1815,6 +1753,82 @@ private struct TaskEditorLoaderView: View {
             } catch {
                 loadFailed = true
             }
+        }
+    }
+}
+
+private struct QuickSubtaskInputView: View {
+    let onSave: (String) -> Void
+    let onCancel: () -> Void
+
+    @State private var draft: String = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "square.and.pencil")
+                    .font(.title3)
+                    .foregroundStyle(.blue)
+                    .frame(width: 28, height: 28)
+
+                TextField("输入子任务标题，输完点下方按钮", text: $draft)
+                    .textInputAutocapitalization(.sentences)
+                    .focused($isFocused)
+                    .submitLabel(.done)
+            }
+
+            HStack(spacing: 16) {
+                Spacer()
+
+                Button("取消") {
+                    isFocused = false
+                    onCancel()
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+                Button {
+                    commitIMEAndSave()
+                } label: {
+                    Text("添加子任务")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(
+                            draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.gray : Color.blue,
+                            in: Capsule()
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 4)
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                isFocused = true
+            }
+        }
+        .onSubmit {
+            commitIMEAndSave()
+        }
+    }
+
+    private func commitIMEAndSave() {
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            onSave(draft)
+            draft = ""
         }
     }
 }
