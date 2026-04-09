@@ -981,7 +981,7 @@ struct HomeView: View {
             Button {
                 activeReviewRoute = HomeReviewRoute(itemIDs: snapshot.dueItemIDs, style: reviewStyle)
             } label: {
-                StatGridCard(icon: "book.closed", title: "待复习", value: "\(snapshot.dueItems.count)", tint: .orange)
+                StatGridCard(icon: "book.closed", title: "今日复习", value: "\(snapshot.dueItems.count)", tint: .orange)
             }
             .buttonStyle(.plain)
             .disabled(snapshot.dueItems.isEmpty)
@@ -1067,10 +1067,10 @@ struct HomeView: View {
                 }
                 .font(.title3.weight(.semibold))
 
-                Text(snapshot.dueItems.isEmpty ? "今天复习已经全部完成了" : "还有 \(snapshot.dueItems.count) 项待复习")
+                Text(reviewStatusText(snapshot))
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.9))
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
             
             Spacer()
@@ -1114,7 +1114,7 @@ struct HomeView: View {
                         Text(dictationStatusText(snapshot))
                             .font(.subheadline)
                             .foregroundStyle(.white.opacity(0.9))
-                            .lineLimit(1)
+                            .lineLimit(2)
                     }
 
                     Spacer()
@@ -1166,6 +1166,18 @@ struct HomeView: View {
         isAddReviewActive = true
     }
 
+    private func reviewStatusText(_ snapshot: DashboardSnapshot) -> String {
+        guard !snapshot.dueItems.isEmpty else {
+            return "今天复习已经全部完成了"
+        }
+
+        if snapshot.allDueCount > snapshot.dueItems.count {
+            return "今天到期 \(snapshot.allDueCount) 项，当前先练 \(snapshot.dueItems.count) 项"
+        }
+
+        return "还有 \(snapshot.dueItems.count) 项待复习"
+    }
+
     private func dictationStatusText(_ snapshot: DashboardSnapshot) -> String {
         guard let latestDictationSession = snapshot.latestDictationSession else {
             return "今天还没有新增听写内容"
@@ -1179,6 +1191,10 @@ struct HomeView: View {
             status = "待判定"
         } else {
             status = "进行中"
+        }
+
+        if snapshot.pendingDictationCount > count, !latestDictationSession.isReviewed {
+            return "待听写共 \(snapshot.pendingDictationCount) 条 · 当前「\(latestDictationSession.title)」\(count) 条 · \(status)"
         }
 
         return "\(latestDictationSession.title) · \(count) 条 · \(status)"

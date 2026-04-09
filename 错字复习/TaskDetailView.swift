@@ -227,6 +227,10 @@ struct TaskDetailView: View {
                         occurrenceSwitcherSection(title: "待处理记录", snapshots: pendingOccurrences)
                     }
 
+                    if !upcomingOccurrences.isEmpty {
+                        occurrenceSwitcherSection(title: "未来待办", snapshots: upcomingOccurrences)
+                    }
+
                     if !completedOccurrences.isEmpty {
                         occurrenceSwitcherSection(title: "已完成历史", snapshots: completedOccurrences)
                     }

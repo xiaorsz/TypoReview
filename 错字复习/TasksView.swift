@@ -203,11 +203,11 @@ struct TasksView: View {
         }
 
         if !allTasks.isEmpty {
-            otherTaskSection("所有任务", tasks: allTasks)
+            otherTaskSection("任务管理", tasks: allTasks)
         }
 
         if !otherSchedules.isEmpty {
-            scheduleSection("其它日程", schedules: otherSchedules)
+            scheduleSection("日程管理", schedules: otherSchedules)
         }
     }
 
