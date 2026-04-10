@@ -90,16 +90,22 @@ struct DeferredDictationHomeView: View {
             if isReady {
                 DictationHomeView()
             } else {
-                VStack(spacing: 12) {
-                    ProgressView()
-                    Text("正在打开听写安排...")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                List {
+                    Section {
+                        HStack(spacing: 12) {
+                            ProgressView()
+                            Text("正在打开听写安排...")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 20)
+                    }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .scrollContentBackground(.hidden)
                 .background(Color(uiColor: .systemGroupedBackground))
                 .navigationTitle("听写安排")
-                .navigationBarTitleDisplayMode(.inline)
+                .navigationBarTitleDisplayMode(.large)
             }
         }
         .onAppear {
