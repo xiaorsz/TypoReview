@@ -193,6 +193,8 @@ struct TaskExecutionRecordProjection: Sendable {
     let occurrenceDate: Date
     let detail: String
     let status: TaskExecutionStatus
+    let completedAt: Date?
+    let updatedAt: Date
 
     init(_ record: TaskExecutionRecord) {
         id = record.id
@@ -200,6 +202,8 @@ struct TaskExecutionRecordProjection: Sendable {
         occurrenceDate = record.occurrenceDate
         detail = record.detail
         status = record.status
+        completedAt = record.completedAt
+        updatedAt = record.updatedAt
     }
 }
 
@@ -321,9 +325,10 @@ enum TaskExecutionSupport {
         in executions: [TaskExecutionRecord]
     ) -> TaskExecutionRecord? {
         let targetDay = day(for: occurrenceDate)
-        return executions.first(where: {
+        let matchingRecords = executions.filter {
             $0.taskID == taskID && Calendar.current.isDate($0.occurrenceDate, inSameDayAs: targetDay)
-        })
+        }
+        return preferredExecutionRecord(in: matchingRecords)
     }
 
     static func subtaskProgress(
@@ -370,7 +375,7 @@ enum TaskExecutionSupport {
 
         return task.scheduledOccurrenceDates(upTo: date).compactMap { occurrenceDate in
             let dateKey = day(for: occurrenceDate)
-            let record = executionsByDate[dateKey]?.first
+            let record = preferredExecutionRecord(in: executionsByDate[dateKey] ?? [])
 
             // O(1) 获取子任务，避免 O(M) 次读取数据库对象属性
             let occurrenceSubtasks: [TaskSubitem] = {
@@ -431,7 +436,7 @@ enum TaskExecutionSupport {
 
         return task.scheduledOccurrenceDates(upTo: date).compactMap { occurrenceDate in
             let dateKey = day(for: occurrenceDate)
-            let record = executionsByDate[dateKey]?.first
+            let record = preferredExecutionRecord(in: executionsByDate[dateKey] ?? [])
             let occurrenceSubtasks: [TaskSubitemProjection] = {
                 guard let executionID = record?.id else { return [] }
                 return (subtasksByExecutionID[executionID] ?? []).sorted(by: sortSubtasks)
@@ -613,6 +618,44 @@ enum TaskExecutionSupport {
         if task.recurrence.kind == .once {
             task.isArchived = false
         }
+    }
+
+    private static func preferredExecutionRecord(
+        in records: [TaskExecutionRecord]
+    ) -> TaskExecutionRecord? {
+        records.max { lhs, rhs in
+            executionRecordSortKey(for: lhs) < executionRecordSortKey(for: rhs)
+        }
+    }
+
+    private static func preferredExecutionRecord(
+        in records: [TaskExecutionRecordProjection]
+    ) -> TaskExecutionRecordProjection? {
+        records.max { lhs, rhs in
+            executionRecordSortKey(for: lhs) < executionRecordSortKey(for: rhs)
+        }
+    }
+
+    private static func executionRecordSortKey(
+        for record: TaskExecutionRecord
+    ) -> (Int, Date, Date, UUID) {
+        (
+            record.status == .completed ? 1 : 0,
+            record.completedAt ?? .distantPast,
+            record.updatedAt,
+            record.id
+        )
+    }
+
+    private static func executionRecordSortKey(
+        for record: TaskExecutionRecordProjection
+    ) -> (Int, Date, Date, UUID) {
+        (
+            record.status == .completed ? 1 : 0,
+            record.completedAt ?? .distantPast,
+            record.updatedAt,
+            record.id
+        )
     }
 
     static func targetMigrationOccurrenceDate(
@@ -843,7 +886,8 @@ enum TodayTaskProjectionBuilder {
                 for: task,
                 executions: executionsByTask[task.id] ?? [],
                 subtasks: subtasksByTask[task.id] ?? [],
-                on: lookaheadDay
+                referenceDay: today,
+                upTo: lookaheadDay
             )
             let pendingCount = snapshots.filter { !$0.isCompleted }.count
 
@@ -897,10 +941,12 @@ enum TodayTaskProjectionBuilder {
         for task: TaskProjection,
         executions: [TaskExecutionRecordProjection],
         subtasks: [TaskSubitemProjection],
-        on date: Date = .now
+        referenceDay: Date,
+        upTo date: Date
     ) -> [ProjectedTaskOccurrenceSnapshot] {
         let calendar = Calendar.current
-        let today = Calendar.current.startOfDay(for: date)
+        let today = Calendar.current.startOfDay(for: referenceDay)
+        let targetDate = Calendar.current.startOfDay(for: date)
 
         // 优化：使用字典分组，避免 O(N*M) 性能问题和属性读取阻塞
         let taskExecutions = executions.filter { $0.taskID == task.id }
@@ -913,9 +959,9 @@ enum TodayTaskProjectionBuilder {
         }
         let subtasksByExecutionID = Dictionary(grouping: validSubtasks) { $0.taskExecutionID! }
 
-        return task.scheduledOccurrenceDates(upTo: date).compactMap { occurrenceDate in
+        return task.scheduledOccurrenceDates(upTo: targetDate).compactMap { occurrenceDate in
             let dateKey = Calendar.current.startOfDay(for: occurrenceDate)
-            let record = executionsByDate[dateKey]?.first
+            let record = preferredExecutionRecord(in: executionsByDate[dateKey] ?? [])
             
             let occurrenceSubtasks: [TaskSubitemProjection] = {
                 guard let executionID = record?.id else { return [] }
@@ -961,9 +1007,48 @@ enum TodayTaskProjectionBuilder {
         in executions: [TaskExecutionRecordProjection]
     ) -> TaskExecutionRecordProjection? {
         let targetDay = Calendar.current.startOfDay(for: occurrenceDate)
-        return executions.first(where: {
+        let matchingRecords = executions.filter {
             $0.taskID == taskID && Calendar.current.isDate($0.occurrenceDate, inSameDayAs: targetDay)
-        })
+        }
+        return preferredExecutionRecord(in: matchingRecords)
+    }
+
+    private static func preferredExecutionRecord(
+        in records: [TaskExecutionRecord]
+    ) -> TaskExecutionRecord? {
+        records.max { lhs, rhs in
+            executionRecordSortKey(for: lhs) < executionRecordSortKey(for: rhs)
+        }
+    }
+
+    private static func preferredExecutionRecord(
+        in records: [TaskExecutionRecordProjection]
+    ) -> TaskExecutionRecordProjection? {
+        records.max { lhs, rhs in
+            executionRecordSortKey(for: lhs) < executionRecordSortKey(for: rhs)
+        }
+    }
+
+    private static func executionRecordSortKey(
+        for record: TaskExecutionRecord
+    ) -> (Int, Date, Date, UUID) {
+        (
+            record.status == .completed ? 1 : 0,
+            record.completedAt ?? .distantPast,
+            record.updatedAt,
+            record.id
+        )
+    }
+
+    private static func executionRecordSortKey(
+        for record: TaskExecutionRecordProjection
+    ) -> (Int, Date, Date, UUID) {
+        (
+            record.status == .completed ? 1 : 0,
+            record.completedAt ?? .distantPast,
+            record.updatedAt,
+            record.id
+        )
     }
 
     private static func isOccurrenceCompleted(

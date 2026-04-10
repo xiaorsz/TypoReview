@@ -1101,22 +1101,55 @@ struct TaskDetailView: View {
                     return (nil, [], [], [], [], nil, nil)
                 }
                 let taskProjection = TaskProjection(t)
+                let detailLookaheadDay = Calendar.current.date(
+                    byAdding: .day,
+                    value: 7,
+                    to: TaskExecutionSupport.day(for: .now)
+                ) ?? TaskExecutionSupport.day(for: .now)
                 let refreshUpperBound = max(
-                    TaskExecutionSupport.day(for: .now),
+                    detailLookaheadDay,
                     TaskExecutionSupport.day(for: visibleGridEndDate),
                     requestedSelectedDate.map(TaskExecutionSupport.day(for:)) ?? TaskExecutionSupport.day(for: .now)
                 )
                 
                 let records = (try? ctx.fetch(FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.taskID == tid }))) ?? []
                 let subtasks = (try? ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))) ?? []
+                let scheduledToday = t.scheduledOccurrenceDates(upTo: TaskExecutionSupport.day(for: .now)).contains {
+                    Calendar.current.isDate($0, inSameDayAs: .now)
+                }
                 
-                let snapshots = TaskExecutionSupport.occurrenceSnapshots(
+                var snapshots = TaskExecutionSupport.occurrenceSnapshots(
                     for: t,
                     executions: records,
                     subtasks: subtasks,
                     subtaskExecutions: [],
                     on: refreshUpperBound
                 )
+                let todayDay = TaskExecutionSupport.day(for: .now)
+                let scheduledDates = taskProjection.scheduledOccurrenceDates(upTo: refreshUpperBound)
+                let existingSnapshotDays = Set(
+                    snapshots.map { TaskExecutionSupport.day(for: $0.occurrenceDate) }
+                )
+                let missingScheduledSnapshots = scheduledDates
+                    .map(TaskExecutionSupport.day(for:))
+                    .filter { $0 >= todayDay && !existingSnapshotDays.contains($0) }
+                    .map { occurrenceDate in
+                        TaskOccurrenceSnapshot(
+                            taskID: taskProjection.id,
+                            occurrenceDate: occurrenceDate,
+                            isCompleted: false,
+                            overdueOriginText: nil,
+                            executionRecordID: nil,
+                            executionDetail: "",
+                            hasDetail: false,
+                            totalSubtaskCount: 0,
+                            completedSubtaskCount: 0
+                        )
+                    }
+                if !missingScheduledSnapshots.isEmpty {
+                    snapshots.append(contentsOf: missingScheduledSnapshots)
+                    snapshots.sort { $0.occurrenceDate < $1.occurrenceDate }
+                }
                 let subProjections = subtasks.filter { !$0.isArchived }.map(TaskSubitemProjection.init)
                 let recProjections = records.map(TaskExecutionRecordProjection.init)
                 
@@ -1141,9 +1174,16 @@ struct TaskDetailView: View {
                 } else {
                      curSubProjections = []
                 }
+
+                let snapshotSummary = snapshots
+                    .map { "\(Self.perfDateLabel($0.occurrenceDate)):\($0.isCompleted ? "done" : "pending")" }
+                    .joined(separator: ",")
+                let recordSummary = records
+                    .map { "\(Self.perfDateLabel($0.occurrenceDate)):\($0.status.rawValue)" }
+                    .joined(separator: ",")
                 
                 Self.perfMark(
-                    "refresh bg end id=\(refreshID) elapsed=\(Self.perfMillis(since: backgroundStartedAt)) snapshots=\(snapshots.count) records=\(records.count) subtasks=\(subtasks.count) currentSubtasks=\(curSubProjections.count)"
+                    "refresh bg end id=\(refreshID) elapsed=\(Self.perfMillis(since: backgroundStartedAt)) taskID=\(t.id.uuidString.prefix(6)) archived=\(t.isArchived) start=\(Self.perfDateLabel(t.startDate)) end=\(Self.perfDateLabel(t.endDate)) scheduledToday=\(scheduledToday) snapshots=\(snapshotSummary) records=\(recordSummary) subtasks=\(subtasks.count) currentSubtasks=\(curSubProjections.count)"
                 )
                 return (taskProjection, snapshots, subProjections, recProjections, curSubProjections, curRec, resolvedSelectedDate)
             }.value
@@ -1194,10 +1234,11 @@ struct TaskDetailView: View {
         )
     ) {
         taskUnavailableApplyProjection(projection)
+        let todayDay = TaskExecutionSupport.day(for: .now)
         occurrenceSnapshotState = OccurrenceSnapshotState(
-            pending: result.1.filter { !$0.isCompleted && $0.occurrenceDate < TaskExecutionSupport.day(for: .now) },
+            pending: result.1.filter { !$0.isCompleted && $0.occurrenceDate <= todayDay },
             completed: result.1.filter { $0.isCompleted }.sorted { $0.occurrenceDate > $1.occurrenceDate },
-            upcoming: result.1.filter { !$0.isCompleted && $0.occurrenceDate >= TaskExecutionSupport.day(for: .now) }
+            upcoming: result.1.filter { !$0.isCompleted && $0.occurrenceDate > todayDay }
         )
         allSubtasks = result.2
         allExecutionRecords = result.3

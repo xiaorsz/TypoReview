@@ -39,6 +39,9 @@ struct Provider: TimelineProvider {
             ReviewRecord.self,
             TaskItem.self,
             TaskCompletion.self,
+            TaskSubitem.self,
+            TaskExecutionRecord.self,
+            TaskSubitemExecutionRecord.self,
             AppSettings.self,
             DictationSession.self,
             DictationEntry.self,
@@ -67,7 +70,7 @@ struct Provider: TimelineProvider {
             let taskCompletions = (try? context.fetch(FetchDescriptor<TaskCompletion>())) ?? []
             configuredTaskCount = allTasks.filter { !$0.isArchived }.count
             let taskItems = TodayTaskListBuilder.build(from: allTasks, completions: taskCompletions, on: today)
-            completedTaskCount = taskItems.filter(\.isCompleted).count
+            completedTaskCount = taskItems.filter { $0.isCompleted }.count
             todayTasks = taskItems.map {
                 WidgetTaskItem(
                     id: $0.task.id,
@@ -80,7 +83,7 @@ struct Provider: TimelineProvider {
         
         var reviewsCount = 0
         if let reviewItems = try? context.fetch(FetchDescriptor<ReviewItem>()) {
-            reviewsCount = reviewItems.filter { $0.nextReviewAt <= .now }.count
+            reviewsCount = reviewItems.filter { $0.nextReviewAt <= Date.now }.count
         }
         
         var dictationsCount = 0

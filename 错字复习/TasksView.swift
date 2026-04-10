@@ -376,13 +376,24 @@ struct TasksView: View {
                 let safeExecutions = (try? backgroundContext.fetch(executesDesc)) ?? []
                 let safeSubtasks = (try? backgroundContext.fetch(subtasksDesc)) ?? []
 
-                let completedTodayTaskIDs = Set(
-                    safeExecutions
-                        .filter { $0.status == .completed && calendar.isDate($0.occurrenceDate, inSameDayAs: referenceDate) }
-                        .map(\.taskID)
+                let autoArchivedCompletedAtByTaskID = Dictionary(
+                    safeExecutions.compactMap { record -> (UUID, Date)? in
+                        guard record.status == .completed,
+                              let completedAt = record.completedAt,
+                              calendar.isDate(completedAt, inSameDayAs: referenceDate) else {
+                            return nil
+                        }
+                        return (record.taskID, completedAt)
+                    },
+                    uniquingKeysWith: max
                 )
-                let visibleTasks = allTasks.filter {
-                    !$0.isArchived || completedTodayTaskIDs.contains($0.id)
+                let visibleTasks = allTasks.filter { task in
+                    guard task.isArchived else { return true }
+                    guard task.recurrence.kind == .once,
+                          let completedAt = autoArchivedCompletedAtByTaskID[task.id] else {
+                        return false
+                    }
+                    return task.updatedAt <= completedAt
                 }
 
                 let taskProjections = visibleTasks.map(TaskProjection.init)
@@ -396,7 +407,21 @@ struct TasksView: View {
                     on: referenceDate
                 )
                 #if DEBUG
-                DebugPerf.mark("TasksView background snapshot end tasks=\(visibleTasks.count) records=\(safeExecutions.count) subtasks=\(safeSubtasks.count)")
+                let todayPendingSummaries = result
+                    .filter { $0.section == .todayPending }
+                    .map { projection in
+                        let title = visibleTasks.first(where: { $0.id == projection.taskID })?.title ?? "?"
+                        return "\(title)#\(projection.taskID.uuidString.prefix(6))@\(projection.occurrenceDate.formatted(.dateTime.month().day()))"
+                    }
+                    .joined(separator: ",")
+                let todayDoneSummaries = result
+                    .filter { $0.section == .todayDone }
+                    .map { projection in
+                        let title = visibleTasks.first(where: { $0.id == projection.taskID })?.title ?? "?"
+                        return "\(title)#\(projection.taskID.uuidString.prefix(6))@\(projection.occurrenceDate.formatted(.dateTime.month().day()))"
+                    }
+                    .joined(separator: ",")
+                DebugPerf.mark("TasksView background snapshot end tasks=\(visibleTasks.count) records=\(safeExecutions.count) subtasks=\(safeSubtasks.count) todayPending=\(todayPendingSummaries) todayDone=\(todayDoneSummaries)")
                 #endif
                 return result
             }.value
@@ -404,8 +429,9 @@ struct TasksView: View {
             guard !Task.isCancelled else { return }
             guard let validProjectedItems = projectedItems else { return }
             guard canRenderLiveContent else { return }
+            let latestTaskModels = (try? modelContext.fetch(FetchDescriptor<TaskItem>())) ?? (activeTasks + archivedTasks)
             let tasksByID = Dictionary(
-                (activeTasks + archivedTasks).map { ($0.id, $0) },
+                latestTaskModels.map { ($0.id, $0) },
                 uniquingKeysWith: { first, _ in first }
             )
             todayTasksSnapshot = TodayTaskProjectionBuilder.displayItems(
@@ -539,12 +565,21 @@ struct TasksView: View {
         .padding(.vertical, 4)
         .iOS17SafeSwipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button("归档", systemImage: "archivebox", role: .destructive) {
-                withAnimation {
-                    task.isArchived = true
-                }
-                saveAndReloadWidgetsDeferred()
+                archiveTask(task)
             }
         }
+    }
+
+    private func archiveTask(_ task: TaskItem) {
+        withAnimation {
+            task.isArchived = true
+            task.updatedAt = .now
+            todayTasksSnapshot.removeAll { $0.task.id == task.id }
+        }
+
+        try? modelContext.save()
+        saveAndReloadWidgetsDeferred()
+        NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
     }
 
     private func toggleCompletion(for task: TaskItem, occurrenceDate: Date, isDone: Bool) {

@@ -766,14 +766,25 @@ struct HomeView: View {
                     FetchDescriptor<TaskSubitem>(predicate: #Predicate<TaskSubitem> { !$0.isArchived })
                 )) ?? []
 
-                let completedTodayTaskIDs = Set(
-                    executionModels
-                        .filter { $0.status == .completed && calendar.isDate($0.occurrenceDate, inSameDayAs: referenceDate) }
-                        .map(\.taskID)
+                let autoArchivedCompletedAtByTaskID = Dictionary(
+                    executionModels.compactMap { record -> (UUID, Date)? in
+                        guard record.status == .completed,
+                              let completedAt = record.completedAt,
+                              calendar.isDate(completedAt, inSameDayAs: referenceDate) else {
+                            return nil
+                        }
+                        return (record.taskID, completedAt)
+                    },
+                    uniquingKeysWith: max
                 )
                 let activeTaskModels = allTaskModels.filter { !$0.isArchived }
-                let visibleTaskModels = allTaskModels.filter {
-                    !$0.isArchived || completedTodayTaskIDs.contains($0.id)
+                let visibleTaskModels = allTaskModels.filter { task in
+                    guard task.isArchived else { return true }
+                    guard task.recurrence.kind == .once,
+                          let completedAt = autoArchivedCompletedAtByTaskID[task.id] else {
+                        return false
+                    }
+                    return task.updatedAt <= completedAt
                 }
 
                 let taskProjections = visibleTaskModels.map(TaskProjection.init)
@@ -793,7 +804,15 @@ struct HomeView: View {
                 }
 
                 #if DEBUG
-                DebugPerf.mark("HomeView background snapshot fetch end reviews=\(reviewModels.count) records=\(reviewRecordModels.count) sessions=\(sessionModels.count) entries=\(entryModels.count) schedules=\(scheduleModels.count) tasks=\(visibleTaskModels.count)")
+                let todayPendingSummaries = taskDisplayItems
+                    .filter { $0.section == .todayPending }
+                    .map { "\($0.task.title)#\($0.task.id.uuidString.prefix(6))@\($0.occurrenceDate.formatted(.dateTime.month().day()))" }
+                    .joined(separator: ",")
+                let todayDoneSummaries = taskDisplayItems
+                    .filter { $0.section == .todayDone }
+                    .map { "\($0.task.title)#\($0.task.id.uuidString.prefix(6))@\($0.occurrenceDate.formatted(.dateTime.month().day()))" }
+                    .joined(separator: ",")
+                DebugPerf.mark("HomeView background snapshot fetch end reviews=\(reviewModels.count) records=\(reviewRecordModels.count) sessions=\(sessionModels.count) entries=\(entryModels.count) schedules=\(scheduleModels.count) tasks=\(visibleTaskModels.count) todayPending=\(todayPendingSummaries) todayDone=\(todayDoneSummaries)")
                 #endif
 
                 return DashboardSnapshot.make(
@@ -1317,7 +1336,10 @@ struct HomeView: View {
                     }
                 }
 
-                if pendingItems.isEmpty && historicalItems.isEmpty && snapshot.activeTaskCount > 0 {
+                if pendingItems.isEmpty &&
+                    historicalItems.isEmpty &&
+                    doneCount == 0 &&
+                    snapshot.activeTaskCount > 0 {
                     Text("今天没有待完成的任务。")
                         .foregroundStyle(.secondary)
                         .font(.subheadline)

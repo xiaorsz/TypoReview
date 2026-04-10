@@ -145,7 +145,6 @@ final class TaskItem {
     }
 
     func originShortText(for pendingDate: Date) -> String {
-        let calendar = Calendar.current
         return pendingDate.formatted(.dateTime.month().day())
     }
 

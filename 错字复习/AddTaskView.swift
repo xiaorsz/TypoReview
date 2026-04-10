@@ -17,6 +17,7 @@ struct AddTaskView: View {
     @State private var endDate: Date = .now
     @State private var hasEndDate = false
     @State private var showSaveToast = false
+    @State private var persistenceErrorMessage: String?
 
     init(task: TaskItem? = nil) {
         self.existingTask = task
@@ -51,6 +52,11 @@ struct AddTaskView: View {
             .frame(maxWidth: .infinity)
         }
         .toast("已保存 ✓", isPresented: $showSaveToast, duration: 0.8)
+        .alert("保存失败", isPresented: Binding(get: { persistenceErrorMessage != nil }, set: { if !$0 { persistenceErrorMessage = nil } })) {
+            Button("知道了") { persistenceErrorMessage = nil }
+        } message: {
+            Text(persistenceErrorMessage ?? "发生未知错误")
+        }
         .navigationTitle(existingTask == nil ? "新增任务" : "编辑任务")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -232,6 +238,7 @@ struct AddTaskView: View {
     }
 
     private func save() {
+        let actionID = String(UUID().uuidString.prefix(6))
         let recurrence: TaskRecurrence
         switch recurrenceKind {
         case .once:
@@ -242,6 +249,14 @@ struct AddTaskView: View {
             recurrence = .weekly(Array(selectedWeekdays))
         }
 
+        #if DEBUG
+        DebugPerf.mark(
+            "AddTaskView save begin id=\(actionID) existing=\(existingTask != nil) title=\(title.trimmingCharacters(in: .whitespacesAndNewlines)) recurrence=\(recurrence.kind.rawValue) start=\(debugDateLabel(startDate)) end=\(debugDateLabel(recurrenceKind == .once ? nil : (hasEndDate ? endDate : nil))) hasEnd=\(hasEndDate)"
+        )
+        #endif
+
+        let savedTask: TaskItem
+
         if let existingTask {
             existingTask.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
             existingTask.note = note.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -250,6 +265,7 @@ struct AddTaskView: View {
             existingTask.startDate = startDate
             existingTask.endDate = recurrenceKind == .once ? nil : (hasEndDate ? endDate : nil)
             existingTask.updatedAt = .now
+            savedTask = existingTask
         } else {
             let task = TaskItem(
                 title: title.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -260,20 +276,73 @@ struct AddTaskView: View {
                 endDate: recurrenceKind == .once ? nil : (hasEndDate ? endDate : nil)
             )
             modelContext.insert(task)
+            savedTask = task
+        }
+
+        do {
+            try ensureTodayExecutionRecordIfNeeded(for: savedTask)
+            try modelContext.save()
+            #if DEBUG
+            let taskID = savedTask.id
+            let persistedTask = try? modelContext.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate<TaskItem> { $0.id == taskID })).first
+            let persistedExecutions = (try? modelContext.fetch(FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate<TaskExecutionRecord> { $0.taskID == taskID }))) ?? []
+            let today = TaskExecutionSupport.day(for: .now)
+            let todayExecution = persistedExecutions.first { Calendar.current.isDate($0.occurrenceDate, inSameDayAs: today) }
+            DebugPerf.mark(
+                "AddTaskView save success id=\(actionID) taskID=\(taskID.uuidString.prefix(6)) archived=\(persistedTask?.isArchived ?? savedTask.isArchived) start=\(debugDateLabel(persistedTask?.startDate ?? savedTask.startDate)) end=\(debugDateLabel(persistedTask?.endDate ?? savedTask.endDate)) executions=\(persistedExecutions.count) todayExecution=\(todayExecution != nil) todayStatus=\(todayExecution?.status.rawValue ?? "nil")"
+            )
+            #endif
+            WidgetCenter.shared.reloadAllTimelinesInBackground()
+            NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
+        } catch {
+            #if DEBUG
+            DebugPerf.mark("AddTaskView save failed id=\(actionID) error=\(error.localizedDescription)")
+            #endif
+            persistenceErrorMessage = error.localizedDescription
+            return
         }
 
         withAnimation {
             showSaveToast = true
         }
         
-        Task { @MainActor in
-            try? modelContext.save()
-            WidgetCenter.shared.reloadAllTimelinesInBackground()
-            NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
-        }
-        
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
             dismiss()
         }
+    }
+
+    private func ensureTodayExecutionRecordIfNeeded(for task: TaskItem) throws {
+        let today = TaskExecutionSupport.day(for: .now)
+        let isScheduledToday = task.scheduledOccurrenceDates(upTo: today).contains {
+            Calendar.current.isDate($0, inSameDayAs: today)
+        }
+        #if DEBUG
+        DebugPerf.mark(
+            "AddTaskView ensureTodayRecord taskID=\(task.id.uuidString.prefix(6)) scheduledToday=\(isScheduledToday) start=\(debugDateLabel(task.startDate)) end=\(debugDateLabel(task.endDate)) archived=\(task.isArchived)"
+        )
+        #endif
+        guard isScheduledToday else { return }
+
+        let taskID = task.id
+        let descriptor = FetchDescriptor<TaskExecutionRecord>(
+            predicate: #Predicate<TaskExecutionRecord> { $0.taskID == taskID }
+        )
+        let existingExecutions = try modelContext.fetch(descriptor)
+        let record = TaskExecutionSupport.ensureExecutionRecord(
+            for: task,
+            occurrenceDate: today,
+            existingExecutions: existingExecutions,
+            modelContext: modelContext
+        )
+        #if DEBUG
+        DebugPerf.mark(
+            "AddTaskView ensured today record taskID=\(taskID.uuidString.prefix(6)) existingExecutions=\(existingExecutions.count) recordID=\(record.id.uuidString.prefix(6)) status=\(record.status.rawValue) occurrence=\(debugDateLabel(record.occurrenceDate))"
+        )
+        #endif
+    }
+
+    private func debugDateLabel(_ date: Date?) -> String {
+        guard let date else { return "nil" }
+        return date.formatted(.dateTime.year().month().day().hour().minute().second())
     }
 }

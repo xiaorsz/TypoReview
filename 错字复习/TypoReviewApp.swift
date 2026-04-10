@@ -50,6 +50,7 @@ struct TypoReviewApp: App {
         let defaultStoreURL = appSupportDir.appendingPathComponent("default.store")
         let cloudConfiguration: ModelConfiguration
         let fallbackConfiguration: ModelConfiguration
+        let pendingExecutionTableRepairStoreURL: URL?
 
         if let groupURL = fileManager.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier) {
             cloudConfiguration = ModelConfiguration(
@@ -70,6 +71,10 @@ struct TypoReviewApp: App {
                 fileManager: fileManager
             )
             Self.repairLegacySchemaIfNeeded(at: cloudConfiguration.url, fileManager: fileManager)
+            pendingExecutionTableRepairStoreURL = Self.prepareMissingTaskExecutionTableRepairIfNeeded(
+                at: cloudConfiguration.url,
+                fileManager: fileManager
+            )
         } else {
             print("WARNING: App Group container URL is nil. Falling back to default store URL.")
             cloudConfiguration = ModelConfiguration(
@@ -83,6 +88,10 @@ struct TypoReviewApp: App {
                 cloudKitDatabase: .none
             )
             Self.repairLegacySchemaIfNeeded(at: defaultStoreURL, fileManager: fileManager)
+            pendingExecutionTableRepairStoreURL = Self.prepareMissingTaskExecutionTableRepairIfNeeded(
+                at: defaultStoreURL,
+                fileManager: fileManager
+            )
         }
 
         do {
@@ -93,6 +102,19 @@ struct TypoReviewApp: App {
             #if DEBUG
             DebugPerf.mark("TypoReviewApp ModelContainer cloud init success")
             #endif
+            Self.ensureTaskSystemTablesExist(
+                in: container.mainContext,
+                storeURL: cloudConfiguration.url
+            )
+            Self.importLegacyStoreForMissingExecutionTableRepairIfNeeded(
+                from: pendingExecutionTableRepairStoreURL,
+                into: container,
+                fileManager: fileManager
+            )
+            Self.ensureTaskSystemTablesExist(
+                in: container.mainContext,
+                storeURL: cloudConfiguration.url
+            )
             Self.migrateLegacyTaskExecutionsIfNeeded(in: container.mainContext)
             TaskExecutionSupport.migrateLegacySubtasksIfNeeded(in: container.mainContext)
             _ = try? AppSettings.ensureSingleton(in: container.mainContext)
@@ -121,6 +143,19 @@ struct TypoReviewApp: App {
                 #if DEBUG
                 DebugPerf.mark("TypoReviewApp ModelContainer fallback init success")
                 #endif
+                Self.ensureTaskSystemTablesExist(
+                    in: container.mainContext,
+                    storeURL: fallbackConfiguration.url
+                )
+                Self.importLegacyStoreForMissingExecutionTableRepairIfNeeded(
+                    from: pendingExecutionTableRepairStoreURL,
+                    into: container,
+                    fileManager: fileManager
+                )
+                Self.ensureTaskSystemTablesExist(
+                    in: container.mainContext,
+                    storeURL: fallbackConfiguration.url
+                )
                 Self.migrateLegacyTaskExecutionsIfNeeded(in: container.mainContext)
                 TaskExecutionSupport.migrateLegacySubtasksIfNeeded(in: container.mainContext)
                 _ = try? AppSettings.ensureSingleton(in: container.mainContext)
@@ -187,10 +222,261 @@ struct TypoReviewApp: App {
             withIntermediateDirectories: true
         )
 
-        for (source, target) in zip(storeBundleURLs(for: sourceURL), storeBundleURLs(for: targetURL)) {
+        removeStoreBundle(at: targetURL, fileManager: fileManager)
+
+        for (source, target) in zip(storeArtifactURLs(for: sourceURL), storeArtifactURLs(for: targetURL)) {
             guard fileManager.fileExists(atPath: source.path) else { continue }
             try fileManager.moveItem(at: source, to: target)
         }
+    }
+
+    private static func removeStoreBundle(
+        at baseURL: URL,
+        fileManager: FileManager
+    ) {
+        for url in storeArtifactURLs(for: baseURL) where fileManager.fileExists(atPath: url.path) {
+            try? fileManager.removeItem(at: url)
+        }
+    }
+
+    private static func prepareMissingTaskExecutionTableRepairIfNeeded(
+        at storeURL: URL,
+        fileManager: FileManager
+    ) -> URL? {
+        guard fileManager.fileExists(atPath: storeURL.path) else { return nil }
+
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(storeURL.path, &database, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+            if let database {
+                sqlite3_close(database)
+            }
+            return nil
+        }
+
+        defer { sqlite3_close(database) }
+        guard let database else { return nil }
+
+        let hasTaskSubitemTable = tableExists(named: "ZTASKSUBITEM", in: database)
+        let hasTaskExecutionRecordTable = tableExists(named: "ZTASKEXECUTIONRECORD", in: database)
+        let hasTaskSubitemExecutionRecordTable = tableExists(named: "ZTASKSUBITEMEXECUTIONRECORD", in: database)
+        guard !hasTaskSubitemTable || !hasTaskExecutionRecordTable || !hasTaskSubitemExecutionRecordTable else {
+            return nil
+        }
+
+        let backupURL = storeURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("\(storeURL.deletingPathExtension().lastPathComponent)-execution-table-repair.store")
+
+        removeStoreBundle(at: backupURL, fileManager: fileManager)
+
+        do {
+            try moveStoreBundle(from: storeURL, to: backupURL, fileManager: fileManager)
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp prepared missing execution table repair backup=\(backupURL.lastPathComponent) missingTaskSubitem=\(!hasTaskSubitemTable) missingTaskExecution=\(!hasTaskExecutionRecordTable) missingSubitemExecution=\(!hasTaskSubitemExecutionRecordTable)")
+            #endif
+            return backupURL
+        } catch {
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp failed to prepare missing execution table repair error=\(error.localizedDescription)")
+            #endif
+            return nil
+        }
+    }
+
+    private static func importLegacyStoreForMissingExecutionTableRepairIfNeeded(
+        from legacyStoreURL: URL?,
+        into container: ModelContainer,
+        fileManager: FileManager
+    ) {
+        guard let legacyStoreURL else { return }
+        guard fileManager.fileExists(atPath: legacyStoreURL.path) else { return }
+
+        let legacySchema = Schema([
+            ReviewItem.self,
+            ReviewRecord.self,
+            TaskItem.self,
+            TaskCompletion.self,
+            TaskSubitem.self,
+            AppSettings.self,
+            DictationSession.self,
+            DictationEntry.self,
+            ScheduleItem.self,
+            MediaAsset.self
+        ])
+
+        do {
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp missing execution table repair import begin backup=\(legacyStoreURL.lastPathComponent)")
+            #endif
+
+            let legacyConfiguration = ModelConfiguration(
+                schema: legacySchema,
+                url: legacyStoreURL,
+                cloudKitDatabase: .none
+            )
+            let legacyContainer = try ModelContainer(for: legacySchema, configurations: [legacyConfiguration])
+            let legacyContext = legacyContainer.mainContext
+            let modelContext = container.mainContext
+
+            if let settings = (try? legacyContext.fetch(FetchDescriptor<AppSettings>()))?.first {
+                modelContext.insert(AppSettingsSnapshot(settings).makeModel())
+            }
+
+            ((try? legacyContext.fetch(FetchDescriptor<ReviewItem>())) ?? [])
+                .map(ReviewItemSnapshot.init)
+                .map { $0.makeModel() }
+                .forEach(modelContext.insert)
+            ((try? legacyContext.fetch(FetchDescriptor<ReviewRecord>())) ?? [])
+                .map(ReviewRecordSnapshot.init)
+                .map { $0.makeModel() }
+                .forEach(modelContext.insert)
+            ((try? legacyContext.fetch(FetchDescriptor<TaskItem>())) ?? [])
+                .map(TaskItemSnapshot.init)
+                .map { $0.makeModel() }
+                .forEach(modelContext.insert)
+            ((try? legacyContext.fetch(FetchDescriptor<TaskCompletion>())) ?? [])
+                .map(TaskCompletionSnapshot.init)
+                .map { $0.makeModel() }
+                .forEach(modelContext.insert)
+            ((try? legacyContext.fetch(FetchDescriptor<TaskSubitem>())) ?? [])
+                .map(TaskSubitemSnapshot.init)
+                .map { $0.makeModel() }
+                .forEach(modelContext.insert)
+            ((try? legacyContext.fetch(FetchDescriptor<DictationSession>())) ?? [])
+                .map(DictationSessionSnapshot.init)
+                .map { $0.makeModel() }
+                .forEach(modelContext.insert)
+            ((try? legacyContext.fetch(FetchDescriptor<DictationEntry>())) ?? [])
+                .map(DictationEntrySnapshot.init)
+                .map { $0.makeModel() }
+                .forEach(modelContext.insert)
+            ((try? legacyContext.fetch(FetchDescriptor<ScheduleItem>())) ?? [])
+                .map(ScheduleItemSnapshot.init)
+                .map { $0.makeModel() }
+                .forEach(modelContext.insert)
+            ((try? legacyContext.fetch(FetchDescriptor<MediaAsset>())) ?? [])
+                .map { asset in
+                    MediaAsset(
+                        id: asset.id,
+                        title: asset.title,
+                        originalFilename: asset.originalFilename,
+                        storedFilename: asset.storedFilename,
+                        mediaTypeRawValue: asset.mediaTypeRawValue,
+                        storageScopeRawValue: asset.storageScopeRawValue,
+                        playlistOrder: asset.playlistOrder,
+                        isIncludedInPlaylist: asset.isIncludedInPlaylist,
+                        createdAt: asset.createdAt,
+                        updatedAt: asset.updatedAt
+                    )
+                }
+                .forEach(modelContext.insert)
+
+            if modelContext.hasChanges {
+                try modelContext.save()
+            }
+
+            #if DEBUG
+            let taskCount = (try? modelContext.fetchCount(FetchDescriptor<TaskItem>())) ?? 0
+            let completionCount = (try? modelContext.fetchCount(FetchDescriptor<TaskCompletion>())) ?? 0
+            DebugPerf.mark("TypoReviewApp missing execution table repair import end tasks=\(taskCount) completions=\(completionCount)")
+            #endif
+        } catch {
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp missing execution table repair import failed error=\(error.localizedDescription)")
+            #endif
+        }
+    }
+
+    private static func ensureTaskSystemTablesExist(
+        in modelContext: ModelContext,
+        storeURL: URL?
+    ) {
+        let missingTableNames = missingTaskSystemTableNames(at: storeURL)
+        guard missingTableNames.isEmpty == false else { return }
+
+        #if DEBUG
+        DebugPerf.mark(
+            "TypoReviewApp ensureTaskSystemTablesExist begin missing=\(missingTableNames.joined(separator: ",")) store=\(storeURL?.lastPathComponent ?? "unknown")"
+        )
+        #endif
+
+        let placeholderTaskID = UUID()
+        let placeholderExecution = TaskExecutionRecord(
+            taskID: placeholderTaskID,
+            occurrenceDate: .distantPast,
+            detail: "__schema_repair__"
+        )
+        let placeholderSubitem = TaskSubitem(
+            parentTaskID: placeholderTaskID,
+            taskExecutionID: placeholderExecution.id,
+            title: "__schema_repair__",
+            note: "",
+            detail: "",
+            status: .pending,
+            sortOrder: 0,
+            isArchived: true
+        )
+        let placeholderSubitemExecution = TaskSubitemExecutionRecord(
+            taskExecutionID: placeholderExecution.id,
+            subtaskID: placeholderSubitem.id,
+            detail: "",
+            status: .pending
+        )
+
+        modelContext.insert(placeholderExecution)
+        modelContext.insert(placeholderSubitem)
+        modelContext.insert(placeholderSubitemExecution)
+
+        do {
+            try modelContext.save()
+            modelContext.delete(placeholderSubitemExecution)
+            modelContext.delete(placeholderSubitem)
+            modelContext.delete(placeholderExecution)
+            try modelContext.save()
+            #if DEBUG
+            let remainingMissingTableNames = missingTaskSystemTableNames(at: storeURL)
+            DebugPerf.mark(
+                "TypoReviewApp ensureTaskSystemTablesExist end remaining=\(remainingMissingTableNames.joined(separator: ","))"
+            )
+            #endif
+        } catch {
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp ensureTaskSystemTablesExist failed error=\(error.localizedDescription)")
+            #endif
+        }
+    }
+
+    private static func missingTaskSystemTableNames(at storeURL: URL?) -> [String] {
+        guard let storeURL else {
+            return [
+                "ZTASKSUBITEM",
+                "ZTASKEXECUTIONRECORD",
+                "ZTASKSUBITEMEXECUTIONRECORD"
+            ]
+        }
+
+        let requiredTableNames = [
+            "ZTASKSUBITEM",
+            "ZTASKEXECUTIONRECORD",
+            "ZTASKSUBITEMEXECUTIONRECORD"
+        ]
+
+        guard FileManager.default.fileExists(atPath: storeURL.path) else {
+            return requiredTableNames
+        }
+
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(storeURL.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            if let database {
+                sqlite3_close(database)
+            }
+            return requiredTableNames
+        }
+
+        defer { sqlite3_close(database) }
+        guard let database else { return requiredTableNames }
+
+        return requiredTableNames.filter { tableExists(named: $0, in: database) == false }
     }
 
     private static func repairLegacySchemaIfNeeded(
@@ -250,6 +536,7 @@ struct TypoReviewApp: App {
                 }
             }
         }
+
     }
 
     private static func tableExists(named tableName: String, in database: OpaquePointer) -> Bool {
@@ -283,12 +570,19 @@ struct TypoReviewApp: App {
         return columns
     }
 
-    private static func storeBundleURLs(for baseURL: URL) -> [URL] {
+    private static func storeArtifactURLs(for baseURL: URL) -> [URL] {
         [
             baseURL,
             URL(fileURLWithPath: baseURL.path + "-wal"),
-            URL(fileURLWithPath: baseURL.path + "-shm")
+            URL(fileURLWithPath: baseURL.path + "-shm"),
+            storeSupportDirectoryURL(for: baseURL)
         ]
+    }
+
+    private static func storeSupportDirectoryURL(for baseURL: URL) -> URL {
+        baseURL
+            .deletingLastPathComponent()
+            .appendingPathComponent(".\(baseURL.deletingPathExtension().lastPathComponent)_SUPPORT")
     }
 
     private static func migrateLegacyTaskExecutionsIfNeeded(in modelContext: ModelContext) {
