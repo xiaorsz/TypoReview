@@ -7,6 +7,7 @@ import UIKit
 struct TypoReviewApp: App {
     private static let cloudKitContainerIdentifierValue = "iCloud.cc.xiaorsz.typo-review"
     private static let appGroupIdentifierValue = "group.cc.xiaorsz.typo-review"
+    private static let reviewDateNormalizationMigrationKey = "review_dates_normalized_to_natural_day_v1"
 
     @State private var syncStatusStore = SyncStatusStore()
     @State private var mediaLibraryStore = MediaLibraryStore()
@@ -118,6 +119,10 @@ struct TypoReviewApp: App {
             Self.migrateLegacyTaskExecutionsIfNeeded(in: container.mainContext)
             TaskExecutionSupport.migrateLegacySubtasksIfNeeded(in: container.mainContext)
             _ = try? AppSettings.ensureSingleton(in: container.mainContext)
+            Self.normalizeReviewDatesIfNeeded(
+                in: container.mainContext,
+                appGroupIdentifier: Self.appGroupIdentifierValue
+            )
             sharedModelContainer = container
 
             _syncStatusStore = State(initialValue: {
@@ -159,6 +164,10 @@ struct TypoReviewApp: App {
                 Self.migrateLegacyTaskExecutionsIfNeeded(in: container.mainContext)
                 TaskExecutionSupport.migrateLegacySubtasksIfNeeded(in: container.mainContext)
                 _ = try? AppSettings.ensureSingleton(in: container.mainContext)
+                Self.normalizeReviewDatesIfNeeded(
+                    in: container.mainContext,
+                    appGroupIdentifier: Self.appGroupIdentifierValue
+                )
             } catch {
                 #if DEBUG
                 DebugPerf.mark("TypoReviewApp ModelContainer fallback init failed error=\(error.localizedDescription)")
@@ -609,6 +618,32 @@ struct TypoReviewApp: App {
 
         if modelContext.hasChanges {
             try? modelContext.save()
+        }
+    }
+
+    private static func normalizeReviewDatesIfNeeded(
+        in modelContext: ModelContext,
+        appGroupIdentifier: String?
+    ) {
+        let defaults = appGroupIdentifier
+            .flatMap(UserDefaults.init(suiteName:))
+            ?? .standard
+        guard !defaults.bool(forKey: reviewDateNormalizationMigrationKey) else { return }
+
+        do {
+            let normalizedCount = try ReviewScheduler.normalizeStoredReviewDates(in: modelContext)
+            if modelContext.hasChanges {
+                try modelContext.save()
+            }
+            defaults.set(true, forKey: reviewDateNormalizationMigrationKey)
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp normalized review dates count=\(normalizedCount)")
+            #endif
+        } catch {
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp review date normalization failed error=\(error.localizedDescription)")
+            #endif
+            print("Review date normalization failed: \(error)")
         }
     }
 

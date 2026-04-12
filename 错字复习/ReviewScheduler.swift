@@ -1,20 +1,23 @@
 import Foundation
+import SwiftData
 
 struct ReviewScheduler {
-    static let intervals: [TimeInterval] = [
+    static let intervals: [Int] = [
         0,
-        24 * 60 * 60,
-        2 * 24 * 60 * 60,
-        4 * 24 * 60 * 60,
-        7 * 24 * 60 * 60,
-        15 * 24 * 60 * 60,
-        30 * 24 * 60 * 60,
-        30 * 24 * 60 * 60
+        1,
+        2,
+        4,
+        7,
+        15,
+        30,
+        30
     ]
 
     func nextDate(for stage: Int, from date: Date = .now) -> Date {
         let safeStage = max(0, min(stage, Self.intervals.count - 1))
-        return date.addingTimeInterval(Self.intervals[safeStage])
+        let calendar = Calendar.current
+        let target = calendar.date(byAdding: .day, value: Self.intervals[safeStage], to: date) ?? date
+        return Self.normalizedReviewDate(target, calendar: calendar)
     }
 
     func nextDayStart(from date: Date = .now) -> Date {
@@ -25,6 +28,31 @@ struct ReviewScheduler {
         let calendar = Calendar.current
         let target = calendar.date(byAdding: .day, value: days, to: date) ?? date
         return calendar.startOfDay(for: target)
+    }
+
+    static func normalizedReviewDate(_ date: Date, calendar: Calendar = .current) -> Date {
+        guard date != .distantFuture else { return date }
+        return calendar.startOfDay(for: date)
+    }
+
+    static func isDue(_ nextReviewAt: Date, on referenceDate: Date = .now, calendar: Calendar = .current) -> Bool {
+        guard nextReviewAt != .distantFuture else { return false }
+        return normalizedReviewDate(nextReviewAt, calendar: calendar) <= calendar.startOfDay(for: referenceDate)
+    }
+
+    @discardableResult
+    static func normalizeStoredReviewDates(in modelContext: ModelContext, calendar: Calendar = .current) throws -> Int {
+        let items = try modelContext.fetch(FetchDescriptor<ReviewItem>())
+        var normalizedCount = 0
+
+        for item in items {
+            let normalizedDate = normalizedReviewDate(item.nextReviewAt, calendar: calendar)
+            guard item.nextReviewAt != normalizedDate else { continue }
+            item.nextReviewAt = normalizedDate
+            normalizedCount += 1
+        }
+
+        return normalizedCount
     }
 
     func dictationFollowUpDate(for step: Int, from date: Date = .now) -> Date {

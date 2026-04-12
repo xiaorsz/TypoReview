@@ -13,6 +13,7 @@ private struct HomeReviewItemProjection: Identifiable, Hashable {
     let content: String
     let prompt: String
     let stage: Int
+    let createdAt: Date
     let nextReviewAt: Date
     let consecutiveWrongCount: Int
 
@@ -22,6 +23,7 @@ private struct HomeReviewItemProjection: Identifiable, Hashable {
         content = item.content
         prompt = item.prompt
         stage = item.stage
+        createdAt = item.createdAt
         nextReviewAt = item.nextReviewAt
         consecutiveWrongCount = item.consecutiveWrongCount
     }
@@ -381,8 +383,19 @@ struct HomeView: View {
             let todayStart = calendar.startOfDay(for: referenceDate)
 
             let allDue = reviewItems
-                .filter { $0.nextReviewAt <= referenceDate }
-                .sorted { $0.nextReviewAt < $1.nextReviewAt }
+                .filter { ReviewScheduler.isDue($0.nextReviewAt, on: referenceDate, calendar: calendar) }
+                .sorted { lhs, rhs in
+                    let lhsDay = ReviewScheduler.normalizedReviewDate(lhs.nextReviewAt, calendar: calendar)
+                    let rhsDay = ReviewScheduler.normalizedReviewDate(rhs.nextReviewAt, calendar: calendar)
+
+                    if lhsDay != rhsDay {
+                        return lhsDay < rhsDay
+                    }
+                    if lhs.createdAt != rhs.createdAt {
+                        return lhs.createdAt < rhs.createdAt
+                    }
+                    return lhs.id.uuidString < rhs.id.uuidString
+                }
             let cappedDueContent = Array(allDue.prefix(dailyLimit))
             let masteredReviewCount = reviewItems.filter(\.isMastered).count
 

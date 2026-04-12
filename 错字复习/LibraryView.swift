@@ -16,7 +16,7 @@ struct LibraryView: View {
             case .all:
                 return true
             case .due:
-                return item.nextReviewAt <= now
+                return ReviewScheduler.isDue(item.nextReviewAt, on: now)
             case .priority:
                 return item.isPriority
             case .mastered:
@@ -202,7 +202,7 @@ struct LibraryView: View {
         case .all:
             return "先录入今天写错的内容，后面就会按遗忘曲线自动安排复习。"
         case .due:
-            return "今天到期的内容已经练完，或者还没到下一次复习时间。"
+            return "今天到期的内容已经练完，或者还没到下一次复习日期。"
         case .priority:
             return "目前没有连续出错较多、需要重点盯住的内容。"
         case .mastered:

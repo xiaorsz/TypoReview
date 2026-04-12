@@ -315,6 +315,7 @@ enum DataBackupService {
             .forEach { modelContext.insert($0) }
 
         TaskExecutionSupport.migrateLegacySubtasksIfNeeded(in: modelContext)
+        _ = try ReviewScheduler.normalizeStoredReviewDates(in: modelContext)
 
         if modelContext.hasChanges {
             try modelContext.save()

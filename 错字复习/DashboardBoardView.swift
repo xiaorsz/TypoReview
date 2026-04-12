@@ -43,9 +43,21 @@ struct DashboardBoardView: View {
 
     private func makeBoardSnapshot() -> BoardSnapshot {
         let childName = appSettingsStore.childName.isEmpty ? "小朋友" : appSettingsStore.childName
+        let calendar = Calendar.current
         let dueItems = reviewItems
-            .filter { $0.nextReviewAt <= boardNow }
-            .sorted { $0.nextReviewAt < $1.nextReviewAt }
+            .filter { ReviewScheduler.isDue($0.nextReviewAt, on: boardNow, calendar: calendar) }
+            .sorted { lhs, rhs in
+                let lhsDay = ReviewScheduler.normalizedReviewDate(lhs.nextReviewAt, calendar: calendar)
+                let rhsDay = ReviewScheduler.normalizedReviewDate(rhs.nextReviewAt, calendar: calendar)
+
+                if lhsDay != rhsDay {
+                    return lhsDay < rhsDay
+                }
+                if lhs.createdAt != rhs.createdAt {
+                    return lhs.createdAt < rhs.createdAt
+                }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
         let pendingDictationSessions = pendingDictationSessions(for: boardNow)
         let pendingSessionIDs = Set(pendingDictationSessions.map(\.id))
         let pendingDictationBoardItems = dictationEntries
