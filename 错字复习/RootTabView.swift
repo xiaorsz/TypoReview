@@ -11,6 +11,7 @@ struct RootTabView: View {
     @State private var ios17ShieldStartTask: Task<Void, Never>?
     @State private var hasStartedIOS17BackgroundShield = false
     @State private var selectedLegacyTab: LegacyTab = .home
+    @State private var visitedLegacyTabs: Set<LegacyTab> = [.home]
 
     private enum LegacyTab: Hashable {
         case home
@@ -130,6 +131,7 @@ struct RootTabView: View {
             .tag(LegacyTab.settings)
         }
         .onChange(of: selectedLegacyTab) { _, newTab in
+            markLegacyTabVisited(newTab)
             #if DEBUG
             DebugPerf.mark("RootTabView selectedLegacyTab=\(newTab)")
             #endif
@@ -142,9 +144,10 @@ struct RootTabView: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         NavigationStack {
-            if selectedLegacyTab == tab {
+            if shouldMaterializeLegacyTab(tab) {
                 content()
                     .onAppear {
+                        markLegacyTabVisited(tab)
                         #if DEBUG
                         DebugPerf.mark("RootTabView legacy tab content appear \(tab)")
                         #endif
@@ -158,6 +161,14 @@ struct RootTabView: View {
                     }
             }
         }
+    }
+
+    private func shouldMaterializeLegacyTab(_ tab: LegacyTab) -> Bool {
+        selectedLegacyTab == tab || visitedLegacyTabs.contains(tab)
+    }
+
+    private func markLegacyTabVisited(_ tab: LegacyTab) {
+        visitedLegacyTabs.insert(tab)
     }
 
     private func scheduleAppStateRefresh(trigger: SyncStatusStore.Trigger, delay: TimeInterval) {
