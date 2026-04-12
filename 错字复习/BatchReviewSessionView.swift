@@ -69,7 +69,7 @@ struct BatchReviewSessionView: View {
         .onChange(of: currentIndex) {
             isContentRevealed = false
             if let currentItem {
-                speaker.prepare(currentItem)
+                speaker.speak(currentItem)
             }
         }
         .onDisappear {
@@ -174,6 +174,16 @@ struct BatchReviewSessionView: View {
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
                         .background(item.stageBadgeColor.opacity(0.12), in: Capsule())
+                }
+
+                if item.type == .englishWord {
+                    let translation = item.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !translation.isEmpty {
+                        Text(translation)
+                            .font(.system(isWide ? .title : .title3, design: .rounded, weight: .bold))
+                            .foregroundStyle(.primary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
 

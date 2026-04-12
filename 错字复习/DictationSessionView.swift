@@ -64,7 +64,7 @@ struct DictationSessionView: View {
         .onChange(of: currentIndex) {
             isContentRevealed = false
             if let currentEntry {
-                speaker.prepare(content: currentEntry.content, type: currentEntry.type)
+                speaker.speak(content: currentEntry.content, type: currentEntry.type)
             }
         }
         .onDisappear {
