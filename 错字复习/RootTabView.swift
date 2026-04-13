@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import CoreData
 import UIKit
 
 struct RootTabView: View {
@@ -9,6 +10,7 @@ struct RootTabView: View {
     @Environment(AppSettingsStore.self) private var appSettingsStore
     @State private var refreshAppStateTask: Task<Void, Never>?
     @State private var ios17ShieldStartTask: Task<Void, Never>?
+    @State private var remoteChangeDebounceTask: Task<Void, Never>?
     @State private var hasStartedIOS17BackgroundShield = false
     @State private var selectedLegacyTab: LegacyTab = .home
     @State private var visitedLegacyTabs: Set<LegacyTab> = [.home]
@@ -49,6 +51,21 @@ struct RootTabView: View {
         .onDisappear {
             refreshAppStateTask?.cancel()
             ios17ShieldStartTask?.cancel()
+            remoteChangeDebounceTask?.cancel()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSPersistentStoreRemoteChange)) { _ in
+            #if DEBUG
+            DebugPerf.mark("RootTabView received NSPersistentStoreRemoteChange")
+            #endif
+            remoteChangeDebounceTask?.cancel()
+            remoteChangeDebounceTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s debounce
+                guard !Task.isCancelled else { return }
+                #if DEBUG
+                DebugPerf.mark("RootTabView posting appDataDidMutate from remote change")
+                #endif
+                NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
+            }
         }
     }
 
@@ -107,7 +124,7 @@ struct RootTabView: View {
             .tag(LegacyTab.library)
 
             legacyTabRoot(for: .dictation) {
-                DictationHomeView()
+                DeferredDictationHomeView()
             }
             .tabItem {
                 Label("听写", systemImage: "text.book.closed.fill")
@@ -115,7 +132,7 @@ struct RootTabView: View {
             .tag(LegacyTab.dictation)
 
             legacyTabRoot(for: .tasks) {
-                TasksView()
+                DeferredTasksHomeView()
             }
             .tabItem {
                 Label("待办", systemImage: "checklist")

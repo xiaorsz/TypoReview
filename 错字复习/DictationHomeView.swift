@@ -238,50 +238,49 @@ struct DictationHomeView: View {
                 }
             }
 
-            if !canRenderLiveContent {
-                EmptyView()
-            } else if !isSnapshotLoaded {
-                Section {
-                    HStack(spacing: 12) {
-                        ProgressView()
-                        Text("正在加载听写安排...")
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 20)
-                }
-            } else if snapshot.isEmpty {
-                Section {
-                    ContentUnavailableView(
-                        "还没有听写记录",
-                        systemImage: "text.book.closed",
-                        description: Text("先设置要听写的内容并指定好日期。")
-                    )
-                }
+            if !isSnapshotLoaded {
+                statusSection(
+                    title: canRenderLiveContent ? "正在加载听写安排..." : "正在恢复听写内容...",
+                    debugLabel: canRenderLiveContent ? "loading" : "recovery"
+                )
             } else {
-                let todaySessions = snapshot.todayAndOverdue
-                if !todaySessions.isEmpty {
-                    Section("今日及待办（\(snapshot.todayAndOverdueEntryCount) 条）") {
-                        ForEach(todaySessions) { session in
-                            sessionRow(for: session, entries: snapshot.entries(for: session))
-                        }
-                    }
+                if !canRenderLiveContent {
+                    statusSection(title: "正在恢复听写内容...", debugLabel: "recovery")
                 }
 
-                let upcomingSessions = snapshot.upcoming
-                if !upcomingSessions.isEmpty {
-                    Section("未来计划") {
-                        ForEach(upcomingSessions) { session in
-                            sessionRow(for: session, entries: snapshot.entries(for: session))
+                if snapshot.isEmpty {
+                    Section {
+                        ContentUnavailableView(
+                            "还没有听写记录",
+                            systemImage: "text.book.closed",
+                            description: Text("先设置要听写的内容并指定好日期。")
+                        )
+                    }
+                } else {
+                    let todaySessions = snapshot.todayAndOverdue
+                    if !todaySessions.isEmpty {
+                        Section("今日及待办（\(snapshot.todayAndOverdueEntryCount) 条）") {
+                            ForEach(todaySessions) { session in
+                                sessionRow(for: session, entries: snapshot.entries(for: session))
+                            }
                         }
                     }
-                }
 
-                let completedSessions = snapshot.completed
-                if !completedSessions.isEmpty {
-                    Section("已完成") {
-                        ForEach(completedSessions) { session in
-                            sessionRow(for: session, entries: snapshot.entries(for: session))
+                    let upcomingSessions = snapshot.upcoming
+                    if !upcomingSessions.isEmpty {
+                        Section("未来计划") {
+                            ForEach(upcomingSessions) { session in
+                                sessionRow(for: session, entries: snapshot.entries(for: session))
+                            }
+                        }
+                    }
+
+                    let completedSessions = snapshot.completed
+                    if !completedSessions.isEmpty {
+                        Section("已完成") {
+                            ForEach(completedSessions) { session in
+                                sessionRow(for: session, entries: snapshot.entries(for: session))
+                            }
                         }
                     }
                 }
@@ -296,9 +295,10 @@ struct DictationHomeView: View {
             #if DEBUG
             DebugPerf.mark("DictationHomeView onAppear")
             #endif
-            if !isSnapshotLoaded {
-                requestSnapshotRefresh(reason: "onAppear")
-            }
+            requestSnapshotRefresh(
+                reason: "onAppear",
+                delay: isSnapshotLoaded ? 0.02 : 0
+            )
         }
         .onChange(of: scenePhase) { _, newPhase in
             #if DEBUG
@@ -358,6 +358,23 @@ struct DictationHomeView: View {
             DebugPerf.mark("DictationHomeView onDisappear")
             #endif
             snapshotRefreshTask?.cancel()
+        }
+    }
+
+    private func statusSection(title: String, debugLabel: String) -> some View {
+        Section {
+            HStack(spacing: 12) {
+                ProgressView()
+                Text(title)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 20)
+            .onAppear {
+                #if DEBUG
+                DebugPerf.mark("DictationHomeView status section appear \(debugLabel)")
+                #endif
+            }
         }
     }
 

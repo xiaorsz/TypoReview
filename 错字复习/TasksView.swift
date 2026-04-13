@@ -3,6 +3,269 @@ import SwiftData
 import WidgetKit
 import UIKit
 
+private struct TasksSnapshotDisplayItem: Identifiable {
+    let task: TaskProjection
+    let section: TodayTaskDisplaySection
+    let occurrenceDate: Date
+    let isCompleted: Bool
+    let pendingOccurrenceCount: Int
+    let overdueOriginText: String?
+    let totalSubtaskCount: Int
+    let completedSubtaskCount: Int
+
+    init(task: TaskProjection, projection: TodayTaskProjectionResult) {
+        self.task = task
+        section = projection.section
+        occurrenceDate = projection.occurrenceDate
+        isCompleted = projection.isCompleted
+        pendingOccurrenceCount = projection.pendingOccurrenceCount
+        overdueOriginText = projection.overdueOriginText
+        totalSubtaskCount = projection.totalSubtaskCount
+        completedSubtaskCount = projection.completedSubtaskCount
+    }
+
+    init(
+        task: TaskProjection,
+        section: TodayTaskDisplaySection,
+        occurrenceDate: Date,
+        isCompleted: Bool,
+        pendingOccurrenceCount: Int,
+        overdueOriginText: String?,
+        totalSubtaskCount: Int,
+        completedSubtaskCount: Int
+    ) {
+        self.task = task
+        self.section = section
+        self.occurrenceDate = occurrenceDate
+        self.isCompleted = isCompleted
+        self.pendingOccurrenceCount = pendingOccurrenceCount
+        self.overdueOriginText = overdueOriginText
+        self.totalSubtaskCount = totalSubtaskCount
+        self.completedSubtaskCount = completedSubtaskCount
+    }
+
+    var id: String {
+        "\(task.id.uuidString)-\(occurrenceDate.timeIntervalSince1970)"
+    }
+}
+
+private struct ScheduleItemProjection: Identifiable, Hashable {
+    let id: UUID
+    let title: String
+    let note: String
+    let startTime: Date
+    let endTime: Date
+    let repeatRule: ScheduleRepeatRule
+    let weekdays: [Int]
+    let effectiveStartDate: Date
+    let effectiveEndDate: Date?
+    let isArchived: Bool
+
+    init(_ schedule: ScheduleItem) {
+        id = schedule.id
+        title = schedule.title
+        note = schedule.note
+        startTime = schedule.startTime
+        endTime = schedule.endTime
+        repeatRule = schedule.repeatRule
+        weekdays = schedule.weekdays
+        effectiveStartDate = schedule.effectiveStartDate
+        effectiveEndDate = schedule.effectiveEndDate
+        isArchived = schedule.isArchived
+    }
+
+    func shouldAppear(on date: Date) -> Bool {
+        guard !isArchived else { return false }
+
+        let calendar = Calendar.current
+        let targetDay = calendar.startOfDay(for: date)
+        let startDay = calendar.startOfDay(for: startTime)
+        let effectiveStartDay = calendar.startOfDay(for: effectiveStartDate)
+        let effectiveEndDay = effectiveEndDate.map { calendar.startOfDay(for: $0) }
+
+        switch repeatRule {
+        case .once:
+            return calendar.isDate(targetDay, inSameDayAs: startDay)
+        case .daily:
+            guard targetDay >= effectiveStartDay else { return false }
+            if let effectiveEndDay, targetDay > effectiveEndDay { return false }
+            return true
+        case .weekly:
+            guard targetDay >= effectiveStartDay else { return false }
+            if let effectiveEndDay, targetDay > effectiveEndDay { return false }
+            let weekday = calendar.component(.weekday, from: date)
+            return weekdays.contains(weekday)
+        }
+    }
+
+    func timeRangeText(on date: Date) -> String {
+        let calendar = Calendar.current
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+
+        let startComponents = calendar.dateComponents([.hour, .minute], from: startTime)
+        let endComponents = calendar.dateComponents([.hour, .minute], from: endTime)
+
+        let displayStart = calendar.date(
+            bySettingHour: startComponents.hour ?? 0,
+            minute: startComponents.minute ?? 0,
+            second: 0,
+            of: date
+        ) ?? startTime
+        let displayEnd = calendar.date(
+            bySettingHour: endComponents.hour ?? 0,
+            minute: endComponents.minute ?? 0,
+            second: 0,
+            of: date
+        ) ?? endTime
+
+        return "\(formatter.string(from: displayStart)) - \(formatter.string(from: displayEnd))"
+    }
+
+    var startTimeMinutes: Int {
+        let components = Calendar.current.dateComponents([.hour, .minute], from: startTime)
+        return (components.hour ?? 0) * 60 + (components.minute ?? 0)
+    }
+
+    var repeatRuleLabel: String {
+        switch repeatRule {
+        case .once:
+            return "单次"
+        case .daily:
+            return "每天"
+        case .weekly:
+            let names = ["日", "一", "二", "三", "四", "五", "六"]
+            let days = weekdays.sorted().compactMap { weekday -> String? in
+                guard weekday >= 1, weekday <= 7 else { return nil }
+                return "周\(names[weekday - 1])"
+            }
+            return "每周 \(days.joined(separator: "、"))"
+        }
+    }
+
+    var effectiveDateRangeLabel: String? {
+        guard repeatRule != .once, let effectiveEndDate else { return nil }
+
+        let calendar = Calendar.current
+        let startDay = calendar.startOfDay(for: effectiveStartDate)
+        let endDay = calendar.startOfDay(for: effectiveEndDate)
+        if calendar.isDate(startDay, equalTo: endDay, toGranularity: .year) {
+            return "\(startDay.formatted(.dateTime.month().day())) - \(endDay.formatted(.dateTime.month().day()))"
+        }
+        return "\(startDay.formatted(.dateTime.year().month().day())) - \(endDay.formatted(.dateTime.year().month().day()))"
+    }
+}
+
+private struct TasksPageSnapshot {
+    var displayItems: [TasksSnapshotDisplayItem]
+    var taskProjectionsByID: [UUID: TaskProjection]
+    var scheduleProjectionsByID: [UUID: ScheduleItemProjection]
+    var activeTaskIDs: [UUID]
+    var archivedTaskIDs: [UUID]
+    var todayScheduleIDs: [UUID]
+    var otherScheduleIDs: [UUID]
+    var archivedScheduleIDs: [UUID]
+
+    var isEmpty: Bool {
+        displayItems.isEmpty &&
+        activeTaskIDs.isEmpty &&
+        archivedTaskIDs.isEmpty &&
+        todayScheduleIDs.isEmpty &&
+        otherScheduleIDs.isEmpty &&
+        archivedScheduleIDs.isEmpty
+    }
+
+    static let empty = TasksPageSnapshot(
+        displayItems: [],
+        taskProjectionsByID: [:],
+        scheduleProjectionsByID: [:],
+        activeTaskIDs: [],
+        archivedTaskIDs: [],
+        todayScheduleIDs: [],
+        otherScheduleIDs: [],
+        archivedScheduleIDs: []
+    )
+}
+
+struct DeferredTasksHomeView: View {
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var isReady = false
+    @State private var activationTask: Task<Void, Never>?
+
+    private var canActivate: Bool {
+        scenePhase == .active && UIApplication.shared.applicationState == .active
+    }
+
+    var body: some View {
+        Group {
+            if isReady {
+                TasksView()
+            } else {
+                List {
+                    Section {
+                        HStack(spacing: 12) {
+                            ProgressView()
+                            Text("正在打开任务管理...")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 20)
+                    }
+                }
+                .scrollContentBackground(.hidden)
+                .background(Color(uiColor: .systemGroupedBackground))
+                .navigationTitle("任务管理")
+                .navigationBarTitleDisplayMode(.large)
+            }
+        }
+        .onAppear {
+            #if DEBUG
+            DebugPerf.mark("DeferredTasksHomeView onAppear")
+            #endif
+            activateAfterNavigationSettles()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            #if DEBUG
+            DebugPerf.mark("DeferredTasksHomeView scenePhase=\(newPhase)")
+            #endif
+            if newPhase == .active {
+                activateAfterNavigationSettles()
+            } else {
+                activationTask?.cancel()
+                isReady = false
+            }
+        }
+        .onDisappear {
+            #if DEBUG
+            DebugPerf.mark("DeferredTasksHomeView onDisappear")
+            #endif
+            activationTask?.cancel()
+        }
+    }
+
+    private func activateAfterNavigationSettles() {
+        #if DEBUG
+        DebugPerf.mark("DeferredTasksHomeView activateAfterNavigationSettles requested")
+        DebugPerf.watchMainThread("DeferredTasksHomeView activation")
+        #endif
+        activationTask?.cancel()
+        guard !isReady else { return }
+        guard canActivate else { return }
+
+        activationTask = Task { @MainActor in
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+            guard canActivate else { return }
+            #if DEBUG
+            DebugPerf.mark("DeferredTasksHomeView showing TasksView")
+            #endif
+            isReady = true
+        }
+    }
+}
+
 struct TasksView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
@@ -13,9 +276,10 @@ struct TasksView: View {
     @Query(filter: #Predicate<ScheduleItem> { $0.isArchived }, sort: \ScheduleItem.startTime) private var archivedSchedules: [ScheduleItem]
     
     // Performance Optimization: Cache computed results in a local snapshot
-    @State private var todayTasksSnapshot: [TodayTaskDisplayItem] = []
+    @State private var pageSnapshot: TasksPageSnapshot = .empty
     @State private var snapshotRefreshTask: Task<Void, Never>?
     @State private var deferredSaveTask: Task<Void, Never>?
+    @State private var isSnapshotLoaded = false
     @State private var isViewVisible = false
     @State private var isSnapshotRefreshInFlight = false
     @State private var needsSnapshotRefreshAfterCurrent = false
@@ -37,13 +301,27 @@ struct TasksView: View {
         scenePhase == .active && isViewVisible
     }
 
-    private var todayPending: [TodayTaskDisplayItem] {
-        todayTasksSnapshot
+    private var taskModelsByID: [UUID: TaskItem] {
+        Dictionary(
+            (activeTasks + archivedTasks).map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
+
+    private var scheduleModelsByID: [UUID: ScheduleItem] {
+        Dictionary(
+            (activeSchedules + archivedSchedules).map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
+
+    private var todayPending: [TasksSnapshotDisplayItem] {
+        pageSnapshot.displayItems
             .filter { $0.section == .todayPending }
     }
     
-    private var historicalPending: [TodayTaskDisplayItem] {
-        todayTasksSnapshot
+    private var historicalPending: [TasksSnapshotDisplayItem] {
+        pageSnapshot.displayItems
             .filter { $0.section == .historicalPending }
             .sorted { lhs, rhs in
                 if lhs.occurrenceDate == rhs.occurrenceDate {
@@ -53,8 +331,8 @@ struct TasksView: View {
             }
     }
 
-    private var upcomingPending: [TodayTaskDisplayItem] {
-        todayTasksSnapshot
+    private var upcomingPending: [TasksSnapshotDisplayItem] {
+        pageSnapshot.displayItems
             .filter { $0.section == .upcomingPending }
             .sorted { lhs, rhs in
                 if lhs.occurrenceDate == rhs.occurrenceDate {
@@ -64,37 +342,29 @@ struct TasksView: View {
             }
     }
     
-    private var todayDone: [TodayTaskDisplayItem] {
-        todayTasksSnapshot
+    private var todayDone: [TasksSnapshotDisplayItem] {
+        pageSnapshot.displayItems
             .filter { $0.section == .todayDone }
     }
 
-    private var allTasks: [TaskItem] {
-        guard canRenderLiveContent else { return [] }
-        return activeTasks
+    private var allTasks: [TaskProjection] {
+        pageSnapshot.activeTaskIDs.compactMap { pageSnapshot.taskProjectionsByID[$0] }
     }
 
-    private var todaySchedules: [ScheduleItem] {
-        guard canRenderLiveContent else { return [] }
-        return activeSchedules
-            .filter { $0.shouldAppear(on: .now) }
-            .sorted { $0.startTimeMinutes < $1.startTimeMinutes }
+    private var todaySchedules: [ScheduleItemProjection] {
+        pageSnapshot.todayScheduleIDs.compactMap { pageSnapshot.scheduleProjectionsByID[$0] }
     }
 
-    private var otherSchedules: [ScheduleItem] {
-        guard canRenderLiveContent else { return [] }
-        return activeSchedules
-            .filter { schedule in
-                !todaySchedules.contains(where: { $0.id == schedule.id })
-            }
-            .sorted { lhs, rhs in
-                if lhs.repeatRule == .once, rhs.repeatRule == .once {
-                    return lhs.startTime < rhs.startTime
-                }
-                if lhs.repeatRule == .once { return true }
-                if rhs.repeatRule == .once { return false }
-                return lhs.title.localizedCompare(rhs.title) == .orderedAscending
-            }
+    private var otherSchedules: [ScheduleItemProjection] {
+        pageSnapshot.otherScheduleIDs.compactMap { pageSnapshot.scheduleProjectionsByID[$0] }
+    }
+
+    private var archivedTaskProjections: [TaskProjection] {
+        pageSnapshot.archivedTaskIDs.compactMap { pageSnapshot.taskProjectionsByID[$0] }
+    }
+
+    private var archivedScheduleProjections: [ScheduleItemProjection] {
+        pageSnapshot.archivedScheduleIDs.compactMap { pageSnapshot.scheduleProjectionsByID[$0] }
     }
 
     var body: some View {
@@ -118,13 +388,22 @@ struct TasksView: View {
                 DebugPerf.mark("TasksView scenePhase=\(newPhase)")
                 #endif
                 if newPhase == .active {
-                    requestSnapshotRefresh(reason: "scenePhase active", delay: todayTasksSnapshot.isEmpty ? 0.08 : 0.02)
+                    requestSnapshotRefresh(reason: "scenePhase active", delay: pageSnapshot.displayItems.isEmpty ? 0.08 : 0.02)
                 } else {
                     snapshotRefreshTask?.cancel()
                 }
             }
             .onChange(of: activeTasks) { _, _ in
                 requestSnapshotRefresh(reason: "activeTasks")
+            }
+            .onChange(of: archivedTasks) { _, _ in
+                requestSnapshotRefresh(reason: "archivedTasks")
+            }
+            .onChange(of: activeSchedules) { _, _ in
+                requestSnapshotRefresh(reason: "activeSchedules")
+            }
+            .onChange(of: archivedSchedules) { _, _ in
+                requestSnapshotRefresh(reason: "archivedSchedules")
             }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("appDataDidMutate"))) { _ in
                 #if DEBUG
@@ -160,13 +439,39 @@ struct TasksView: View {
 
     @ViewBuilder
     private var taskListContent: some View {
-        if !canRenderLiveContent {
-            EmptyView()
-        } else if activeTasks.isEmpty && archivedTasks.isEmpty && activeSchedules.isEmpty && archivedSchedules.isEmpty {
-            emptyStateSection
+        if !isSnapshotLoaded {
+            statusSection(
+                title: canRenderLiveContent ? "正在加载任务安排..." : "正在恢复任务内容...",
+                debugLabel: canRenderLiveContent ? "loading" : "recovery"
+            )
         } else {
-            activeSections
-            archivedSections
+            if !canRenderLiveContent {
+                statusSection(title: "正在恢复任务内容...", debugLabel: "recovery")
+            }
+
+            if pageSnapshot.isEmpty {
+                emptyStateSection
+            } else {
+                activeSections
+                archivedSections
+            }
+        }
+    }
+
+    private func statusSection(title: String, debugLabel: String) -> some View {
+        Section {
+            HStack(spacing: 12) {
+                ProgressView()
+                Text(title)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 20)
+            .onAppear {
+                #if DEBUG
+                DebugPerf.mark("TasksView status section appear \(debugLabel)")
+                #endif
+            }
         }
     }
 
@@ -213,18 +518,18 @@ struct TasksView: View {
 
     @ViewBuilder
     private var archivedSections: some View {
-        if !archivedTasks.isEmpty {
+        if !archivedTaskProjections.isEmpty {
             archivedTaskSection
         }
 
-        if !archivedSchedules.isEmpty {
+        if !archivedScheduleProjections.isEmpty {
             archivedScheduleSection
         }
     }
 
     private var archivedTaskSection: some View {
         Section("已归档") {
-            ForEach(archivedTasks) { task in
+            ForEach(archivedTaskProjections, id: \.id) { task in
                 archivedTaskRow(task)
             }
         }
@@ -232,7 +537,7 @@ struct TasksView: View {
 
     private var archivedScheduleSection: some View {
         Section("已归档日程") {
-            ForEach(archivedSchedules) { schedule in
+            ForEach(archivedScheduleProjections, id: \.id) { schedule in
                 archivedScheduleRow(schedule)
             }
         }
@@ -275,7 +580,7 @@ struct TasksView: View {
         }
     }
 
-    private func archivedTaskRow(_ task: TaskItem) -> some View {
+    private func archivedTaskRow(_ task: TaskProjection) -> some View {
         HStack {
             Image(systemName: "archivebox")
                 .foregroundStyle(.secondary)
@@ -289,26 +594,39 @@ struct TasksView: View {
             }
         }
         .iOS17SafeSwipeActions {
-            Button("恢复", systemImage: "arrow.uturn.backward") {
-                task.isArchived = false
-            }
-            .tint(.blue)
+            if let liveTask = taskModelsByID[task.id] {
+                Button("恢复", systemImage: "arrow.uturn.backward") {
+                    liveTask.isArchived = false
+                    pageSnapshot = TasksPageSnapshot(
+                        displayItems: pageSnapshot.displayItems,
+                        taskProjectionsByID: pageSnapshot.taskProjectionsByID,
+                        scheduleProjectionsByID: pageSnapshot.scheduleProjectionsByID,
+                        activeTaskIDs: pageSnapshot.activeTaskIDs.filter { $0 != task.id },
+                        archivedTaskIDs: pageSnapshot.archivedTaskIDs.filter { $0 != task.id },
+                        todayScheduleIDs: pageSnapshot.todayScheduleIDs,
+                        otherScheduleIDs: pageSnapshot.otherScheduleIDs,
+                        archivedScheduleIDs: pageSnapshot.archivedScheduleIDs
+                    )
+                    saveAndReloadWidgetsDeferred()
+                }
+                .tint(.blue)
 
-            Button("彻底删除", systemImage: "trash", role: .destructive) {
-                deleteTask(task)
+                Button("彻底删除", systemImage: "trash", role: .destructive) {
+                    deleteTask(liveTask)
+                }
             }
         }
     }
 
-    private func scheduleSection(_ title: LocalizedStringKey, schedules: [ScheduleItem]) -> some View {
+    private func scheduleSection(_ title: LocalizedStringKey, schedules: [ScheduleItemProjection]) -> some View {
         Section(title) {
-            ForEach(schedules) { schedule in
+            ForEach(schedules, id: \.id) { schedule in
                 scheduleRow(schedule)
             }
         }
     }
 
-    private func todayTaskSection(_ title: LocalizedStringKey, items: [TodayTaskDisplayItem]) -> some View {
+    private func todayTaskSection(_ title: LocalizedStringKey, items: [TasksSnapshotDisplayItem]) -> some View {
         Section(title) {
             ForEach(items) { item in
                 todayTaskRow(item)
@@ -316,10 +634,10 @@ struct TasksView: View {
         }
     }
 
-    private func otherTaskSection(_ title: LocalizedStringKey, tasks: [TaskItem]) -> some View {
+    private func otherTaskSection(_ title: LocalizedStringKey, tasks: [TaskProjection]) -> some View {
         Section(title) {
-            ForEach(tasks) { task in
-                taskRow(task, isDone: false, showActions: false)
+            ForEach(tasks, id: \.id) { task in
+                taskRow(task, liveTask: taskModelsByID[task.id], isDone: false, showActions: false)
             }
         }
     }
@@ -360,7 +678,7 @@ struct TasksView: View {
                 isSnapshotRefreshInFlight = true
             }
             
-            let projectedItems = try? await Task.detached(priority: .utility) {
+            let refreshedSnapshot = await Task.detached(priority: .utility) {
                 #if DEBUG
                 DebugPerf.mark("TasksView background snapshot begin")
                 #endif
@@ -371,10 +689,12 @@ struct TasksView: View {
                 let tasksDesc = FetchDescriptor<TaskItem>()
                 let executesDesc = FetchDescriptor<TaskExecutionRecord>()
                 let subtasksDesc = FetchDescriptor<TaskSubitem>(predicate: #Predicate<TaskSubitem> { !$0.isArchived })
+                let schedulesDesc = FetchDescriptor<ScheduleItem>()
                 
                 let allTasks = (try? backgroundContext.fetch(tasksDesc)) ?? []
                 let safeExecutions = (try? backgroundContext.fetch(executesDesc)) ?? []
                 let safeSubtasks = (try? backgroundContext.fetch(subtasksDesc)) ?? []
+                let allSchedules = (try? backgroundContext.fetch(schedulesDesc)) ?? []
 
                 let autoArchivedCompletedAtByTaskID = Dictionary(
                     safeExecutions.compactMap { record -> (UUID, Date)? in
@@ -399,47 +719,97 @@ struct TasksView: View {
                 let taskProjections = visibleTasks.map(TaskProjection.init)
                 let executionProjections = safeExecutions.map(TaskExecutionRecordProjection.init)
                 let subtaskProjections = safeSubtasks.map(TaskSubitemProjection.init)
+                let taskProjectionsByID = Dictionary(
+                    allTasks.map { ($0.id, TaskProjection($0)) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+                let scheduleProjectionsByID = Dictionary(
+                    allSchedules.map { ($0.id, ScheduleItemProjection($0)) },
+                    uniquingKeysWith: { first, _ in first }
+                )
 
-                let result = TodayTaskProjectionBuilder.build(
+                let displayItems = TodayTaskProjectionBuilder.build(
                     from: taskProjections,
                     executions: executionProjections,
                     subtasks: subtaskProjections,
                     on: referenceDate
                 )
+                .compactMap { projection in
+                    taskProjectionsByID[projection.taskID].map { task in
+                        TasksSnapshotDisplayItem(task: task, projection: projection)
+                    }
+                }
+
+                let activeTaskIDs = allTasks
+                    .filter { !$0.isArchived }
+                    .sorted { $0.createdAt > $1.createdAt }
+                    .map(\.id)
+                let archivedTaskIDs = allTasks
+                    .filter(\.isArchived)
+                    .sorted { $0.createdAt > $1.createdAt }
+                    .map(\.id)
+
+                let activeScheduleProjections = scheduleProjectionsByID.values
+                    .filter { !$0.isArchived }
+                let todayScheduleIDs = activeScheduleProjections
+                    .filter { $0.shouldAppear(on: referenceDate) }
+                    .sorted { $0.startTimeMinutes < $1.startTimeMinutes }
+                    .map(\.id)
+                let todayScheduleIDSet = Set(todayScheduleIDs)
+                let otherScheduleIDs = activeScheduleProjections
+                    .filter { !todayScheduleIDSet.contains($0.id) }
+                    .sorted { lhs, rhs in
+                        if lhs.repeatRule == .once, rhs.repeatRule == .once {
+                            return lhs.startTime < rhs.startTime
+                        }
+                        if lhs.repeatRule == .once { return true }
+                        if rhs.repeatRule == .once { return false }
+                        return lhs.title.localizedCompare(rhs.title) == .orderedAscending
+                    }
+                    .map(\.id)
+                let archivedScheduleIDs = scheduleProjectionsByID.values
+                    .filter(\.isArchived)
+                    .sorted { $0.startTime < $1.startTime }
+                    .map(\.id)
                 #if DEBUG
-                let todayPendingSummaries = result
+                let todayPendingSummaries = displayItems
                     .filter { $0.section == .todayPending }
-                    .map { projection in
-                        let title = visibleTasks.first(where: { $0.id == projection.taskID })?.title ?? "?"
-                        return "\(title)#\(projection.taskID.uuidString.prefix(6))@\(projection.occurrenceDate.formatted(.dateTime.month().day()))"
+                    .map { item in
+                        "\(item.task.title)#\(item.task.id.uuidString.prefix(6))@\(item.occurrenceDate.formatted(.dateTime.month().day()))"
                     }
                     .joined(separator: ",")
-                let todayDoneSummaries = result
+                let todayDoneSummaries = displayItems
                     .filter { $0.section == .todayDone }
-                    .map { projection in
-                        let title = visibleTasks.first(where: { $0.id == projection.taskID })?.title ?? "?"
-                        return "\(title)#\(projection.taskID.uuidString.prefix(6))@\(projection.occurrenceDate.formatted(.dateTime.month().day()))"
+                    .map { item in
+                        "\(item.task.title)#\(item.task.id.uuidString.prefix(6))@\(item.occurrenceDate.formatted(.dateTime.month().day()))"
                     }
                     .joined(separator: ",")
-                DebugPerf.mark("TasksView background snapshot end tasks=\(visibleTasks.count) records=\(safeExecutions.count) subtasks=\(safeSubtasks.count) todayPending=\(todayPendingSummaries) todayDone=\(todayDoneSummaries)")
+                DebugPerf.mark("TasksView background snapshot end tasks=\(visibleTasks.count) records=\(safeExecutions.count) subtasks=\(safeSubtasks.count) schedules=\(allSchedules.count) todayPending=\(todayPendingSummaries) todayDone=\(todayDoneSummaries)")
                 #endif
-                return result
+                return TasksPageSnapshot(
+                    displayItems: displayItems,
+                    taskProjectionsByID: taskProjectionsByID,
+                    scheduleProjectionsByID: scheduleProjectionsByID,
+                    activeTaskIDs: activeTaskIDs,
+                    archivedTaskIDs: archivedTaskIDs,
+                    todayScheduleIDs: todayScheduleIDs,
+                    otherScheduleIDs: otherScheduleIDs,
+                    archivedScheduleIDs: archivedScheduleIDs
+                )
             }.value
 
-            guard !Task.isCancelled else { return }
-            guard let validProjectedItems = projectedItems else { return }
-            guard canRenderLiveContent else { return }
-            let latestTaskModels = (try? modelContext.fetch(FetchDescriptor<TaskItem>())) ?? (activeTasks + archivedTasks)
-            let tasksByID = Dictionary(
-                latestTaskModels.map { ($0.id, $0) },
-                uniquingKeysWith: { first, _ in first }
-            )
-            todayTasksSnapshot = TodayTaskProjectionBuilder.displayItems(
-                from: validProjectedItems,
-                tasksByID: tasksByID
-            )
+            guard !Task.isCancelled else {
+                isSnapshotRefreshInFlight = false
+                return
+            }
+            guard canRenderLiveContent else {
+                isSnapshotRefreshInFlight = false
+                return
+            }
+            pageSnapshot = refreshedSnapshot
+            isSnapshotLoaded = true
             #if DEBUG
-            DebugPerf.mark("TasksView snapshot applied items=\(todayTasksSnapshot.count)")
+            DebugPerf.mark("TasksView snapshot applied items=\(refreshedSnapshot.displayItems.count) empty=\(refreshedSnapshot.isEmpty)")
             #endif
             isSnapshotRefreshInFlight = false
             if needsSnapshotRefreshAfterCurrent {
@@ -449,9 +819,10 @@ struct TasksView: View {
         }
     }
 
-    private func todayTaskRow(_ item: TodayTaskDisplayItem, showActions: Bool = true) -> some View {
+    private func todayTaskRow(_ item: TasksSnapshotDisplayItem, showActions: Bool = true) -> some View {
         taskRow(
             item.task,
+            liveTask: taskModelsByID[item.task.id],
             isDone: item.isCompleted,
             showActions: showActions,
             occurrenceDate: item.occurrenceDate,
@@ -462,7 +833,8 @@ struct TasksView: View {
     }
 
     private func taskRow(
-        _ task: TaskItem,
+        _ task: TaskProjection,
+        liveTask: TaskItem?,
         isDone: Bool,
         showActions: Bool = true,
         occurrenceDate: Date? = nil,
@@ -478,9 +850,9 @@ struct TasksView: View {
                     Image(systemName: isDone ? "checkmark.circle.fill" : "list.bullet.circle")
                         .font(.title3)
                         .foregroundStyle(isDone ? .green : .secondary)
-                } else {
+                } else if let liveTask {
                     Button {
-                        toggleCompletion(for: task, occurrenceDate: occurrenceDate ?? .now, isDone: isDone)
+                        toggleCompletion(for: liveTask, occurrenceDate: occurrenceDate ?? .now, isDone: isDone)
                     } label: {
                         Image(systemName: isDone ? "checkmark.circle.fill" : "circle")
                             .font(.title3)
@@ -488,6 +860,10 @@ struct TasksView: View {
                             .contentTransition(.symbolEffect(.replace))
                     }
                     .buttonStyle(.plain)
+                } else {
+                    Image(systemName: isDone ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
+                        .foregroundStyle(isDone ? .green : .secondary)
                 }
             }
 
@@ -564,8 +940,10 @@ struct TasksView: View {
         }
         .padding(.vertical, 4)
         .iOS17SafeSwipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button("归档", systemImage: "archivebox", role: .destructive) {
-                archiveTask(task)
+            if let liveTask {
+                Button("归档", systemImage: "archivebox", role: .destructive) {
+                    archiveTask(liveTask)
+                }
             }
         }
     }
@@ -574,7 +952,16 @@ struct TasksView: View {
         withAnimation {
             task.isArchived = true
             task.updatedAt = .now
-            todayTasksSnapshot.removeAll { $0.task.id == task.id }
+            pageSnapshot = TasksPageSnapshot(
+                displayItems: pageSnapshot.displayItems.filter { $0.task.id != task.id },
+                taskProjectionsByID: pageSnapshot.taskProjectionsByID,
+                scheduleProjectionsByID: pageSnapshot.scheduleProjectionsByID,
+                activeTaskIDs: pageSnapshot.activeTaskIDs.filter { $0 != task.id },
+                archivedTaskIDs: [task.id] + pageSnapshot.archivedTaskIDs.filter { $0 != task.id },
+                todayScheduleIDs: pageSnapshot.todayScheduleIDs,
+                otherScheduleIDs: pageSnapshot.otherScheduleIDs,
+                archivedScheduleIDs: pageSnapshot.archivedScheduleIDs
+            )
         }
 
         try? modelContext.save()
@@ -631,8 +1018,8 @@ struct TasksView: View {
 
     private func optimisticToggleTask(taskID: UUID, occurrenceDate: Date, isDone: Bool) {
         withAnimation {
-            if let index = todayTasksSnapshot.firstIndex(where: { $0.task.id == taskID && $0.occurrenceDate == occurrenceDate }) {
-                let oldItem = todayTasksSnapshot[index]
+            if let index = pageSnapshot.displayItems.firstIndex(where: { $0.task.id == taskID && $0.occurrenceDate == occurrenceDate }) {
+                let oldItem = pageSnapshot.displayItems[index]
                 let nowCompleted = !isDone
                 let today = TaskExecutionSupport.day(for: .now)
                 
@@ -649,7 +1036,7 @@ struct TasksView: View {
                     }
                 }
                 
-                let newItem = TodayTaskDisplayItem(
+                let replacement = TasksSnapshotDisplayItem(
                     task: oldItem.task,
                     section: newSection,
                     occurrenceDate: oldItem.occurrenceDate,
@@ -659,75 +1046,108 @@ struct TasksView: View {
                     totalSubtaskCount: oldItem.totalSubtaskCount,
                     completedSubtaskCount: nowCompleted ? oldItem.totalSubtaskCount : 0
                 )
-                todayTasksSnapshot[index] = newItem
+                pageSnapshot.displayItems[index] = replacement
             }
         }
     }
 
-    private func scheduleRow(_ schedule: ScheduleItem) -> some View {
-        NavigationLink {
-            AddScheduleView(schedule: schedule)
-        } label: {
-            HStack(spacing: 12) {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(.indigo)
-                    .frame(width: 4, height: 28)
+    private func scheduleRowContent(_ schedule: ScheduleItemProjection) -> some View {
+        HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(.indigo)
+                .frame(width: 4, height: 28)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(schedule.title)
-                        .fontWeight(.medium)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(schedule.title)
+                    .fontWeight(.medium)
 
-                    HStack(spacing: 4) {
-                        Text(schedule.timeRangeText(on: .now))
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.indigo)
+                HStack(spacing: 4) {
+                    Text(schedule.timeRangeText(on: .now))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.indigo)
 
+                    Text("·")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+
+                    Text(schedule.repeatRuleLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if let effectiveDateRangeLabel = schedule.effectiveDateRangeLabel {
                         Text("·")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
-
-                        Text(schedule.repeatRuleLabel)
+                        
+                        Text(effectiveDateRangeLabel)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-
-                        if let effectiveDateRangeLabel = schedule.effectiveDateRangeLabel {
-                            Text("·")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                                
-                            Text(effectiveDateRangeLabel)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    if !schedule.note.isEmpty {
-                        Text(schedule.note)
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
                     }
                 }
+
+                if !schedule.note.isEmpty {
+                    Text(schedule.note)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func scheduleRow(_ schedule: ScheduleItemProjection) -> some View {
+        Group {
+            if let liveSchedule = scheduleModelsByID[schedule.id] {
+                NavigationLink {
+                    AddScheduleView(schedule: liveSchedule)
+                } label: {
+                    scheduleRowContent(schedule)
+                }
+            } else {
+                scheduleRowContent(schedule)
             }
         }
         .padding(.vertical, 4)
         .iOS17SafeSwipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button("删除", systemImage: "trash", role: .destructive) {
-                modelContext.delete(schedule)
-                saveAndReloadWidgetsDeferred()
-            }
-
-            Button("归档", systemImage: "archivebox") {
-                withAnimation {
-                    schedule.isArchived = true
+            if let liveSchedule = scheduleModelsByID[schedule.id] {
+                Button("删除", systemImage: "trash", role: .destructive) {
+                    modelContext.delete(liveSchedule)
+                    pageSnapshot = TasksPageSnapshot(
+                        displayItems: pageSnapshot.displayItems,
+                        taskProjectionsByID: pageSnapshot.taskProjectionsByID,
+                        scheduleProjectionsByID: pageSnapshot.scheduleProjectionsByID.filter { $0.key != schedule.id },
+                        activeTaskIDs: pageSnapshot.activeTaskIDs,
+                        archivedTaskIDs: pageSnapshot.archivedTaskIDs,
+                        todayScheduleIDs: pageSnapshot.todayScheduleIDs.filter { $0 != schedule.id },
+                        otherScheduleIDs: pageSnapshot.otherScheduleIDs.filter { $0 != schedule.id },
+                        archivedScheduleIDs: pageSnapshot.archivedScheduleIDs.filter { $0 != schedule.id }
+                    )
+                    saveAndReloadWidgetsDeferred()
                 }
-                saveAndReloadWidgetsDeferred()
+
+                Button("归档", systemImage: "archivebox") {
+                    withAnimation {
+                        liveSchedule.isArchived = true
+                        pageSnapshot = TasksPageSnapshot(
+                            displayItems: pageSnapshot.displayItems,
+                            taskProjectionsByID: pageSnapshot.taskProjectionsByID,
+                            scheduleProjectionsByID: pageSnapshot.scheduleProjectionsByID,
+                            activeTaskIDs: pageSnapshot.activeTaskIDs,
+                            archivedTaskIDs: pageSnapshot.archivedTaskIDs,
+                            todayScheduleIDs: pageSnapshot.todayScheduleIDs.filter { $0 != schedule.id },
+                            otherScheduleIDs: pageSnapshot.otherScheduleIDs.filter { $0 != schedule.id },
+                            archivedScheduleIDs: [schedule.id] + pageSnapshot.archivedScheduleIDs.filter { $0 != schedule.id }
+                        )
+                    }
+                    saveAndReloadWidgetsDeferred()
+                }
+                .tint(.orange)
             }
-            .tint(.orange)
         }
     }
 
-    private func archivedScheduleRow(_ schedule: ScheduleItem) -> some View {
+    private func archivedScheduleRow(_ schedule: ScheduleItemProjection) -> some View {
         HStack(spacing: 12) {
             RoundedRectangle(cornerRadius: 2)
                 .fill(.secondary.opacity(0.3))
@@ -757,15 +1177,37 @@ struct TasksView: View {
             }
         }
         .iOS17SafeSwipeActions {
-            Button("恢复", systemImage: "arrow.uturn.backward") {
-                schedule.isArchived = false
-                saveAndReloadWidgetsDeferred()
-            }
-            .tint(.blue)
+            if let liveSchedule = scheduleModelsByID[schedule.id] {
+                Button("恢复", systemImage: "arrow.uturn.backward") {
+                    liveSchedule.isArchived = false
+                    pageSnapshot = TasksPageSnapshot(
+                        displayItems: pageSnapshot.displayItems,
+                        taskProjectionsByID: pageSnapshot.taskProjectionsByID,
+                        scheduleProjectionsByID: pageSnapshot.scheduleProjectionsByID,
+                        activeTaskIDs: pageSnapshot.activeTaskIDs,
+                        archivedTaskIDs: pageSnapshot.archivedTaskIDs,
+                        todayScheduleIDs: pageSnapshot.todayScheduleIDs,
+                        otherScheduleIDs: pageSnapshot.otherScheduleIDs,
+                        archivedScheduleIDs: pageSnapshot.archivedScheduleIDs.filter { $0 != schedule.id }
+                    )
+                    saveAndReloadWidgetsDeferred()
+                }
+                .tint(.blue)
 
-            Button("彻底删除", systemImage: "trash", role: .destructive) {
-                modelContext.delete(schedule)
-                saveAndReloadWidgetsDeferred()
+                Button("彻底删除", systemImage: "trash", role: .destructive) {
+                    modelContext.delete(liveSchedule)
+                    pageSnapshot = TasksPageSnapshot(
+                        displayItems: pageSnapshot.displayItems,
+                        taskProjectionsByID: pageSnapshot.taskProjectionsByID,
+                        scheduleProjectionsByID: pageSnapshot.scheduleProjectionsByID.filter { $0.key != schedule.id },
+                        activeTaskIDs: pageSnapshot.activeTaskIDs,
+                        archivedTaskIDs: pageSnapshot.archivedTaskIDs,
+                        todayScheduleIDs: pageSnapshot.todayScheduleIDs,
+                        otherScheduleIDs: pageSnapshot.otherScheduleIDs,
+                        archivedScheduleIDs: pageSnapshot.archivedScheduleIDs.filter { $0 != schedule.id }
+                    )
+                    saveAndReloadWidgetsDeferred()
+                }
             }
         }
     }
@@ -802,6 +1244,16 @@ struct TasksView: View {
             }
             
             modelContext.delete(task)
+            pageSnapshot = TasksPageSnapshot(
+                displayItems: pageSnapshot.displayItems.filter { $0.task.id != taskID },
+                taskProjectionsByID: pageSnapshot.taskProjectionsByID.filter { $0.key != taskID },
+                scheduleProjectionsByID: pageSnapshot.scheduleProjectionsByID,
+                activeTaskIDs: pageSnapshot.activeTaskIDs.filter { $0 != taskID },
+                archivedTaskIDs: pageSnapshot.archivedTaskIDs.filter { $0 != taskID },
+                todayScheduleIDs: pageSnapshot.todayScheduleIDs,
+                otherScheduleIDs: pageSnapshot.otherScheduleIDs,
+                archivedScheduleIDs: pageSnapshot.archivedScheduleIDs
+            )
             saveAndReloadWidgetsDeferred()
         } catch {
             print("Failed to delete task: \(error)")
