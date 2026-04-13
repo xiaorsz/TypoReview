@@ -82,7 +82,7 @@ struct DeferredDictationHomeView: View {
     @State private var activationTask: Task<Void, Never>?
 
     private var canActivate: Bool {
-        scenePhase == .active && UIApplication.shared.applicationState == .active
+        scenePhase == .active
     }
 
     var body: some View {
