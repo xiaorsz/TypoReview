@@ -73,6 +73,7 @@ struct AddReviewItemView: View {
 
     private let scheduler = ReviewScheduler()
     private let existingItem: ReviewItem?
+    @Query private var reviewRecords: [ReviewRecord]
     @State private var type: ReviewItemType?
     @State private var content = ""
     @State private var prompt = ""
@@ -84,6 +85,13 @@ struct AddReviewItemView: View {
 
     init(item: ReviewItem? = nil) {
         self.existingItem = item
+        let recordItemID = item?.id ?? UUID()
+        _reviewRecords = Query(
+            filter: #Predicate<ReviewRecord> { record in
+                record.itemID == recordItemID
+            },
+            sort: [SortDescriptor(\ReviewRecord.reviewedAt, order: .reverse)]
+        )
         _type = State(initialValue: item?.type)
         _content = State(initialValue: item?.content ?? "")
         _prompt = State(initialValue: item?.prompt ?? "")
@@ -107,6 +115,9 @@ struct AddReviewItemView: View {
                     VStack(spacing: 18) {
                         typePicker
                         inputCard
+                        if existingItem != nil {
+                            reviewRecordsCard(isWide: isWide)
+                        }
                         tipsCard
                     }
                     .frame(maxWidth: isWide ? 780 : .infinity)
@@ -120,7 +131,7 @@ struct AddReviewItemView: View {
             type = ReviewItemTypeInference.infer(from: newValue)
         }
         .toast("已保存 ✓", isPresented: $showSaveToast, duration: 0.8)
-        .navigationTitle(existingItem == nil ? "新增错题" : "编辑错题")
+        .navigationTitle(existingItem == nil ? "新增错题" : "题目详情")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             #if DEBUG
@@ -156,11 +167,11 @@ struct AddReviewItemView: View {
 
     private var introCard: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(existingItem == nil ? "录入新错题" : "编辑错题")
+            Text(existingItem == nil ? "录入新错题" : "题目详情")
                 .font(.system(.title3, design: .rounded, weight: .bold))
                 .foregroundStyle(.white)
 
-            Text(existingItem == nil ? "录入后会从明天开始进入正式复习。" : "修改后将同步更新题库内容。")
+            Text(existingItem == nil ? "录入后会从明天开始进入正式复习。" : "可以修改题目内容，也可以查看这道题历次复习情况。")
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.85))
         }
@@ -295,6 +306,112 @@ struct AddReviewItemView: View {
         .background(Color.blue.opacity(0.05), in: RoundedRectangle(cornerRadius: 16))
     }
 
+    private func reviewRecordsCard(isWide: Bool) -> some View {
+        let snapshots = reviewRecordSnapshots
+        let columns = isWide
+            ? Array(repeating: GridItem(.flexible(), spacing: 12), count: 4)
+            : Array(repeating: GridItem(.flexible(), spacing: 12), count: 2)
+
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("复习记录")
+                        .font(.headline)
+                    Text(snapshots.isEmpty ? "还没有复习记录" : "共 \(snapshots.count) 次复习")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+            }
+
+            LazyVGrid(columns: columns, spacing: 12) {
+                StatGridCard(icon: "clock.arrow.circlepath", title: "总次数", value: "\(snapshots.count)", tint: .blue)
+                StatGridCard(icon: "hand.thumbsup", title: "答对", value: "\(snapshots.filter { $0.result == .correct }.count)", tint: .green)
+                StatGridCard(icon: "hand.thumbsdown", title: "答错", value: "\(snapshots.filter { $0.result == .wrong }.count)", tint: .red)
+                StatGridCard(
+                    icon: "calendar",
+                    title: "最近一次",
+                    value: snapshots.first?.reviewedAtDateText ?? "--",
+                    tint: .orange
+                )
+            }
+
+            if snapshots.isEmpty {
+                ContentUnavailableView(
+                    "还没有复习记录",
+                    systemImage: "clock.badge.xmark",
+                    description: Text("做过一次正式复习后，这里就会开始累计显示每次结果。")
+                )
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+            } else {
+                VStack(spacing: 12) {
+                    ForEach(snapshots) { snapshot in
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(alignment: .top, spacing: 12) {
+                                Image(systemName: snapshot.resultIconName)
+                                    .font(.title3)
+                                    .foregroundStyle(snapshot.resultColor)
+
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack(spacing: 8) {
+                                        Text(snapshot.reviewedAtText)
+                                            .font(.subheadline.weight(.semibold))
+                                        Spacer(minLength: 8)
+                                        Text(snapshot.resultText)
+                                            .font(.caption.weight(.bold))
+                                            .foregroundStyle(snapshot.resultColor)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 4)
+                                            .background(snapshot.resultColor.opacity(0.12), in: Capsule())
+
+                                        if let modeText = snapshot.modeText {
+                                            Text(modeText)
+                                                .font(.caption.weight(.semibold))
+                                                .foregroundStyle(.secondary)
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 4)
+                                                .background(Color.secondary.opacity(0.12), in: Capsule())
+                                        }
+                                    }
+
+                                    Text(snapshot.stageTransitionText)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+
+                                    Text(snapshot.detail)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.primary)
+
+                                    if let note = snapshot.noteText {
+                                        HStack(alignment: .top, spacing: 8) {
+                                            Text("备注")
+                                                .font(.caption.weight(.semibold))
+                                                .foregroundStyle(.secondary)
+                                            Text(note)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
+                        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private var reviewRecordSnapshots: [ReviewRecordDisplaySnapshot] {
+        reviewRecords.map(ReviewRecordDisplaySnapshot.init)
+    }
+
     private var contentLabel: String {
         switch type {
         case .phrase?:
@@ -409,5 +526,34 @@ struct AddReviewItemView: View {
                 }
             }
         }
+    }
+}
+
+private struct ReviewRecordDisplaySnapshot: Identifiable {
+    let id: UUID
+    let reviewedAtDateText: String
+    let reviewedAtText: String
+    let result: ReviewResult
+    let resultText: String
+    let resultIconName: String
+    let resultColor: Color
+    let modeText: String?
+    let stageTransitionText: String
+    let detail: String
+    let noteText: String?
+
+    init(_ record: ReviewRecord) {
+        id = record.id
+        reviewedAtDateText = record.reviewedAt.formatted(.dateTime.year().month(.twoDigits).day(.twoDigits))
+        reviewedAtText = record.reviewedAt.formatted(date: .abbreviated, time: .shortened)
+        result = record.result
+        resultText = record.resultDisplayText
+        resultIconName = record.resultIconName
+        resultColor = record.resultColor
+        modeText = record.modeDisplayText
+        stageTransitionText = record.stageTransitionText
+        detail = record.displayDetailText
+
+        noteText = record.userVisibleNoteText
     }
 }

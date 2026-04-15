@@ -266,6 +266,15 @@ private struct HomeReviewRoute: Identifiable, Hashable {
     }
 }
 
+private struct HomeDailyReviewRecordRoute: Identifiable, Hashable {
+    let id = UUID()
+    let title: String
+
+    init(title: String = "复习记录") {
+        self.title = title
+    }
+}
+
 private struct HomeDictationSessionRoute: Identifiable, Hashable {
     let id: UUID
     let title: String
@@ -279,6 +288,7 @@ struct HomeView: View {
     
     @State private var showingReviewPreview = false
     @State private var activeReviewRoute: HomeReviewRoute?
+    @State private var activeDailyReviewRecordRoute: HomeDailyReviewRecordRoute?
     @State private var previewSession: HomeDictationSessionProjection?
     @State private var activeDictationRoute: HomeDictationSessionRoute?
     @State private var isDictationHomeActive = false
@@ -657,6 +667,9 @@ struct HomeView: View {
         }
         .navigationDestination(item: $activeReviewRoute) { route in
             HomeDeferredReviewSessionView(route: route)
+        }
+        .navigationDestination(item: $activeDailyReviewRecordRoute) { route in
+            HomeDeferredDailyReviewRecordsView(route: route)
         }
         .sheet(isPresented: $showingReviewPreview) {
             if let snapshot = dashboardSnapshot {
@@ -1046,12 +1059,40 @@ struct HomeView: View {
             }
             .buttonStyle(.plain)
 
-            
-            StatGridCard(icon: "checkmark.circle", title: "今日完成", value: "\(snapshot.todayCompletedCount)", tint: .green)
-            StatGridCard(icon: "xmark.circle", title: "今日答错", value: "\(snapshot.todayWrongCount)", tint: .red)
-            StatGridCard(icon: "percent", title: "正确率", value: snapshot.todayAccuracyText, tint: .blue)
+            dailyReviewRecordButton(
+                icon: "checkmark.circle",
+                title: "今日完成",
+                value: "\(snapshot.todayCompletedCount)",
+                tint: .green
+            )
+            dailyReviewRecordButton(
+                icon: "xmark.circle",
+                title: "今日答错",
+                value: "\(snapshot.todayWrongCount)",
+                tint: .red
+            )
+            dailyReviewRecordButton(
+                icon: "percent",
+                title: "正确率",
+                value: snapshot.todayAccuracyText,
+                tint: .blue
+            )
             StatGridCard(icon: "star.fill", title: "已掌握", value: "\(snapshot.masteredReviewCount)", tint: .mint)
         }
+    }
+
+    private func dailyReviewRecordButton(
+        icon: String,
+        title: String,
+        value: String,
+        tint: Color
+    ) -> some View {
+        Button {
+            openDailyReviewRecords(source: "home stat grid \(title)")
+        } label: {
+            StatGridCard(icon: icon, title: title, value: value, tint: tint)
+        }
+        .buttonStyle(.plain)
     }
 
     private var quickEntryCard: some View {
@@ -1217,6 +1258,13 @@ struct HomeView: View {
         #endif
         dashboardSnapshotTask?.cancel()
         isAddReviewActive = true
+    }
+
+    private func openDailyReviewRecords(source: String) {
+        #if DEBUG
+        DebugPerf.mark("Home openDailyReviewRecords source=\(source)")
+        #endif
+        activeDailyReviewRecordRoute = HomeDailyReviewRecordRoute()
     }
 
     private func reviewStatusText(_ snapshot: DashboardSnapshot) -> String {
@@ -1751,6 +1799,65 @@ struct HomeView: View {
         }
     }
 
+    private struct HomeDeferredDailyReviewRecordsView: View {
+        @Environment(\.scenePhase) private var scenePhase
+
+        let route: HomeDailyReviewRecordRoute
+
+        @State private var isReady = false
+        @State private var loadTask: Task<Void, Never>?
+
+        private var canLoad: Bool {
+            scenePhase == .active && UIApplication.shared.applicationState == .active
+        }
+
+        var body: some View {
+            Group {
+                if isReady {
+                    DailyReviewRecordHistoryView()
+                } else {
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text("正在打开 \(route.title)...")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(uiColor: .systemGroupedBackground))
+                }
+            }
+            .navigationTitle(route.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                loadAfterNavigationSettles()
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                if newPhase == .active {
+                    loadAfterNavigationSettles()
+                } else {
+                    loadTask?.cancel()
+                }
+            }
+            .onDisappear {
+                loadTask?.cancel()
+            }
+        }
+
+        private func loadAfterNavigationSettles() {
+            loadTask?.cancel()
+            guard !isReady else { return }
+            guard canLoad else { return }
+
+            loadTask = Task { @MainActor in
+                await Task.yield()
+                try? await Task.sleep(nanoseconds: 80_000_000)
+                guard !Task.isCancelled else { return }
+                guard canLoad else { return }
+                isReady = true
+            }
+        }
+    }
+
     private struct HomeDeferredDictationSessionView: View {
         @Environment(\.scenePhase) private var scenePhase
         @Environment(\.modelContext) private var modelContext
@@ -1883,6 +1990,321 @@ struct HomeView: View {
         case .blocked:
             return ("icloud.slash.fill", .red, .red.opacity(0.08))
         }
+    }
+}
+
+private struct DailyReviewRecordSnapshot: Identifiable {
+    let id: UUID
+    let itemID: UUID
+    let reviewedAt: Date
+    let reviewedAtText: String
+    let itemType: ReviewItemType?
+    let content: String
+    let prompt: String?
+    let source: String?
+    let result: ReviewResult
+    let resultText: String
+    let resultIconName: String
+    let resultColor: Color
+    let modeText: String?
+    let stageTransitionText: String
+    let detailText: String?
+
+    init(record: ReviewRecord, item: ReviewItem?) {
+        id = record.id
+        itemID = record.itemID
+        reviewedAt = record.reviewedAt
+        reviewedAtText = record.reviewedAt.formatted(date: .omitted, time: .shortened)
+        itemType = item?.type
+        content = item?.content ?? "题目已删除"
+
+        let trimmedPrompt = item?.prompt.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        prompt = trimmedPrompt.isEmpty ? nil : trimmedPrompt
+
+        let trimmedSource = item?.source.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        source = trimmedSource.isEmpty ? nil : trimmedSource
+
+        result = record.result
+        resultText = record.resultDisplayText
+        resultIconName = record.resultIconName
+        resultColor = record.resultColor
+        modeText = record.modeDisplayText
+        stageTransitionText = record.stageTransitionText
+        detailText = record.condensedDisplayDetailText
+    }
+}
+
+private struct DailyReviewRecordSection: Identifiable {
+    let date: Date
+    let records: [DailyReviewRecordSnapshot]
+
+    var id: Date { date }
+
+    var title: String {
+        date.formatted(.dateTime.year().month().day().weekday(.abbreviated))
+    }
+
+    var reviewedWordCount: Int {
+        Set(records.map(\.itemID)).count
+    }
+
+    var totalCount: Int { records.count }
+
+    var correctCount: Int {
+        records.filter { $0.result == .correct }.count
+    }
+
+    var wrongCount: Int {
+        records.filter { $0.result == .wrong }.count
+    }
+
+    var accuracyText: String {
+        guard totalCount > 0 else { return "--" }
+        let accuracy = Int((Double(correctCount) / Double(totalCount) * 100).rounded())
+        return "\(accuracy)%"
+    }
+
+    var summaryLine: String {
+        "复习词量 \(reviewedWordCount) 个 · 答对 \(correctCount) 次 · 答错 \(wrongCount) 次 · 正确率 \(accuracyText)"
+    }
+}
+
+private enum DailyReviewRecordBuilder {
+    static func itemsByID(from reviewItems: [ReviewItem]) -> [UUID: ReviewItem] {
+        reviewItems.reduce(into: [UUID: ReviewItem]()) { result, item in
+            // Imported historical data may contain duplicated UUIDs; keep the first
+            // item from the reverse-sorted query so the newest copy wins.
+            guard result[item.id] == nil else { return }
+            result[item.id] = item
+        }
+    }
+
+    static func sections(reviewRecords: [ReviewRecord], reviewItems: [ReviewItem]) -> [DailyReviewRecordSection] {
+        let itemsByID = itemsByID(from: reviewItems)
+        let snapshots = reviewRecords.map { record in
+            DailyReviewRecordSnapshot(record: record, item: itemsByID[record.itemID])
+        }
+
+        let grouped = Dictionary(grouping: snapshots) {
+            Calendar.current.startOfDay(for: $0.reviewedAt)
+        }
+
+        return grouped
+            .map { date, records in
+                DailyReviewRecordSection(
+                    date: date,
+                    records: records.sorted { $0.reviewedAt > $1.reviewedAt }
+                )
+            }
+            .sorted { $0.date > $1.date }
+    }
+
+    static func section(
+        for date: Date,
+        reviewRecords: [ReviewRecord],
+        reviewItems: [ReviewItem]
+    ) -> DailyReviewRecordSection? {
+        let targetDay = Calendar.current.startOfDay(for: date)
+        return sections(reviewRecords: reviewRecords, reviewItems: reviewItems)
+            .first(where: { Calendar.current.isDate($0.date, inSameDayAs: targetDay) })
+    }
+}
+
+private struct DailyReviewRecordHistoryView: View {
+    @Query(sort: \ReviewRecord.reviewedAt, order: .reverse) private var reviewRecords: [ReviewRecord]
+    @Query(sort: \ReviewItem.updatedAt, order: .reverse) private var reviewItems: [ReviewItem]
+
+    private var sections: [DailyReviewRecordSection] {
+        DailyReviewRecordBuilder.sections(
+            reviewRecords: reviewRecords,
+            reviewItems: reviewItems
+        )
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let isWide = proxy.size.width >= 700
+
+            ScrollView(showsIndicators: false) {
+                if sections.isEmpty {
+                    ContentUnavailableView(
+                        "还没有复习记录",
+                        systemImage: "calendar.badge.clock",
+                        description: Text("做过一次正式复习后，这里会按日期自动整理每天的复习情况。")
+                    )
+                    .frame(maxWidth: .infinity, minHeight: proxy.size.height * 0.7)
+                } else {
+                    VStack(spacing: 16) {
+                        ForEach(sections) { section in
+                            NavigationLink {
+                                DailyReviewRecordDayDetailView(date: section.date)
+                            } label: {
+                                HStack(alignment: .center, spacing: 16) {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text(section.title)
+                                            .font(.system(.title3, design: .rounded, weight: .bold))
+                                            .foregroundStyle(.primary)
+
+                                        Text(section.summaryLine)
+                                            .font(.subheadline)
+                                            .foregroundStyle(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+
+                                    Spacer(minLength: 12)
+
+                                    Image(systemName: "chevron.right")
+                                        .font(.headline.weight(.semibold))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(20)
+                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(isWide ? 32 : 20)
+                }
+            }
+            .background(Color(uiColor: .systemGroupedBackground))
+        }
+    }
+}
+
+private struct DailyReviewRecordDayDetailView: View {
+    @Query(sort: \ReviewRecord.reviewedAt, order: .reverse) private var reviewRecords: [ReviewRecord]
+    @Query(sort: \ReviewItem.updatedAt, order: .reverse) private var reviewItems: [ReviewItem]
+
+    let date: Date
+
+    private var section: DailyReviewRecordSection? {
+        DailyReviewRecordBuilder.section(
+            for: date,
+            reviewRecords: reviewRecords,
+            reviewItems: reviewItems
+        )
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let isWide = proxy.size.width >= 700
+            let columns = Array(
+                repeating: GridItem(.flexible(), spacing: 12),
+                count: isWide ? 4 : 2
+            )
+
+            ScrollView(showsIndicators: false) {
+                if let section {
+                    VStack(spacing: 20) {
+                        VStack(alignment: .leading, spacing: 16) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(section.title)
+                                    .font(.system(.title3, design: .rounded, weight: .bold))
+                                Text("当天共复习 \(section.reviewedWordCount) 个词")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            LazyVGrid(columns: columns, spacing: 12) {
+                                StatGridCard(icon: "character.book.closed", title: "复习词量", value: "\(section.reviewedWordCount)", tint: .blue)
+                                StatGridCard(icon: "hand.thumbsup", title: "答对", value: "\(section.correctCount)", tint: .green)
+                                StatGridCard(icon: "hand.thumbsdown", title: "答错", value: "\(section.wrongCount)", tint: .red)
+                                StatGridCard(icon: "percent", title: "正确率", value: section.accuracyText, tint: .orange)
+                            }
+
+                            VStack(spacing: 12) {
+                                ForEach(section.records.indices, id: \.self) { index in
+                                    let record = section.records[index]
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        HStack(alignment: .top, spacing: 12) {
+                                            Image(systemName: record.resultIconName)
+                                                .font(.title3)
+                                                .foregroundStyle(record.resultColor)
+
+                                            VStack(alignment: .leading, spacing: 8) {
+                                                HStack(spacing: 8) {
+                                                    Text(record.reviewedAtText)
+                                                        .font(.subheadline.weight(.semibold))
+
+                                                    Spacer(minLength: 8)
+
+                                                    Text(record.resultText)
+                                                        .font(.caption.weight(.bold))
+                                                        .foregroundStyle(record.resultColor)
+                                                        .padding(.horizontal, 8)
+                                                        .padding(.vertical, 4)
+                                                        .background(record.resultColor.opacity(0.12), in: Capsule())
+
+                                                    if let modeText = record.modeText {
+                                                        Text(modeText)
+                                                            .font(.caption.weight(.semibold))
+                                                            .foregroundStyle(.secondary)
+                                                            .padding(.horizontal, 8)
+                                                            .padding(.vertical, 4)
+                                                            .background(Color.secondary.opacity(0.12), in: Capsule())
+                                                    }
+                                                }
+
+                                                HStack(spacing: 8) {
+                                                    if let itemType = record.itemType {
+                                                        TypeBadge(type: itemType)
+                                                    }
+
+                                                    Text(record.content)
+                                                        .font(.headline)
+                                                        .foregroundStyle(.primary)
+                                                        .fixedSize(horizontal: false, vertical: true)
+                                                }
+
+                                                Text(record.stageTransitionText)
+                                                    .font(.caption.weight(.semibold))
+                                                    .foregroundStyle(.secondary)
+
+                                                if let detailText = record.detailText {
+                                                    Text(detailText)
+                                                        .font(.subheadline)
+                                                        .foregroundStyle(.primary)
+                                                }
+
+                                                if let prompt = record.prompt {
+                                                    Text(prompt)
+                                                        .font(.caption)
+                                                        .foregroundStyle(.secondary)
+                                                }
+
+                                                if let source = record.source {
+                                                    Label(source, systemImage: "bookmark.fill")
+                                                        .font(.caption)
+                                                        .foregroundStyle(.tertiary)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(14)
+                                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
+                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+                    }
+                    .padding(isWide ? 24 : 16)
+                } else {
+                    ContentUnavailableView(
+                        "这一天没有复习记录",
+                        systemImage: "calendar.badge.exclamationmark",
+                        description: Text("这一天的记录可能已经被撤销或删除。")
+                    )
+                    .frame(maxWidth: .infinity, minHeight: proxy.size.height * 0.7)
+                }
+            }
+            .background(Color(uiColor: .systemGroupedBackground))
+        }
+        .navigationTitle(date.formatted(.dateTime.month().day()))
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

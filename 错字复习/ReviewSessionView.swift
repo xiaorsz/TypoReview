@@ -16,6 +16,7 @@ struct ReviewSessionView: View {
     @State private var showFeedback = false
     @State private var lastResultCorrect = true
     @State private var undoStack: [UndoEntry] = []
+    @State private var saveErrorMessage: String?
     @StateObject private var speaker = ReviewSpeaker()
 
     private let scheduler = ReviewScheduler()
@@ -202,6 +203,13 @@ struct ReviewSessionView: View {
         .onDisappear {
             speaker.stop()
         }
+        .alert("保存失败", isPresented: saveErrorBinding) {
+            Button("知道了", role: .cancel) {
+                saveErrorMessage = nil
+            }
+        } message: {
+            Text(saveErrorMessage ?? "这次复习记录没有保存成功，请再试一次。")
+        }
     }
 
     private var completionView: some View {
@@ -309,17 +317,26 @@ struct ReviewSessionView: View {
         let oldTrack = item.reviewTrack
         let oldFollowUpStep = item.resolvedDictationFollowUpStep
         let output = scheduler.handle(item: item, result: result)
+        let detail = item.reviewTransitionDetail(
+            result: result,
+            oldStage: output.record.oldStage,
+            oldTrack: oldTrack,
+            oldFollowUpStep: oldFollowUpStep
+        )
+        output.record.note = ReviewRecord.storedDetailText(detail)
         modelContext.insert(output.record)
+
+        guard persistChanges(
+            message: "这题的复习结果没有保存成功，请稍后再试一次。"
+        ) else {
+            return
+        }
+
         reviewedSummaries.append(
             SessionReviewSummary(
                 content: item.content,
                 result: result,
-                detail: item.reviewTransitionDetail(
-                    result: result,
-                    oldStage: output.record.oldStage,
-                    oldTrack: oldTrack,
-                    oldFollowUpStep: oldFollowUpStep
-                )
+                detail: detail
             )
         )
 
@@ -372,6 +389,12 @@ struct ReviewSessionView: View {
             if let records = try? modelContext.fetch(descriptor), let record = records.first {
                 modelContext.delete(record)
             }
+        }
+
+        guard persistChanges(
+            message: "撤回操作没有保存成功，请稍后再试一次。"
+        ) else {
+            return
         }
 
         // Restore counters
@@ -476,6 +499,28 @@ struct ReviewSessionView: View {
         }
 
         return "这次一共完成 \(completedCount) 题，其中答错 \(wrongCount) 题。答错的内容会安排到之后的日期，今天不会重复出现。"
+    }
+
+    private var saveErrorBinding: Binding<Bool> {
+        Binding(
+            get: { saveErrorMessage != nil },
+            set: { newValue in
+                if !newValue {
+                    saveErrorMessage = nil
+                }
+            }
+        )
+    }
+
+    @discardableResult
+    private func persistChanges(message: String) -> Bool {
+        do {
+            try modelContext.save()
+            return true
+        } catch {
+            saveErrorMessage = "\(message)\n\(error.localizedDescription)"
+            return false
+        }
     }
 }
 

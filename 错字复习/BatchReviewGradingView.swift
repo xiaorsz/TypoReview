@@ -337,18 +337,20 @@ struct BatchReviewGradingView: View {
             let oldTrack = state.item.reviewTrack
             let oldFollowUpStep = state.item.resolvedDictationFollowUpStep
             let output = scheduler.handle(item: state.item, result: reviewResult)
+            let detail = state.item.reviewTransitionDetail(
+                result: reviewResult,
+                oldStage: output.record.oldStage,
+                oldTrack: oldTrack,
+                oldFollowUpStep: oldFollowUpStep
+            )
+            output.record.note = ReviewRecord.storedDetailText(detail)
             modelContext.insert(output.record)
 
             summaries.append(
                 SessionReviewSummary(
                     content: state.item.content,
                     result: reviewResult,
-                    detail: state.item.reviewTransitionDetail(
-                        result: reviewResult,
-                        oldStage: output.record.oldStage,
-                        oldTrack: oldTrack,
-                        oldFollowUpStep: oldFollowUpStep
-                    )
+                    detail: detail
                 )
             )
         }

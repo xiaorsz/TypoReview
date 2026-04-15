@@ -251,6 +251,98 @@ extension ReviewItem {
     }
 }
 
+extension ReviewRecord {
+    private static let detailNotePrefix = "__detail__:"
+
+    var resultDisplayText: String {
+        switch result {
+        case .correct:
+            return "正确"
+        case .wrong:
+            return "错误"
+        }
+    }
+
+    var resultIconName: String {
+        switch result {
+        case .correct:
+            return "checkmark.circle.fill"
+        case .wrong:
+            return "xmark.circle.fill"
+        }
+    }
+
+    var resultColor: Color {
+        switch result {
+        case .correct:
+            return .green
+        case .wrong:
+            return .red
+        }
+    }
+
+    var modeDisplayText: String? {
+        switch mode {
+        case .scheduled:
+            return nil
+        case .retry:
+            return "重试"
+        }
+    }
+
+    var stageTransitionText: String {
+        "阶段 \(oldStage) -> \(newStage)"
+    }
+
+    var displayDetailText: String {
+        if let cachedDetailText {
+            return cachedDetailText
+        }
+
+        if result == .correct {
+            if oldStage == 0 && newStage >= 2 {
+                return "已通过首次复习，系统已更新下一次安排"
+            }
+            return "已完成本次复习，系统已更新后续安排"
+        }
+
+        return "本次判错，系统已重新安排后续复习"
+    }
+
+    var condensedDisplayDetailText: String? {
+        let detail = displayDetailText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !detail.isEmpty else { return nil }
+
+        switch detail {
+        case "已通过首次复习，系统已更新下一次安排",
+             "已完成本次复习，系统已更新后续安排",
+             "本次判错，系统已重新安排后续复习":
+            return nil
+        default:
+            return detail
+        }
+    }
+
+    var userVisibleNoteText: String? {
+        let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedNote.isEmpty else { return nil }
+        guard !trimmedNote.hasPrefix(Self.detailNotePrefix) else { return nil }
+        return trimmedNote
+    }
+
+    static func storedDetailText(_ detail: String) -> String {
+        detailNotePrefix + detail
+    }
+
+    private var cachedDetailText: String? {
+        let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedNote.hasPrefix(Self.detailNotePrefix) else { return nil }
+
+        let detail = String(trimmedNote.dropFirst(Self.detailNotePrefix.count))
+        return detail.isEmpty ? nil : detail
+    }
+}
+
 // MARK: - Result Button Style
 
 struct ResultButtonStyle: ButtonStyle {
