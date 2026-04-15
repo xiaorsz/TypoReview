@@ -160,7 +160,7 @@ struct AddReviewItemView: View {
                 .font(.system(.title3, design: .rounded, weight: .bold))
                 .foregroundStyle(.white)
 
-            Text(existingItem == nil ? "录入后会自动进入今天待复习。" : "修改后将同步更新题库内容。")
+            Text(existingItem == nil ? "录入后会从明天开始进入正式复习。" : "修改后将同步更新题库内容。")
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.85))
         }

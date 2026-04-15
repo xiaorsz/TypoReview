@@ -108,7 +108,7 @@ struct ReviewScheduler {
             case .correct:
                 item.consecutiveCorrectCount += 1
                 item.consecutiveWrongCount = 0
-                item.stage = min(item.stage + 1, Self.intervals.count - 1)
+                item.stage = nextStageAfterCorrect(from: item.stage)
                 item.nextReviewAt = nextReviewDateAvoidingSameDay(for: item.stage, from: now)
                 item.isPriority = false
             case .wrong:
@@ -135,6 +135,15 @@ struct ReviewScheduler {
 
     func isMastered(_ item: ReviewItem) -> Bool {
         item.stage >= Self.intervals.count - 1 && item.consecutiveWrongCount == 0
+    }
+
+    private func nextStageAfterCorrect(from currentStage: Int) -> Int {
+        // The first successful formal review should not create another due item
+        // on the very next day. Jumping from stage 0 to 2 skips that back-to-back run.
+        if currentStage <= 0 {
+            return min(2, Self.intervals.count - 1)
+        }
+        return min(currentStage + 1, Self.intervals.count - 1)
     }
 
     private func nextReviewDateAvoidingSameDay(for stage: Int, from date: Date) -> Date {

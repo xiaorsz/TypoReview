@@ -230,6 +230,9 @@ extension ReviewItem {
         }
 
         if result == .correct {
+            if oldStage == 0 && stage >= 2 {
+                return "已通过首次复习，下一次会跳过明天再出现"
+            }
             return "已从阶段 \(oldStage) 进入阶段 \(stage)"
         }
         return "本次判错，已调整到阶段 \(stage)"
