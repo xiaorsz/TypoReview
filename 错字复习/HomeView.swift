@@ -2159,7 +2159,7 @@ private struct DailyReviewRecordHistoryView: View {
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(20)
-                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+                                .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24))
                             }
                             .buttonStyle(.plain)
                         }
@@ -2289,7 +2289,7 @@ private struct DailyReviewRecordDayDetailView: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(16)
-                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+                        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24))
                     }
                     .padding(isWide ? 24 : 16)
                 } else {
