@@ -501,7 +501,15 @@ enum TaskExecutionSupport {
                 subtaskExecutions: subtaskExecutions,
                 on: lookaheadDay
             )
-            let pendingCount = snapshots.filter { !$0.isCompleted }.count
+            let historicalPendingCount = snapshots.filter {
+                !$0.isCompleted && $0.occurrenceDate < today
+            }.count
+            let todayPendingCount = snapshots.filter {
+                !$0.isCompleted && calendar.isDate($0.occurrenceDate, inSameDayAs: today)
+            }.count
+            let upcomingPendingCount = snapshots.filter {
+                !$0.isCompleted && $0.occurrenceDate > today
+            }.count
 
             return snapshots.compactMap { snapshot -> TodayTaskDisplayItem? in
                 let section: TodayTaskDisplaySection
@@ -514,6 +522,18 @@ enum TaskExecutionSupport {
                     section = .upcomingPending
                 } else {
                     section = .historicalPending
+                }
+
+                let pendingCount: Int
+                switch section {
+                case .todayPending:
+                    pendingCount = todayPendingCount
+                case .historicalPending:
+                    pendingCount = historicalPendingCount
+                case .upcomingPending:
+                    pendingCount = upcomingPendingCount
+                case .todayDone:
+                    pendingCount = 0
                 }
 
                 return TodayTaskDisplayItem(
@@ -889,7 +909,15 @@ enum TodayTaskProjectionBuilder {
                 referenceDay: today,
                 upTo: lookaheadDay
             )
-            let pendingCount = snapshots.filter { !$0.isCompleted }.count
+            let historicalPendingCount = snapshots.filter {
+                !$0.isCompleted && $0.occurrenceDate < today
+            }.count
+            let todayPendingCount = snapshots.filter {
+                !$0.isCompleted && calendar.isDate($0.occurrenceDate, inSameDayAs: today)
+            }.count
+            let upcomingPendingCount = snapshots.filter {
+                !$0.isCompleted && $0.occurrenceDate > today
+            }.count
 
             return snapshots.compactMap { snapshot in
                 let section: TodayTaskDisplaySection
@@ -902,6 +930,18 @@ enum TodayTaskProjectionBuilder {
                     section = .upcomingPending
                 } else {
                     section = .historicalPending
+                }
+
+                let pendingCount: Int
+                switch section {
+                case .todayPending:
+                    pendingCount = todayPendingCount
+                case .historicalPending:
+                    pendingCount = historicalPendingCount
+                case .upcomingPending:
+                    pendingCount = upcomingPendingCount
+                case .todayDone:
+                    pendingCount = 0
                 }
 
                 return TodayTaskProjectionResult(

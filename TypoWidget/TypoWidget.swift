@@ -67,10 +67,42 @@ struct Provider: TimelineProvider {
         var completedTaskCount = 0
         if let allTasks = try? context.fetch(FetchDescriptor<TaskItem>()) {
             let today = Date()
-            let taskCompletions = (try? context.fetch(FetchDescriptor<TaskCompletion>())) ?? []
-            configuredTaskCount = allTasks.filter { !$0.isArchived }.count
-            let taskItems = TodayTaskListBuilder.build(from: allTasks, completions: taskCompletions, on: today)
-            completedTaskCount = taskItems.filter { $0.isCompleted }.count
+            let taskExecutions = (try? context.fetch(FetchDescriptor<TaskExecutionRecord>())) ?? []
+            let subtasks = (try? context.fetch(
+                FetchDescriptor<TaskSubitem>(predicate: #Predicate<TaskSubitem> { !$0.isArchived })
+            )) ?? []
+            let subtaskExecutions = (try? context.fetch(FetchDescriptor<TaskSubitemExecutionRecord>())) ?? []
+            let autoArchivedCompletedAtByTaskID = Dictionary(
+                taskExecutions.compactMap { record -> (UUID, Date)? in
+                    guard record.status == .completed,
+                          let completedAt = record.completedAt,
+                          calendar.isDate(completedAt, inSameDayAs: today) else {
+                        return nil
+                    }
+                    return (record.taskID, completedAt)
+                },
+                uniquingKeysWith: max
+            )
+            let visibleTasks = allTasks.filter { task in
+                guard task.isArchived else { return true }
+                guard task.recurrence.kind == .once,
+                      let completedAt = autoArchivedCompletedAtByTaskID[task.id] else {
+                    return false
+                }
+                return task.updatedAt <= completedAt
+            }
+
+            configuredTaskCount = visibleTasks.filter { !$0.isArchived }.count
+            let taskItems = TodayTaskListBuilder.build(
+                from: visibleTasks,
+                executions: taskExecutions,
+                subtasks: subtasks,
+                subtaskExecutions: subtaskExecutions,
+                on: today
+            ).filter {
+                $0.section == .todayPending || $0.section == .todayDone
+            }
+            completedTaskCount = taskItems.filter { $0.section == .todayDone }.count
             todayTasks = taskItems.map {
                 WidgetTaskItem(
                     id: $0.task.id,
@@ -236,19 +268,11 @@ struct TypoWidgetEntryView : View {
                                     Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
                                         .font(.headline.weight(.semibold))
                                         .foregroundStyle(task.isCompleted ? .green : .white.opacity(0.6))
-                                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                        Text(task.title)
-                                            .font(.headline.weight(.semibold))
-                                            .lineLimit(1)
-                                            .foregroundStyle(task.isCompleted ? .white.opacity(0.75) : .white)
-                                        if let overdueOriginText = task.overdueOriginText, !task.isCompleted {
-                                            Text(overdueOriginText)
-                                                .font(.caption2.weight(.medium))
-                                                .foregroundStyle(.white.opacity(0.78))
-                                                .lineLimit(1)
-                                        }
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    Text(task.title)
+                                        .font(.headline.weight(.semibold))
+                                        .lineLimit(1)
+                                        .foregroundStyle(task.isCompleted ? .white.opacity(0.75) : .white)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
                                 }
                             }
                         }
@@ -321,19 +345,11 @@ struct TypoWidgetEntryView : View {
                                 Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
                                     .font(.subheadline)
                                     .foregroundStyle(task.isCompleted ? .green : .white.opacity(0.6))
-                                HStack(alignment: .firstTextBaseline, spacing: 5) {
-                                    Text(task.title)
-                                        .font(.subheadline.weight(.medium))
-                                        .lineLimit(1)
-                                        .foregroundStyle(task.isCompleted ? .white.opacity(0.75) : .white)
-                                    if let overdueOriginText = task.overdueOriginText, !task.isCompleted {
-                                        Text(overdueOriginText)
-                                            .font(.caption2)
-                                            .foregroundStyle(.white.opacity(0.74))
-                                            .lineLimit(1)
-                                    }
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                                Text(task.title)
+                                    .font(.subheadline.weight(.medium))
+                                    .lineLimit(1)
+                                    .foregroundStyle(task.isCompleted ? .white.opacity(0.75) : .white)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
                     }
@@ -417,19 +433,11 @@ struct TypoWidgetEntryView : View {
                                 Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
                                     .font(.title3.weight(.bold))
                                     .foregroundStyle(task.isCompleted ? .green : .white.opacity(0.5))
-                                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                    Text(task.title)
-                                        .font(.title3.weight(.semibold))
-                                        .lineLimit(1)
-                                        .foregroundStyle(task.isCompleted ? .white.opacity(0.75) : .white)
-                                    if let overdueOriginText = task.overdueOriginText, !task.isCompleted {
-                                        Text(overdueOriginText)
-                                            .font(.caption.weight(.medium))
-                                            .foregroundStyle(.white.opacity(0.78))
-                                            .lineLimit(1)
-                                    }
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                                Text(task.title)
+                                    .font(.title3.weight(.semibold))
+                                    .lineLimit(1)
+                                    .foregroundStyle(task.isCompleted ? .white.opacity(0.75) : .white)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
                     }

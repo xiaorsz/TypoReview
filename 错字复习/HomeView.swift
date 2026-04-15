@@ -1073,7 +1073,7 @@ struct HomeView: View {
             .alert("提示", isPresented: $showQuickEntryHint) {
                 Button("知道了", role: .cancel) { }
             } message: {
-                Text("把当天写错的词句或英语录进来，保存后直接进入今天待复习。")
+                Text("把当天写错的词句或英语录进来，保存后会从明天开始进入正式复习。")
             }
 
             Button {
@@ -1316,10 +1316,7 @@ struct HomeView: View {
     @ViewBuilder
     private func todayTasksCard(_ snapshot: DashboardSnapshot) -> some View {
         let pendingItems = collapsedHomeTaskItems(snapshot.todayPendingTasks)
-        let pendingTaskIDs = Set(pendingItems.map(\.task.id))
-        let historicalItems = collapsedHomeTaskItems(
-            snapshot.historicalPendingTasks.filter { !pendingTaskIDs.contains($0.task.id) }
-        )
+        let historicalItems = collapsedHomeTaskItems(snapshot.historicalPendingTasks)
         let doneCount = snapshot.todayCompletedTaskCount
         let todayTaskCount = pendingItems.count + doneCount
         let historyCount = snapshot.historicalPendingTasks.count
