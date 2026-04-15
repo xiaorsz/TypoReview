@@ -143,7 +143,7 @@ struct DictationReviewView: View {
             .padding(.top, 12)
             .padding(.bottom, 110)
         }
-        .navigationTitle("统一判定")
+        .navigationTitle("统一判卷")
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom) {
             Button("完成判定") {

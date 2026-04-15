@@ -477,7 +477,7 @@ struct HomeView: View {
                 if tasksDone && reviewDone && dictationDone { return "表现太棒了！录入新错题或休息一下吧。明天见！" }
                 if let session = latestDS, !session.isReviewed {
                     if session.isFinished {
-                        return "今天听写已完成，快让家长点击「统一判卷」吧！"
+                        return "今天听写已完成，快让家长点击「复习听写」吧！"
                     }
                     if pendingDictationEntryCount > 0 {
                         return "当前共有 \(pendingDictationEntryCount) 条待听写内容，先从「\(session.title)」开始。"
@@ -1691,7 +1691,7 @@ struct HomeView: View {
                     .background(Color(uiColor: .systemGroupedBackground))
                 }
             }
-            .navigationTitle(route.style == .batch ? "统一判卷" : "复习")
+            .navigationTitle(route.style == .batch ? "复习听写" : "复习")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
                 loadAfterNavigationSettles()

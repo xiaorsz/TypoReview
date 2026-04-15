@@ -24,6 +24,10 @@ struct BatchReviewSessionView: View {
         Double(currentIndex + 1) / Double(max(items.count, 1))
     }
 
+    private var cardContentTransition: AnyTransition {
+        .opacity.combined(with: .offset(x: 12))
+    }
+
     var body: some View {
         Group {
             if let item = currentItem {
@@ -33,6 +37,7 @@ struct BatchReviewSessionView: View {
                             ScrollView(showsIndicators: false) {
                                 VStack(spacing: 22) {
                                     progressHeader
+                                    stageOverviewCard(for: item)
                                     sessionCard(for: item, isWide: isWide)
                                 }
                                 .frame(maxWidth: isWide ? 860 : .infinity)
@@ -44,14 +49,9 @@ struct BatchReviewSessionView: View {
                         bottomActionBar(isWide: isWide)
                     }
                 }
-                .id(currentIndex)
-                .transition(.asymmetric(
-                    insertion: .move(edge: .trailing).combined(with: .opacity),
-                    removal: .move(edge: .leading).combined(with: .opacity)
-                ))
             }
         }
-        .navigationTitle("统一判卷")
+        .navigationTitle("复习听写")
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(isPresented: $navigateToReview) {
             BatchReviewGradingView(
@@ -109,45 +109,49 @@ struct BatchReviewSessionView: View {
     }
 
     private func sessionCard(for item: ReviewItem, isWide: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 20) {
-            cardHeader(for: item, isWide: isWide)
-            
-            speakButton(for: item)
-            
-            HStack(alignment: .top) {
-                helperFooter(for: item)
-                Spacer()
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        isContentRevealed.toggle()
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: isContentRevealed ? "eye.slash.fill" : "eye.fill")
-                        Text(isContentRevealed ? "隐藏文字" : "显示文字")
-                    }
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.blue)
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 12)
-                    .background(Color.blue.opacity(0.1), in: Capsule())
-                }
-                .buttonStyle(.plain)
-            }
+        ZStack {
+            VStack(alignment: .leading, spacing: 20) {
+                cardHeader(for: item, isWide: isWide)
 
-            if isContentRevealed {
-                VStack(alignment: .leading, spacing: 6) {
-                    Divider()
-                        .padding(.vertical, 8)
-                    Text("听写内容")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                    Text(item.content)
-                        .font(.system(isWide ? .title : .title2, design: .rounded, weight: .bold))
+                speakButton(for: item)
+
+                HStack(alignment: .top) {
+                    helperFooter(for: item)
+                    Spacer()
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isContentRevealed.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: isContentRevealed ? "eye.slash.fill" : "eye.fill")
+                            Text(isContentRevealed ? "隐藏文字" : "显示文字")
+                        }
+                        .font(.subheadline.weight(.medium))
                         .foregroundStyle(.blue)
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 12)
+                        .background(Color.blue.opacity(0.1), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
                 }
-                .transition(.opacity.combined(with: .move(edge: .top)))
+
+                if isContentRevealed {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Divider()
+                            .padding(.vertical, 8)
+                        Text("听写内容")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        Text(item.content)
+                            .font(.system(isWide ? .title : .title2, design: .rounded, weight: .bold))
+                            .foregroundStyle(.blue)
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
             }
+            .id(item.id)
+            .transition(.asymmetric(insertion: cardContentTransition, removal: .opacity))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(isWide ? 32 : 24)
@@ -160,21 +164,39 @@ struct BatchReviewSessionView: View {
                 )
         )
         .shadow(color: .blue.opacity(0.08), radius: 24, y: 10)
+        .animation(.easeInOut(duration: 0.22), value: item.id)
+    }
+
+    private func stageOverviewCard(for item: ReviewItem) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("复习阶段")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Text(item.stageBadgeText)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(item.stageBadgeColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(item.stageBadgeColor.opacity(0.12), in: Capsule())
+            }
+
+            StageTimelineView(
+                steps: item.stageTimelineSteps,
+                accentColor: item.stageBadgeColor
+            )
+        }
+        .padding(20)
+        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 24))
     }
 
     private func cardHeader(for item: ReviewItem, isWide: Bool) -> some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    TypeBadge(type: item.type)
-
-                    Label(item.stageBadgeText, systemImage: "square.stack.3d.up.fill")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(item.stageBadgeColor)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(item.stageBadgeColor.opacity(0.12), in: Capsule())
-                }
+                TypeBadge(type: item.type)
 
                 if item.type == .englishWord {
                     let translation = item.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -249,7 +271,7 @@ struct BatchReviewSessionView: View {
                 }
                 .buttonStyle(ResultButtonStyle(color: .blue))
             } else {
-                Button("进入统一判定") {
+                Button("进入统一判卷") {
                     navigateToReview = true
                 }
                 .buttonStyle(ResultButtonStyle(color: .green))
@@ -274,7 +296,7 @@ struct BatchReviewSessionView: View {
         }
 
         if item.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "会直接播放要写的内容，孩子整轮写完后，家长再统一判定。"
+            return "会直接播放要写的内容，孩子整轮写完后，家长再进入「复习听写」。"
         }
         return "如果不看文字，也可以直接点击朗读来做听写。"
     }

@@ -464,6 +464,136 @@ struct TypeBadge: View {
     }
 }
 
+// MARK: - Stage Timeline
+
+enum StageTimelineStepState {
+    case completed
+    case current
+    case upcoming
+}
+
+struct StageTimelineStep: Identifiable {
+    let id: String
+    let title: String
+    let state: StageTimelineStepState
+}
+
+struct StageTimelineView: View {
+    let steps: [StageTimelineStep]
+    let accentColor: Color
+
+    private var currentStepID: String? {
+        steps.first(where: { $0.state == .current })?.id
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
+                        stageChip(for: step)
+                            .id(step.id)
+
+                        if index < steps.count - 1 {
+                            connector(after: step)
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .onAppear {
+                scrollCurrentStep(in: proxy, animated: false)
+            }
+            .onChange(of: currentStepID) {
+                scrollCurrentStep(in: proxy, animated: true)
+            }
+        }
+    }
+
+    private func stageChip(for step: StageTimelineStep) -> some View {
+        HStack(spacing: 6) {
+            Text(step.title)
+                .lineLimit(1)
+
+            if step.state == .current {
+                Text("当前")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(accentColor)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.white.opacity(0.96), in: Capsule())
+            }
+        }
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(foregroundColor(for: step.state))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(backgroundColor(for: step.state), in: Capsule())
+        .overlay(
+            Capsule()
+                .strokeBorder(borderColor(for: step.state), lineWidth: step.state == .current ? 1.25 : 1)
+        )
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func connector(after step: StageTimelineStep) -> some View {
+        Capsule()
+            .fill(step.state == .upcoming ? Color.secondary.opacity(0.18) : accentColor.opacity(0.3))
+            .frame(width: 12, height: 2)
+    }
+
+    private func foregroundColor(for state: StageTimelineStepState) -> Color {
+        switch state {
+        case .completed:
+            return accentColor
+        case .current:
+            return .white
+        case .upcoming:
+            return .secondary
+        }
+    }
+
+    private func backgroundColor(for state: StageTimelineStepState) -> Color {
+        switch state {
+        case .completed:
+            return accentColor.opacity(0.12)
+        case .current:
+            return accentColor
+        case .upcoming:
+            return Color(uiColor: .secondarySystemBackground)
+        }
+    }
+
+    private func borderColor(for state: StageTimelineStepState) -> Color {
+        switch state {
+        case .completed:
+            return accentColor.opacity(0.24)
+        case .current:
+            return accentColor.opacity(0.92)
+        case .upcoming:
+            return .secondary.opacity(0.12)
+        }
+    }
+
+    private func scrollCurrentStep(in proxy: ScrollViewProxy, animated: Bool) {
+        guard let currentStepID else { return }
+
+        DispatchQueue.main.async {
+            let action = {
+                proxy.scrollTo(currentStepID, anchor: .center)
+            }
+
+            if animated {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    action()
+                }
+            } else {
+                action()
+            }
+        }
+    }
+}
+
 // MARK: - Stage Color Helper
 
 extension Int {
@@ -473,6 +603,43 @@ extension Int {
         case 3...5: return .orange
         default: return .green
         }
+    }
+}
+
+extension ReviewItem {
+    var stageTimelineSteps: [StageTimelineStep] {
+        if isDictationFollowUp {
+            let currentIndex = max(1, min(resolvedDictationFollowUpStep, 2))
+            let titles = ["通过", "D3", "D7"]
+
+            return titles.enumerated().map { index, title in
+                StageTimelineStep(
+                    id: "dictation-\(index)",
+                    title: title,
+                    state: timelineState(for: index, currentIndex: currentIndex)
+                )
+            }
+        }
+
+        let currentIndex = max(0, min(stage, ReviewScheduler.intervals.count - 1))
+
+        return (0..<ReviewScheduler.intervals.count).map { index in
+            StageTimelineStep(
+                id: "stage-\(index)",
+                title: "S\(index)",
+                state: timelineState(for: index, currentIndex: currentIndex)
+            )
+        }
+    }
+
+    private func timelineState(for index: Int, currentIndex: Int) -> StageTimelineStepState {
+        if index < currentIndex {
+            return .completed
+        }
+        if index == currentIndex {
+            return .current
+        }
+        return .upcoming
     }
 }
 

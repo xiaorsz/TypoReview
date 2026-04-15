@@ -43,7 +43,7 @@ struct BatchReviewGradingView: View {
                 gradingView
             }
         }
-        .navigationTitle(isSubmitted ? "复习结果" : "统一判定")
+        .navigationTitle(isSubmitted ? "复习结果" : "统一判卷")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if !isSubmitted {
