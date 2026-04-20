@@ -2,10 +2,8 @@ import WidgetKit
 import SwiftUI
 import SwiftData
 
-@MainActor
 struct Provider: TimelineProvider {
     
-    @MainActor
     func placeholder(in context: Context) -> SimpleEntry {
         SimpleEntry(
             date: Date(),
@@ -17,13 +15,11 @@ struct Provider: TimelineProvider {
         )
     }
 
-    @MainActor
     func getSnapshot(in context: Context, completion: @escaping (SimpleEntry) -> ()) {
         let entry = fetchEntry()
         completion(entry)
     }
 
-    @MainActor
     func getTimeline(in context: Context, completion: @escaping (Timeline<Entry>) -> ()) {
         let entry = fetchEntry()
         // Refresh every hour or so
@@ -32,7 +28,6 @@ struct Provider: TimelineProvider {
         completion(timeline)
     }
     
-    @MainActor
     private func fetchEntry() -> SimpleEntry {
         let schema = Schema([
             ReviewItem.self,

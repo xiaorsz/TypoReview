@@ -1790,7 +1790,7 @@ struct HomeView: View {
                     let registered: ReviewItem? = modelContext.registeredModel(for: pid)
                     if let registered { return registered }
                     
-                    return (try? modelContext.model(for: pid)) as? ReviewItem
+                    return modelContext.model(for: pid) as? ReviewItem
                 }
 
                 items = resolvedItems

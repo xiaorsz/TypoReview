@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import Translation
+import NaturalLanguage
 
 struct AddDictationSessionView: View {
     @Environment(\.dismiss) private var dismiss
@@ -113,7 +114,7 @@ struct AddDictationSessionView: View {
                         Text("正在生成听写计划...")
                             .font(.headline)
                         if type == .englishWord {
-                            Text("正在使用 Apple 翻译补全单词释义")
+                            Text("正在使用 Apple 翻译补全更完整的单词释义")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -332,10 +333,15 @@ struct AddDictationSessionView: View {
     private func handlePendingTranslation(using session: TranslationSession) async {
         guard let context = pendingSaveContext else { return }
 
-        let pendingRequests: [TranslationSession.Request] = context.entries.enumerated().compactMap { pair in
+        let pendingRequests = context.entries.enumerated().reduce(into: [TranslationSession.Request]()) { result, pair in
             let (index, entry) = pair
-            guard entry.prompt.isEmpty else { return nil }
-            return TranslationSession.Request(sourceText: entry.content, clientIdentifier: String(index))
+            guard entry.prompt.isEmpty else { return }
+            result.append(contentsOf: translationCandidates(for: entry.content, at: index).map { candidate in
+                TranslationSession.Request(
+                    sourceText: candidate.sourceText,
+                    clientIdentifier: candidate.identifier
+                )
+            })
         }
 
         guard !pendingRequests.isEmpty else {
@@ -361,17 +367,30 @@ struct AddDictationSessionView: View {
         to context: PendingDictationSaveContext
     ) async {
         var resolvedEntries = context.entries
+        var translationsByEntryIndex: [Int: [RankedTranslation]] = [:]
 
         for response in responses {
             guard let identifier = response.clientIdentifier,
-                  let index = Int(identifier),
-                  resolvedEntries.indices.contains(index) else {
+                  let metadata = TranslationRequestIdentifier(identifier: identifier),
+                  resolvedEntries.indices.contains(metadata.entryIndex) else {
                 continue
             }
 
             let translated = response.targetText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !translated.isEmpty else { continue }
-            resolvedEntries[index] = resolvedEntries[index].settingPrompt(to: translated)
+            translationsByEntryIndex[metadata.entryIndex, default: []].append(
+                RankedTranslation(priority: metadata.priority, text: translated)
+            )
+        }
+
+        for (index, translations) in translationsByEntryIndex {
+            let mergedPrompt = mergeTranslatedGlosses(
+                translations
+                    .sorted { $0.priority < $1.priority }
+                    .map(\.text)
+            )
+            guard !mergedPrompt.isEmpty else { continue }
+            resolvedEntries[index] = resolvedEntries[index].settingPrompt(to: mergedPrompt)
         }
 
         pendingSaveContext = nil
@@ -457,6 +476,223 @@ struct AddDictationSessionView: View {
                 }
             }
         }
+    }
+
+    private func translationCandidates(for text: String, at index: Int) -> [TranslationCandidate] {
+        let seedTerms = translationSeedTerms(for: text)
+        return seedTerms.enumerated().map { offset, seedTerm in
+            TranslationCandidate(
+                sourceText: seedTerm,
+                identifier: TranslationRequestIdentifier(entryIndex: index, priority: offset).rawValue
+            )
+        }
+    }
+
+    private func mergeTranslatedGlosses(_ translatedTexts: [String]) -> String {
+        var mergedGlosses: [String] = []
+
+        func appendGloss(_ gloss: String) {
+            let normalized = gloss.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else { return }
+            guard !mergedGlosses.contains(normalized) else { return }
+            mergedGlosses.append(normalized)
+        }
+
+        for text in translatedTexts {
+            let components = text
+                .replacingOccurrences(of: "（", with: "；")
+                .replacingOccurrences(of: "）", with: "")
+                .split(whereSeparator: { "；;、,，/".contains($0) })
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+
+            if components.isEmpty {
+                appendGloss(text)
+            } else {
+                for component in components {
+                    appendGloss(component)
+                }
+            }
+        }
+
+        return mergedGlosses.prefix(4).joined(separator: "；")
+    }
+
+    private func translationSeedTerms(for text: String) -> [String] {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        var seedTerms: [String] = []
+
+        func appendSeed(_ candidate: String?) {
+            guard let candidate else { return }
+            let normalized = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else { return }
+            guard !seedTerms.contains(where: { $0.caseInsensitiveCompare(normalized) == .orderedSame }) else { return }
+            seedTerms.append(normalized)
+        }
+
+        if isLikelySingleEnglishWord(trimmed) {
+            appendSeed(englishLemma(for: trimmed))
+            for candidate in englishBaseFormCandidates(for: trimmed) {
+                appendSeed(candidate)
+            }
+        }
+
+        appendSeed(trimmed)
+
+        if seedTerms.count <= 3 {
+            return seedTerms
+        }
+
+        var prioritizedSeeds = Array(seedTerms.prefix(2))
+        if !prioritizedSeeds.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+            prioritizedSeeds.append(trimmed)
+        }
+        return prioritizedSeeds
+    }
+
+    private func isLikelySingleEnglishWord(_ text: String) -> Bool {
+        let pattern = "^[A-Za-z]+(?:['-][A-Za-z]+)*$"
+        return text.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    private func englishLemma(for word: String) -> String? {
+        let lowercased = word.lowercased()
+        let tagger = NLTagger(tagSchemes: [.lemma])
+        tagger.string = lowercased
+        let range = lowercased.startIndex..<lowercased.endIndex
+        let options: NLTagger.Options = [.omitWhitespace, .omitPunctuation, .joinNames]
+        var resolvedLemma: String?
+
+        tagger.enumerateTags(in: range, unit: .word, scheme: .lemma, options: options) { tag, tokenRange in
+            guard tokenRange == range, let rawValue = tag?.rawValue else { return true }
+            resolvedLemma = rawValue
+            return false
+        }
+
+        guard let rawValue = resolvedLemma else { return nil }
+        let lemma = rawValue.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        guard !lemma.isEmpty,
+              lemma.caseInsensitiveCompare(lowercased) != ComparisonResult.orderedSame else { return nil }
+        return lemma
+    }
+
+    private func englishBaseFormCandidates(for word: String) -> [String] {
+        let lowercased = word.lowercased()
+        guard lowercased.count >= 4 else { return [] }
+
+        var candidates: [String] = []
+
+        func appendCandidate(_ candidate: String?) {
+            guard let candidate else { return }
+            guard candidate.count >= 3 else { return }
+            guard candidate.range(of: "^[a-z]+(?:['-][a-z]+)*$", options: .regularExpression) != nil else { return }
+            guard !candidates.contains(candidate), candidate != lowercased else { return }
+            candidates.append(candidate)
+        }
+
+        if lowercased.hasSuffix("ies"), lowercased.count > 4 {
+            appendCandidate(String(lowercased.dropLast(3)) + "y")
+        }
+
+        if lowercased.hasSuffix("ves"), lowercased.count > 4 {
+            let stem = String(lowercased.dropLast(3))
+            appendCandidate(stem + "f")
+            appendCandidate(stem + "fe")
+        }
+
+        if ["ses", "xes", "zes", "ches", "shes", "oes"].contains(where: { lowercased.hasSuffix($0) }) {
+            appendCandidate(String(lowercased.dropLast(2)))
+        } else if lowercased.hasSuffix("s"), !lowercased.hasSuffix("ss"), lowercased.count > 4 {
+            appendCandidate(String(lowercased.dropLast()))
+        }
+
+        if lowercased.hasSuffix("ied"), lowercased.count > 4 {
+            appendCandidate(String(lowercased.dropLast(3)) + "y")
+        } else if lowercased.hasSuffix("ed"), lowercased.count > 4 {
+            let stem = String(lowercased.dropLast(2))
+            appendCandidate(stem)
+            appendCandidate(stem + "e")
+            if let dedoubled = droppingTrailingDoubleConsonant(from: stem) {
+                appendCandidate(dedoubled)
+            }
+        }
+
+        if lowercased.hasSuffix("ing"), lowercased.count > 5 {
+            let stem = String(lowercased.dropLast(3))
+            appendCandidate(stem)
+            appendCandidate(stem + "e")
+            if let dedoubled = droppingTrailingDoubleConsonant(from: stem) {
+                appendCandidate(dedoubled)
+            }
+        }
+
+        if lowercased.hasSuffix("er"), lowercased.count > 4 {
+            let stem = String(lowercased.dropLast(2))
+            appendCandidate(stem)
+            appendCandidate(stem + "e")
+            if let dedoubled = droppingTrailingDoubleConsonant(from: stem) {
+                appendCandidate(dedoubled)
+            }
+        }
+
+        if lowercased.hasSuffix("est"), lowercased.count > 5 {
+            let stem = String(lowercased.dropLast(3))
+            appendCandidate(stem)
+            appendCandidate(stem + "e")
+            if let dedoubled = droppingTrailingDoubleConsonant(from: stem) {
+                appendCandidate(dedoubled)
+            }
+        }
+
+        return Array(candidates.prefix(2))
+    }
+
+    private func droppingTrailingDoubleConsonant(from text: String) -> String? {
+        guard text.count >= 4 else { return nil }
+        let characters = Array(text)
+        guard characters.count >= 2,
+              characters[characters.count - 1] == characters[characters.count - 2],
+              !"aeiou".contains(characters[characters.count - 1]) else {
+            return nil
+        }
+        return String(characters.dropLast())
+    }
+}
+
+private struct TranslationCandidate {
+    let sourceText: String
+    let identifier: String
+}
+
+private struct RankedTranslation {
+    let priority: Int
+    let text: String
+}
+
+private struct TranslationRequestIdentifier {
+    let entryIndex: Int
+    let priority: Int
+
+    init(entryIndex: Int, priority: Int) {
+        self.entryIndex = entryIndex
+        self.priority = priority
+    }
+
+    init?(identifier: String) {
+        let parts = identifier.split(separator: "#", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let entryIndex = Int(parts[0]),
+              let priority = Int(parts[1]) else {
+            return nil
+        }
+        self.entryIndex = entryIndex
+        self.priority = priority
+    }
+
+    var rawValue: String {
+        "\(entryIndex)#\(priority)"
     }
 }
 
