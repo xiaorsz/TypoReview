@@ -156,6 +156,73 @@ private struct ScheduleItemProjection: Identifiable, Hashable {
     }
 }
 
+private enum TaskManagementDedupSupport {
+    static func deduplicatedTasks(_ tasks: [TaskItem]) -> [TaskItem] {
+        let groupedTasks = Dictionary(grouping: tasks, by: deduplicationKey(for:))
+        return groupedTasks.values.compactMap(preferredTask(in:))
+    }
+
+    static func deduplicatedDisplayItems(_ items: [TasksSnapshotDisplayItem]) -> [TasksSnapshotDisplayItem] {
+        let groupedItems = Dictionary(grouping: items, by: displayItemDeduplicationKey(for:))
+        return groupedItems.values.compactMap(preferredDisplayItem(in:))
+    }
+
+    private static func deduplicationKey(for task: TaskItem) -> String {
+        let normalizedTitle = task.title
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+        return normalizedTitle.isEmpty ? "id:\(task.id.uuidString.lowercased())" : "title:\(normalizedTitle)"
+    }
+
+    private static func displayItemDeduplicationKey(for item: TasksSnapshotDisplayItem) -> String {
+        let occurrenceDay = Calendar.current.startOfDay(for: item.occurrenceDate)
+        return [
+            normalizedTitle(item.task.title).isEmpty
+                ? "id:\(item.task.id.uuidString.lowercased())"
+                : "title:\(normalizedTitle(item.task.title))",
+            String(describing: item.section),
+            String(occurrenceDay.timeIntervalSinceReferenceDate)
+        ].joined(separator: "|")
+    }
+
+    private static func preferredTask(in tasks: [TaskItem]) -> TaskItem? {
+        tasks.max { lhs, rhs in
+            sortKey(for: lhs) < sortKey(for: rhs)
+        }
+    }
+
+    private static func preferredDisplayItem(in items: [TasksSnapshotDisplayItem]) -> TasksSnapshotDisplayItem? {
+        items.max { lhs, rhs in
+            displayItemSortKey(for: lhs) < displayItemSortKey(for: rhs)
+        }
+    }
+
+    private static func sortKey(for task: TaskItem) -> (Int, Date, Date, String) {
+        (
+            task.isArchived ? 0 : 1,
+            task.updatedAt,
+            task.createdAt,
+            task.id.uuidString
+        )
+    }
+
+    private static func displayItemSortKey(for item: TasksSnapshotDisplayItem) -> (Int, Int, Int, Date, String) {
+        (
+            item.task.skipPolicy == .unskippable ? 1 : 0,
+            item.totalSubtaskCount,
+            item.completedSubtaskCount,
+            item.task.createdAt,
+            item.task.id.uuidString
+        )
+    }
+
+    private static func normalizedTitle(_ title: String) -> String {
+        title
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+    }
+}
+
 private struct TasksPageSnapshot {
     var displayItems: [TasksSnapshotDisplayItem]
     var taskProjectionsByID: [UUID: TaskProjection]
@@ -695,6 +762,7 @@ struct TasksView: View {
                 let safeExecutions = (try? backgroundContext.fetch(executesDesc)) ?? []
                 let safeSubtasks = (try? backgroundContext.fetch(subtasksDesc)) ?? []
                 let allSchedules = (try? backgroundContext.fetch(schedulesDesc)) ?? []
+                let deduplicatedTasks = TaskManagementDedupSupport.deduplicatedTasks(allTasks)
 
                 let autoArchivedCompletedAtByTaskID = Dictionary(
                     safeExecutions.compactMap { record -> (UUID, Date)? in
@@ -720,7 +788,7 @@ struct TasksView: View {
                 let executionProjections = safeExecutions.map(TaskExecutionRecordProjection.init)
                 let subtaskProjections = safeSubtasks.map(TaskSubitemProjection.init)
                 let taskProjectionsByID = Dictionary(
-                    allTasks.map { ($0.id, TaskProjection($0)) },
+                    deduplicatedTasks.map { ($0.id, TaskProjection($0)) },
                     uniquingKeysWith: { first, _ in first }
                 )
                 let scheduleProjectionsByID = Dictionary(
@@ -728,7 +796,8 @@ struct TasksView: View {
                     uniquingKeysWith: { first, _ in first }
                 )
 
-                let displayItems = TodayTaskProjectionBuilder.build(
+                let displayItems = TaskManagementDedupSupport.deduplicatedDisplayItems(
+                    TodayTaskProjectionBuilder.build(
                     from: taskProjections,
                     executions: executionProjections,
                     subtasks: subtaskProjections,
@@ -738,13 +807,13 @@ struct TasksView: View {
                     taskProjectionsByID[projection.taskID].map { task in
                         TasksSnapshotDisplayItem(task: task, projection: projection)
                     }
-                }
+                })
 
-                let activeTaskIDs = allTasks
+                let activeTaskIDs = deduplicatedTasks
                     .filter { !$0.isArchived }
                     .sorted { $0.createdAt > $1.createdAt }
                     .map(\.id)
-                let archivedTaskIDs = allTasks
+                let archivedTaskIDs = deduplicatedTasks
                     .filter(\.isArchived)
                     .sorted { $0.createdAt > $1.createdAt }
                     .map(\.id)
@@ -900,12 +969,16 @@ struct TasksView: View {
                                     .foregroundStyle(.orange)
                             }
 
-                            if let _ = occurrenceLabel, !isDone {
+                            if let occurrenceDateText = occurrenceDateMetadataText(
+                                occurrenceDate: occurrenceDate,
+                                occurrenceLabel: occurrenceLabel,
+                                isDone: isDone
+                            ) {
                                 Text("·")
                                     .font(.caption2)
                                     .foregroundStyle(.tertiary)
                                     
-                                Text(task.originShortText(for: occurrenceDate ?? .now))
+                                Text(occurrenceDateText)
                                     .font(.caption2.weight(.semibold))
                                     .foregroundStyle(.orange)
                             }
@@ -946,6 +1019,27 @@ struct TasksView: View {
                 }
             }
         }
+    }
+
+    private func occurrenceDateMetadataText(
+        occurrenceDate: Date?,
+        occurrenceLabel: String?,
+        isDone: Bool
+    ) -> String? {
+        guard !isDone, let occurrenceDate else { return nil }
+        if let occurrenceLabel, !occurrenceLabel.isEmpty {
+            return occurrenceLabel
+        }
+
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        if calendar.isDate(occurrenceDate, inSameDayAs: today) {
+            return "待办 \(occurrenceDate.formatted(.dateTime.month().day()))"
+        }
+        if calendar.isDate(occurrenceDate, equalTo: today, toGranularity: .year) {
+            return occurrenceDate.formatted(.dateTime.month().day())
+        }
+        return occurrenceDate.formatted(.dateTime.year().month().day())
     }
 
     private func archiveTask(_ task: TaskItem) {

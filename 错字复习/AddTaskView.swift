@@ -34,10 +34,13 @@ struct AddTaskView: View {
     }
 
     private var canSave: Bool {
-        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !trimmedTitle.isEmpty
     }
 
     private let weekdayNames = ["日", "一", "二", "三", "四", "五", "六"]
+    private var trimmedTitle: String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
         ScrollView {
@@ -239,6 +242,7 @@ struct AddTaskView: View {
 
     private func save() {
         let actionID = String(UUID().uuidString.prefix(6))
+        let targetTitle = trimmedTitle
         let recurrence: TaskRecurrence
         switch recurrenceKind {
         case .once:
@@ -251,14 +255,24 @@ struct AddTaskView: View {
 
         #if DEBUG
         DebugPerf.mark(
-            "AddTaskView save begin id=\(actionID) existing=\(existingTask != nil) title=\(title.trimmingCharacters(in: .whitespacesAndNewlines)) recurrence=\(recurrence.kind.rawValue) start=\(debugDateLabel(startDate)) end=\(debugDateLabel(recurrenceKind == .once ? nil : (hasEndDate ? endDate : nil))) hasEnd=\(hasEndDate)"
+            "AddTaskView save begin id=\(actionID) existing=\(existingTask != nil) title=\(targetTitle) recurrence=\(recurrence.kind.rawValue) start=\(debugDateLabel(startDate)) end=\(debugDateLabel(recurrenceKind == .once ? nil : (hasEndDate ? endDate : nil))) hasEnd=\(hasEndDate)"
         )
         #endif
+
+        if let duplicateTask = duplicateTask(withTitle: targetTitle) {
+            #if DEBUG
+            DebugPerf.mark(
+                "AddTaskView save duplicate title blocked id=\(actionID) title=\(targetTitle) duplicateTaskID=\(duplicateTask.id.uuidString.prefix(6))"
+            )
+            #endif
+            persistenceErrorMessage = "任务名称“\(targetTitle)”已经存在，请换一个标题。"
+            return
+        }
 
         let savedTask: TaskItem
 
         if let existingTask {
-            existingTask.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            existingTask.title = targetTitle
             existingTask.note = note.trimmingCharacters(in: .whitespacesAndNewlines)
             existingTask.recurrence = recurrence
             existingTask.skipPolicy = skipPolicy
@@ -268,7 +282,7 @@ struct AddTaskView: View {
             savedTask = existingTask
         } else {
             let task = TaskItem(
-                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                title: targetTitle,
                 note: note.trimmingCharacters(in: .whitespacesAndNewlines),
                 recurrence: recurrence,
                 skipPolicy: skipPolicy,
@@ -339,6 +353,25 @@ struct AddTaskView: View {
             "AddTaskView ensured today record taskID=\(taskID.uuidString.prefix(6)) existingExecutions=\(existingExecutions.count) recordID=\(record.id.uuidString.prefix(6)) status=\(record.status.rawValue) occurrence=\(debugDateLabel(record.occurrenceDate))"
         )
         #endif
+    }
+
+    private func duplicateTask(withTitle title: String) -> TaskItem? {
+        let normalizedTargetTitle = normalizedTaskTitle(title)
+        guard !normalizedTargetTitle.isEmpty else { return nil }
+
+        let allTasks = (try? modelContext.fetch(FetchDescriptor<TaskItem>())) ?? []
+        return allTasks.first { task in
+            if let existingTask, task.id == existingTask.id {
+                return false
+            }
+            return normalizedTaskTitle(task.title) == normalizedTargetTitle
+        }
+    }
+
+    private func normalizedTaskTitle(_ title: String) -> String {
+        title
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
     }
 
     private func debugDateLabel(_ date: Date?) -> String {
