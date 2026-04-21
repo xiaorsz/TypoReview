@@ -783,6 +783,16 @@ struct HomeView: View {
         let container = modelContext.container
 
         dashboardSnapshotTask = Task(priority: .utility) {
+            defer {
+                Task { @MainActor in
+                    let shouldScheduleCoalescedRefresh = needsDashboardRefreshAfterCurrent
+                    isDashboardRefreshInFlight = false
+                    needsDashboardRefreshAfterCurrent = false
+
+                    guard shouldScheduleCoalescedRefresh, canRenderLiveContent else { return }
+                    requestDashboardSnapshotRefresh(reason: "coalesced", delay: refreshDashboardSnapshotDelay)
+                }
+            }
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
@@ -897,14 +907,9 @@ struct HomeView: View {
             guard !Task.isCancelled else { return }
             guard canRenderLiveContent else { return }
             dashboardSnapshot = snapshot
-            isDashboardRefreshInFlight = false
             #if DEBUG
             DebugPerf.mark("HomeView dashboardSnapshot applied")
             #endif
-            if needsDashboardRefreshAfterCurrent {
-                needsDashboardRefreshAfterCurrent = false
-                requestDashboardSnapshotRefresh(reason: "coalesced", delay: refreshDashboardSnapshotDelay)
-            }
         }
     }
 
@@ -1287,7 +1292,6 @@ struct HomeView: View {
         #if DEBUG
         DebugPerf.mark("Home openDictationHome source=\(source)")
         #endif
-        dashboardSnapshotTask?.cancel()
         isDictationHomeActive = true
     }
 
@@ -1295,7 +1299,6 @@ struct HomeView: View {
         #if DEBUG
         DebugPerf.mark("Home openAddReview source=\(source)")
         #endif
-        dashboardSnapshotTask?.cancel()
         isAddReviewActive = true
     }
 

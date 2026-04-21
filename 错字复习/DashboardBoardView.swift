@@ -41,6 +41,22 @@ struct DashboardBoardView: View {
         let enabledMediaAssets: [MediaLibraryAsset]
     }
 
+    private struct BoardTaskSnapshot {
+        let todayPendingItems: [TodayTaskDisplayItem]
+        let historicalPendingItems: [TodayTaskDisplayItem]
+        let historicalPendingTotalCount: Int
+        let todayCompletedItems: [TodayTaskDisplayItem]
+        let todayPendingTotalCount: Int
+
+        var boardTaskItems: [TodayTaskDisplayItem] {
+            todayPendingItems + historicalPendingItems + todayCompletedItems
+        }
+
+        var totalPendingTaskCount: Int {
+            todayPendingTotalCount + historicalPendingTotalCount
+        }
+    }
+
     private func makeBoardSnapshot() -> BoardSnapshot {
         let childName = appSettingsStore.childName.isEmpty ? "小朋友" : appSettingsStore.childName
         let calendar = Calendar.current
@@ -71,28 +87,17 @@ struct DashboardBoardView: View {
             .map { entry in
                 BoardTextItem(id: entry.id, text: entry.content, detail: "")
             }
-        let todayTaskItems = todayTaskItems(on: boardNow)
-        let todayPendingTasks = todayTaskItems.filter { $0.section == .todayPending }
-        let historicalPendingTasks = todayTaskItems
-            .filter { $0.section == .historicalPending }
-            .sorted { lhs, rhs in
-                if lhs.occurrenceDate == rhs.occurrenceDate {
-                    return lhs.task.createdAt < rhs.task.createdAt
-                }
-                return lhs.occurrenceDate < rhs.occurrenceDate
-            }
-        let todayCompletedTasks = todayTaskItems.filter { $0.section == .todayDone }
-        let boardTaskItems = todayPendingTasks + historicalPendingTasks + todayCompletedTasks
+        let taskSnapshot = boardTaskSnapshot(on: boardNow)
         let todaySchedules = todaySchedules(on: boardNow)
         let boardSettings = appSettingsStore.modelRepresentation
         let enabledMediaAssets = enabledPlaylist()
 
         var parts: [String] = []
-        if !todayPendingTasks.isEmpty {
-            parts.append("\(todayPendingTasks.count) 项今日待办")
+        if taskSnapshot.todayPendingTotalCount > 0 {
+            parts.append("\(taskSnapshot.todayPendingTotalCount) 项今日待办")
         }
-        if !historicalPendingTasks.isEmpty {
-            parts.append("\(historicalPendingTasks.count) 项历史待完成")
+        if taskSnapshot.historicalPendingTotalCount > 0 {
+            parts.append("\(taskSnapshot.historicalPendingTotalCount) 次历史待办")
         }
         if !dueItems.isEmpty {
             parts.append("\(dueItems.count) 项复习")
@@ -106,8 +111,8 @@ struct DashboardBoardView: View {
             dueItems: dueItems,
             pendingDictationCount: pendingDictationBoardItems.count,
             pendingDictationBoardItems: pendingDictationBoardItems,
-            boardTaskItems: boardTaskItems,
-            totalPendingTaskCount: todayPendingTasks.count + historicalPendingTasks.count,
+            boardTaskItems: taskSnapshot.boardTaskItems,
+            totalPendingTaskCount: taskSnapshot.totalPendingTaskCount,
             todaySchedules: todaySchedules,
             todayHeadline: parts.isEmpty ? "\(childName) 今天都完成了" : "\(childName) 今天还有 \(parts.joined(separator: "、"))",
             boardSettings: boardSettings,
@@ -123,15 +128,94 @@ struct DashboardBoardView: View {
             .sorted { $0.scheduledDate < $1.scheduledDate }
     }
 
-    private func todayTaskItems(on date: Date) -> [TodayTaskDisplayItem] {
-        TodayTaskListBuilder
-            .build(
-                from: allTasks.filter { !$0.isArchived },
-                executions: taskExecutionRecords,
-                subtasks: taskSubitems,
-                subtaskExecutions: taskSubitemExecutionRecords,
-                on: date
-            )
+    private func boardTaskSnapshot(on date: Date) -> BoardTaskSnapshot {
+        let calendar = Calendar.current
+        let autoArchivedCompletedAtByTaskID = Dictionary(
+            taskExecutionRecords.compactMap { record -> (UUID, Date)? in
+                guard record.status == .completed,
+                      let completedAt = record.completedAt,
+                      calendar.isDate(completedAt, inSameDayAs: date) else {
+                    return nil
+                }
+                return (record.taskID, completedAt)
+            },
+            uniquingKeysWith: max
+        )
+        let visibleTasks = allTasks.filter { task in
+            guard task.isArchived else { return true }
+            guard task.recurrence.kind == .once,
+                  let completedAt = autoArchivedCompletedAtByTaskID[task.id] else {
+                return false
+            }
+            return task.updatedAt <= completedAt
+        }
+        let deduplicatedVisibleTasks = TaskDedupSupport.deduplicatedTasks(visibleTasks)
+        let taskProjections = deduplicatedVisibleTasks.map(TaskProjection.init)
+        let taskProjectionResults = TodayTaskProjectionBuilder.build(
+            from: taskProjections,
+            executions: taskExecutionRecords.map(TaskExecutionRecordProjection.init),
+            subtasks: taskSubitems.filter { !$0.isArchived }.map(TaskSubitemProjection.init),
+            on: date
+        )
+        let tasksByID = Dictionary(
+            deduplicatedVisibleTasks.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let taskItems = TaskDedupSupport.deduplicatedDisplayItems(
+            taskProjectionResults.compactMap { projection in
+                tasksByID[projection.taskID].map { task in
+                    TodayTaskDisplayItem(
+                        task: task,
+                        section: projection.section,
+                        occurrenceDate: projection.occurrenceDate,
+                        isCompleted: projection.isCompleted,
+                        pendingOccurrenceCount: projection.pendingOccurrenceCount,
+                        historicalPendingCount: projection.historicalPendingCount,
+                        totalPendingOccurrenceCount: projection.totalPendingOccurrenceCount,
+                        overdueOriginText: projection.overdueOriginText,
+                        totalSubtaskCount: projection.totalSubtaskCount,
+                        completedSubtaskCount: projection.completedSubtaskCount
+                    )
+                }
+            },
+            title: { $0.task.title },
+            taskID: { $0.task.id },
+            section: { $0.section },
+            occurrenceDate: { $0.occurrenceDate },
+            sortKey: { item in
+                TaskDisplayDedupSortKey(
+                    unskippablePriority: item.task.skipPolicy == .unskippable ? 1 : 0,
+                    totalSubtaskCount: item.totalSubtaskCount,
+                    completedSubtaskCount: item.completedSubtaskCount,
+                    createdAt: item.task.createdAt,
+                    stableID: item.task.id.uuidString
+                )
+            }
+        )
+        let todayPendingItems = taskItems.filter { $0.section == .todayPending }
+        let historicalPendingItems = taskItems
+            .filter { $0.section == .historicalPending }
+            .sorted { lhs, rhs in
+                if lhs.occurrenceDate == rhs.occurrenceDate {
+                    return lhs.task.createdAt < rhs.task.createdAt
+                }
+                return lhs.occurrenceDate < rhs.occurrenceDate
+            }
+        let orderedTaskItems = todayPendingItems + historicalPendingItems + taskItems.filter { $0.section == .todayDone }
+        let taskSections = TodayTaskSectionSnapshotBuilder.build(
+            from: orderedTaskItems,
+            taskID: { $0.task.id },
+            section: { $0.section },
+            collapseTodayDone: false
+        )
+
+        return BoardTaskSnapshot(
+            todayPendingItems: taskSections.todayPendingItems,
+            historicalPendingItems: taskSections.historicalPendingItems,
+            historicalPendingTotalCount: taskSections.historicalPendingTotalCount,
+            todayCompletedItems: taskSections.todayDoneItems,
+            todayPendingTotalCount: todayPendingItems.count
+        )
     }
 
     private func todaySchedules(on date: Date) -> [ScheduleItem] {
@@ -220,6 +304,7 @@ struct DashboardBoardView: View {
         }
         .onReceive(boardRefreshTimer) {
             guard canRenderLiveContent else { return }
+            reinforceIdleTimerOverrideIfNeeded()
             boardNow = $0
             applyScheduledBoardBrightness(for: $0)
             syncBoardPlayback(for: $0)
@@ -231,7 +316,7 @@ struct DashboardBoardView: View {
                 lastBoardInteractionAt = .now
                 isExitButtonVisible = false
                 syncBoardPlayback(for: boardNow)
-            } else {
+            } else if newPhase == .background {
                 restoreIdleTimer()
                 playbackCoordinator.stop()
             }
@@ -686,7 +771,7 @@ struct DashboardBoardView: View {
         case .todayDone:
             "已完成"
         case .historicalPending:
-            item.overdueOriginText ?? "历史待完成"
+            item.overdueOriginText
         case .upcomingPending:
             "未来一周"
         case .todayPending:
@@ -710,6 +795,13 @@ struct DashboardBoardView: View {
                     Text(statusText)
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
                         .foregroundStyle(isDone ? Color.green.opacity(0.95) : Color.orange.opacity(0.95))
+                        .lineLimit(1)
+                }
+
+                if item.historicalPendingCount > 0 {
+                    Text("历史 \(item.historicalPendingCount) 次")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.orange.opacity(0.95))
                         .lineLimit(1)
                 }
 
@@ -808,6 +900,13 @@ struct DashboardBoardView: View {
         if let previousScreenBrightness {
             UIScreen.main.brightness = previousScreenBrightness
             self.previousScreenBrightness = nil
+        }
+    }
+
+    private func reinforceIdleTimerOverrideIfNeeded() {
+        guard previousScreenBrightness != nil else { return }
+        if !UIApplication.shared.isIdleTimerDisabled {
+            UIApplication.shared.isIdleTimerDisabled = true
         }
     }
 
