@@ -10,6 +10,7 @@ struct Provider: TimelineProvider {
             todayTasks: [],
             configuredTaskCount: 0,
             completedTaskCount: 0,
+            historicalPendingCount: 0,
             pendingReviewCount: 3,
             pendingDictationCount: 2
         )
@@ -49,6 +50,7 @@ struct Provider: TimelineProvider {
                 todayTasks: [],
                 configuredTaskCount: 0,
                 completedTaskCount: 0,
+                historicalPendingCount: 0,
                 pendingReviewCount: 0,
                 pendingDictationCount: 0
             )
@@ -60,13 +62,13 @@ struct Provider: TimelineProvider {
         var todayTasks: [WidgetTaskItem] = []
         var configuredTaskCount = 0
         var completedTaskCount = 0
+        var historicalPendingCount = 0
         if let allTasks = try? context.fetch(FetchDescriptor<TaskItem>()) {
             let today = Date()
             let taskExecutions = (try? context.fetch(FetchDescriptor<TaskExecutionRecord>())) ?? []
             let subtasks = (try? context.fetch(
                 FetchDescriptor<TaskSubitem>(predicate: #Predicate<TaskSubitem> { !$0.isArchived })
             )) ?? []
-            let subtaskExecutions = (try? context.fetch(FetchDescriptor<TaskSubitemExecutionRecord>())) ?? []
             let autoArchivedCompletedAtByTaskID = Dictionary(
                 taskExecutions.compactMap { record -> (UUID, Date)? in
                     guard record.status == .completed,
@@ -86,24 +88,67 @@ struct Provider: TimelineProvider {
                 }
                 return task.updatedAt <= completedAt
             }
-
-            configuredTaskCount = visibleTasks.filter { !$0.isArchived }.count
-            let taskItems = TodayTaskListBuilder.build(
-                from: visibleTasks,
-                executions: taskExecutions,
-                subtasks: subtasks,
-                subtaskExecutions: subtaskExecutions,
+            let deduplicatedTasks = TaskDedupSupport.deduplicatedTasks(allTasks)
+            let deduplicatedVisibleTasks = TaskDedupSupport.deduplicatedTasks(visibleTasks)
+            let taskProjections = deduplicatedVisibleTasks.map(TaskProjection.init)
+            let taskProjectionResults = TodayTaskProjectionBuilder.build(
+                from: taskProjections,
+                executions: taskExecutions.map(TaskExecutionRecordProjection.init),
+                subtasks: subtasks.map(TaskSubitemProjection.init),
                 on: today
-            ).filter {
-                $0.section == .todayPending || $0.section == .todayDone
-            }
-            completedTaskCount = taskItems.filter { $0.section == .todayDone }.count
-            todayTasks = taskItems.map {
+            )
+            let tasksByID = Dictionary(
+                deduplicatedVisibleTasks.map { ($0.id, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            let taskItems = TaskDedupSupport.deduplicatedDisplayItems(
+                taskProjectionResults.compactMap { projection in
+                    tasksByID[projection.taskID].map { task in
+                        TodayTaskDisplayItem(
+                            task: task,
+                            section: projection.section,
+                            occurrenceDate: projection.occurrenceDate,
+                            isCompleted: projection.isCompleted,
+                            pendingOccurrenceCount: projection.pendingOccurrenceCount,
+                            historicalPendingCount: projection.historicalPendingCount,
+                            totalPendingOccurrenceCount: projection.totalPendingOccurrenceCount,
+                            overdueOriginText: projection.overdueOriginText,
+                            totalSubtaskCount: projection.totalSubtaskCount,
+                            completedSubtaskCount: projection.completedSubtaskCount
+                        )
+                    }
+                },
+                title: { $0.task.title },
+                taskID: { $0.task.id },
+                section: { $0.section },
+                occurrenceDate: { $0.occurrenceDate },
+                sortKey: { item in
+                    TaskDisplayDedupSortKey(
+                        unskippablePriority: item.task.skipPolicy == .unskippable ? 1 : 0,
+                        totalSubtaskCount: item.totalSubtaskCount,
+                        completedSubtaskCount: item.completedSubtaskCount,
+                        createdAt: item.task.createdAt,
+                        stableID: item.task.id.uuidString
+                    )
+                }
+            )
+            configuredTaskCount = deduplicatedTasks.filter { !$0.isArchived }.count
+            let taskSections = TodayTaskSectionSnapshotBuilder.build(
+                from: taskItems,
+                taskID: { $0.task.id },
+                section: { $0.section }
+            )
+            let visibleTodayTasks = taskSections.todayPendingItems + taskSections.todayDoneItems
+            completedTaskCount = taskSections.todayDoneItems.count
+            historicalPendingCount = taskSections.historicalPendingTotalCount
+            todayTasks = visibleTodayTasks.map {
                 WidgetTaskItem(
                     id: $0.task.id,
                     title: $0.task.title,
                     isCompleted: $0.isCompleted,
-                    overdueOriginText: $0.overdueOriginText
+                    overdueOriginText: $0.overdueOriginText,
+                    historicalPendingCount: $0.historicalPendingCount,
+                    totalPendingOccurrenceCount: $0.totalPendingOccurrenceCount
                 )
             }
         }
@@ -132,6 +177,7 @@ struct Provider: TimelineProvider {
             todayTasks: todayTasks,
             configuredTaskCount: configuredTaskCount,
             completedTaskCount: completedTaskCount,
+            historicalPendingCount: historicalPendingCount,
             pendingReviewCount: reviewsCount,
             pendingDictationCount: dictationsCount
         )
@@ -169,6 +215,7 @@ struct SimpleEntry: TimelineEntry {
     let todayTasks: [WidgetTaskItem]
     let configuredTaskCount: Int
     let completedTaskCount: Int
+    let historicalPendingCount: Int
     let pendingReviewCount: Int
     let pendingDictationCount: Int
 }
@@ -178,6 +225,8 @@ struct WidgetTaskItem: Identifiable {
     let title: String
     let isCompleted: Bool
     let overdueOriginText: String?
+    let historicalPendingCount: Int
+    let totalPendingOccurrenceCount: Int
 }
 
 struct TypoWidgetEntryView : View {
@@ -202,6 +251,55 @@ struct TypoWidgetEntryView : View {
             )
         }
     }
+
+    private var historicalSummaryText: String {
+        if entry.todayTasks.isEmpty {
+            return "\(entry.historicalPendingCount) 次历史待办"
+        }
+        return "另有 \(entry.historicalPendingCount) 次历史待办"
+    }
+
+    @ViewBuilder
+    private func historicalSummaryLabel(_ font: Font) -> some View {
+        if entry.historicalPendingCount > 0 {
+            Text(historicalSummaryText)
+                .font(font)
+                .foregroundStyle(.white.opacity(0.78))
+                .lineLimit(1)
+        }
+    }
+
+    private func backlogBadge(_ count: Int, font: Font) -> some View {
+        Text("历史 \(count) 次")
+            .font(font.weight(.semibold))
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.white.opacity(0.18), in: Capsule())
+    }
+
+    private func taskRow(
+        _ task: WidgetTaskItem,
+        iconFont: Font,
+        titleFont: Font,
+        badgeFont: Font
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
+                .font(iconFont)
+                .foregroundStyle(task.isCompleted ? .green : .white.opacity(0.6))
+
+            Text(task.title)
+                .font(titleFont)
+                .lineLimit(1)
+                .foregroundStyle(task.isCompleted ? .white.opacity(0.75) : .white)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if task.historicalPendingCount > 0 {
+                backlogBadge(task.historicalPendingCount, font: badgeFont)
+            }
+        }
+    }
     
     private var largeView: some View {
         let maxTasks = 5
@@ -223,7 +321,7 @@ struct TypoWidgetEntryView : View {
                 .padding(.vertical, 0)
             
             VStack(alignment: .leading, spacing: 18) { // Changed from 14 to 18
-                HStack(alignment: .bottom) {
+                HStack(alignment: .top) {
                     HStack(spacing: 4) {
                         Image(systemName: "list.bullet.clipboard")
                         Text("今日任务")
@@ -233,17 +331,20 @@ struct TypoWidgetEntryView : View {
                     
                     Spacer()
 
-                    if !entry.todayTasks.isEmpty {
-                        Text("\(entry.completedTaskCount)/\(entry.todayTasks.count) 已完成")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(entry.completedTaskCount == entry.todayTasks.count ? .green : .white.opacity(0.8))
-                    }
+                    VStack(alignment: .trailing, spacing: 4) {
+                        if !entry.todayTasks.isEmpty {
+                            Text("\(entry.completedTaskCount)/\(entry.todayTasks.count) 已完成")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(entry.completedTaskCount == entry.todayTasks.count ? .green : .white.opacity(0.8))
+                        }
 
-                    if entry.todayTasks.count > maxTasks {
-                        Spacer()
-                        Text("还有 \(entry.todayTasks.count - maxTasks) 项任务未展示")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.7))
+                        historicalSummaryLabel(.caption)
+
+                        if entry.todayTasks.count > maxTasks {
+                            Text("还有 \(entry.todayTasks.count - maxTasks) 项任务未展示")
+                                .font(.caption)
+                                .foregroundStyle(.white.opacity(0.7))
+                        }
                     }
                 }
                 
@@ -259,16 +360,12 @@ struct TypoWidgetEntryView : View {
                 } else {
                         VStack(alignment: .leading, spacing: 12) {
                             ForEach(Array(entry.todayTasks.prefix(maxTasks))) { task in
-                                HStack(spacing: 14) {
-                                    Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
-                                        .font(.headline.weight(.semibold))
-                                        .foregroundStyle(task.isCompleted ? .green : .white.opacity(0.6))
-                                    Text(task.title)
-                                        .font(.headline.weight(.semibold))
-                                        .lineLimit(1)
-                                        .foregroundStyle(task.isCompleted ? .white.opacity(0.75) : .white)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                }
+                                taskRow(
+                                    task,
+                                    iconFont: .headline.weight(.semibold),
+                                    titleFont: .headline.weight(.semibold),
+                                    badgeFont: .caption2
+                                )
                             }
                         }
                     .padding(.horizontal, 12)
@@ -300,7 +397,7 @@ struct TypoWidgetEntryView : View {
             .foregroundStyle(.white)
             
             VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .bottom) {
+                HStack(alignment: .top) {
                     HStack(spacing: 4) {
                         Image(systemName: "list.bullet.clipboard")
                         Text("今日任务")
@@ -310,17 +407,20 @@ struct TypoWidgetEntryView : View {
                     
                     Spacer()
 
-                    if !entry.todayTasks.isEmpty {
-                        Text("\(entry.completedTaskCount)/\(entry.todayTasks.count) 已完成")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(entry.completedTaskCount == entry.todayTasks.count ? .green : .white.opacity(0.8))
-                    }
+                    VStack(alignment: .trailing, spacing: 3) {
+                        if !entry.todayTasks.isEmpty {
+                            Text("\(entry.completedTaskCount)/\(entry.todayTasks.count) 已完成")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(entry.completedTaskCount == entry.todayTasks.count ? .green : .white.opacity(0.8))
+                        }
 
-                    if entry.todayTasks.count > maxTasks {
-                        Spacer()
-                        Text("还有 \(entry.todayTasks.count - maxTasks) 项")
-                            .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.7))
+                        historicalSummaryLabel(.caption2)
+
+                        if entry.todayTasks.count > maxTasks {
+                            Text("还有 \(entry.todayTasks.count - maxTasks) 项")
+                                .font(.caption2)
+                                .foregroundStyle(.white.opacity(0.7))
+                        }
                     }
                 }
                 
@@ -336,16 +436,12 @@ struct TypoWidgetEntryView : View {
                 } else {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(Array(entry.todayTasks.prefix(maxTasks))) { task in
-                            HStack(spacing: 10) {
-                                Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
-                                    .font(.subheadline)
-                                    .foregroundStyle(task.isCompleted ? .green : .white.opacity(0.6))
-                                Text(task.title)
-                                    .font(.subheadline.weight(.medium))
-                                    .lineLimit(1)
-                                    .foregroundStyle(task.isCompleted ? .white.opacity(0.75) : .white)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
+                            taskRow(
+                                task,
+                                iconFont: .subheadline,
+                                titleFont: .subheadline.weight(.medium),
+                                badgeFont: .caption2
+                            )
                         }
                     }
                     .padding(.horizontal, 10)
@@ -389,22 +485,26 @@ struct TypoWidgetEntryView : View {
             
             // Right Column: Tasks
             VStack(alignment: .leading, spacing: 14) {
-                HStack {
+                HStack(alignment: .top) {
                     Label("今日任务", systemImage: "list.bullet.clipboard.fill")
                         .font(.headline)
                     
                     Spacer()
                     
-                    if !entry.todayTasks.isEmpty {
-                        Text("\(entry.completedTaskCount)/\(entry.todayTasks.count) 已完成")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(entry.completedTaskCount == entry.todayTasks.count ? .green : .white.opacity(0.8))
-                    }
+                    VStack(alignment: .trailing, spacing: 4) {
+                        if !entry.todayTasks.isEmpty {
+                            Text("\(entry.completedTaskCount)/\(entry.todayTasks.count) 已完成")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(entry.completedTaskCount == entry.todayTasks.count ? .green : .white.opacity(0.8))
+                        }
 
-                    if entry.todayTasks.count > maxTasks {
-                        Text("还有 \(entry.todayTasks.count - maxTasks) 项")
-                            .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.7))
+                        historicalSummaryLabel(.subheadline)
+
+                        if entry.todayTasks.count > maxTasks {
+                            Text("还有 \(entry.todayTasks.count - maxTasks) 项")
+                                .font(.subheadline)
+                                .foregroundStyle(.white.opacity(0.7))
+                        }
                     }
                 }
                 .foregroundStyle(.white.opacity(0.9))
@@ -424,16 +524,12 @@ struct TypoWidgetEntryView : View {
                 } else {
                     VStack(alignment: .leading, spacing: 14) {
                         ForEach(Array(entry.todayTasks.prefix(maxTasks))) { task in
-                            HStack(spacing: 14) {
-                                Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
-                                    .font(.title3.weight(.bold))
-                                    .foregroundStyle(task.isCompleted ? .green : .white.opacity(0.5))
-                                Text(task.title)
-                                    .font(.title3.weight(.semibold))
-                                    .lineLimit(1)
-                                    .foregroundStyle(task.isCompleted ? .white.opacity(0.75) : .white)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
+                            taskRow(
+                                task,
+                                iconFont: .title3.weight(.bold),
+                                titleFont: .title3.weight(.semibold),
+                                badgeFont: .caption
+                            )
                         }
                     }
                     .padding(24)

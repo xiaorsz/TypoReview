@@ -213,6 +213,8 @@ struct TodayTaskProjectionResult: Sendable {
     let occurrenceDate: Date
     let isCompleted: Bool
     let pendingOccurrenceCount: Int
+    let historicalPendingCount: Int
+    let totalPendingOccurrenceCount: Int
     let overdueOriginText: String?
     let totalSubtaskCount: Int
     let completedSubtaskCount: Int
@@ -224,6 +226,8 @@ struct TodayTaskDisplayItem: Identifiable, Equatable {
     let occurrenceDate: Date
     let isCompleted: Bool
     let pendingOccurrenceCount: Int
+    let historicalPendingCount: Int
+    let totalPendingOccurrenceCount: Int
     let overdueOriginText: String?
     let totalSubtaskCount: Int
     let completedSubtaskCount: Int
@@ -234,6 +238,8 @@ struct TodayTaskDisplayItem: Identifiable, Equatable {
         lhs.occurrenceDate == rhs.occurrenceDate &&
         lhs.isCompleted == rhs.isCompleted &&
         lhs.pendingOccurrenceCount == rhs.pendingOccurrenceCount &&
+        lhs.historicalPendingCount == rhs.historicalPendingCount &&
+        lhs.totalPendingOccurrenceCount == rhs.totalPendingOccurrenceCount &&
         lhs.overdueOriginText == rhs.overdueOriginText &&
         lhs.totalSubtaskCount == rhs.totalSubtaskCount &&
         lhs.completedSubtaskCount == rhs.completedSubtaskCount
@@ -255,6 +261,165 @@ struct TodayTaskDisplayItem: Identifiable, Equatable {
     var simpleProgressText: String? {
         guard hasSubtasks else { return nil }
         return "\(completedSubtaskCount)/\(totalSubtaskCount)"
+    }
+}
+
+struct TodayTaskSectionSnapshot<Item> {
+    let todayPendingItems: [Item]
+    let historicalPendingItems: [Item]
+    let todayDoneItems: [Item]
+    let historicalPendingTotalCount: Int
+}
+
+struct TaskDisplayDedupSortKey: Comparable, Sendable {
+    let unskippablePriority: Int
+    let totalSubtaskCount: Int
+    let completedSubtaskCount: Int
+    let createdAt: Date
+    let stableID: String
+
+    static func < (lhs: TaskDisplayDedupSortKey, rhs: TaskDisplayDedupSortKey) -> Bool {
+        if lhs.unskippablePriority != rhs.unskippablePriority {
+            return lhs.unskippablePriority < rhs.unskippablePriority
+        }
+        if lhs.totalSubtaskCount != rhs.totalSubtaskCount {
+            return lhs.totalSubtaskCount < rhs.totalSubtaskCount
+        }
+        if lhs.completedSubtaskCount != rhs.completedSubtaskCount {
+            return lhs.completedSubtaskCount < rhs.completedSubtaskCount
+        }
+        if lhs.createdAt != rhs.createdAt {
+            return lhs.createdAt < rhs.createdAt
+        }
+        return lhs.stableID < rhs.stableID
+    }
+}
+
+struct TaskModelDedupSortKey: Comparable, Sendable {
+    let archivedPriority: Int
+    let updatedAt: Date
+    let createdAt: Date
+    let stableID: String
+
+    static func < (lhs: TaskModelDedupSortKey, rhs: TaskModelDedupSortKey) -> Bool {
+        if lhs.archivedPriority != rhs.archivedPriority {
+            return lhs.archivedPriority < rhs.archivedPriority
+        }
+        if lhs.updatedAt != rhs.updatedAt {
+            return lhs.updatedAt < rhs.updatedAt
+        }
+        if lhs.createdAt != rhs.createdAt {
+            return lhs.createdAt < rhs.createdAt
+        }
+        return lhs.stableID < rhs.stableID
+    }
+}
+
+enum TaskDedupSupport {
+    static func deduplicatedTasks(_ tasks: [TaskItem]) -> [TaskItem] {
+        deduplicate(
+            tasks,
+            key: { task in
+                let normalizedTitle = normalizedTitle(task.title)
+                return normalizedTitle.isEmpty ? "id:\(task.id.uuidString.lowercased())" : "title:\(normalizedTitle)"
+            },
+            sortKey: { task in
+                TaskModelDedupSortKey(
+                    archivedPriority: task.isArchived ? 0 : 1,
+                    updatedAt: task.updatedAt,
+                    createdAt: task.createdAt,
+                    stableID: task.id.uuidString
+                )
+            }
+        )
+    }
+
+    static func deduplicatedDisplayItems<Item>(
+        _ items: [Item],
+        title: (Item) -> String,
+        taskID: (Item) -> UUID,
+        section: (Item) -> TodayTaskDisplaySection,
+        occurrenceDate: (Item) -> Date,
+        sortKey: (Item) -> TaskDisplayDedupSortKey
+    ) -> [Item] {
+        deduplicate(
+            items,
+            key: { item in
+                let normalized = normalizedTitle(title(item))
+                let occurrenceDay = Calendar.current.startOfDay(for: occurrenceDate(item))
+                return [
+                    normalized.isEmpty
+                        ? "id:\(taskID(item).uuidString.lowercased())"
+                        : "title:\(normalized)",
+                    String(describing: section(item)),
+                    String(occurrenceDay.timeIntervalSinceReferenceDate)
+                ].joined(separator: "|")
+            },
+            sortKey: sortKey
+        )
+    }
+
+    private static func deduplicate<Item, Key: Hashable, SortKey: Comparable>(
+        _ items: [Item],
+        key: (Item) -> Key,
+        sortKey: (Item) -> SortKey
+    ) -> [Item] {
+        var preferredItemsByKey: [Key: Item] = [:]
+        var order: [Key] = []
+
+        for item in items {
+            let itemKey = key(item)
+            if let existing = preferredItemsByKey[itemKey] {
+                if sortKey(existing) < sortKey(item) {
+                    preferredItemsByKey[itemKey] = item
+                }
+            } else {
+                preferredItemsByKey[itemKey] = item
+                order.append(itemKey)
+            }
+        }
+
+        return order.compactMap { preferredItemsByKey[$0] }
+    }
+
+    private static func normalizedTitle(_ title: String) -> String {
+        title
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+    }
+}
+
+enum TodayTaskSectionSnapshotBuilder {
+    static func build<Item>(
+        from items: [Item],
+        taskID: (Item) -> UUID,
+        section: (Item) -> TodayTaskDisplaySection,
+        collapseTodayDone: Bool = true
+    ) -> TodayTaskSectionSnapshot<Item> {
+        let todayPendingItems = collapse(items.filter { section($0) == .todayPending }, taskID: taskID)
+        let historicalPendingSource = items.filter { section($0) == .historicalPending }
+        let historicalPendingItems = collapse(historicalPendingSource, taskID: taskID)
+        let todayDoneSource = items.filter { section($0) == .todayDone }
+        let todayDoneItems = collapseTodayDone
+            ? collapse(todayDoneSource, taskID: taskID)
+            : todayDoneSource
+
+        return TodayTaskSectionSnapshot(
+            todayPendingItems: todayPendingItems,
+            historicalPendingItems: historicalPendingItems,
+            todayDoneItems: todayDoneItems,
+            historicalPendingTotalCount: historicalPendingSource.count
+        )
+    }
+
+    private static func collapse<Item>(
+        _ items: [Item],
+        taskID: (Item) -> UUID
+    ) -> [Item] {
+        var seenTaskIDs = Set<UUID>()
+        return items.filter { item in
+            seenTaskIDs.insert(taskID(item)).inserted
+        }
     }
 }
 
@@ -507,6 +672,7 @@ enum TaskExecutionSupport {
             let todayPendingCount = snapshots.filter {
                 !$0.isCompleted && calendar.isDate($0.occurrenceDate, inSameDayAs: today)
             }.count
+            let totalPendingOccurrenceCount = historicalPendingCount + todayPendingCount
             let upcomingPendingCount = snapshots.filter {
                 !$0.isCompleted && $0.occurrenceDate > today
             }.count
@@ -542,6 +708,8 @@ enum TaskExecutionSupport {
                     occurrenceDate: snapshot.occurrenceDate,
                     isCompleted: snapshot.isCompleted,
                     pendingOccurrenceCount: pendingCount,
+                    historicalPendingCount: historicalPendingCount,
+                    totalPendingOccurrenceCount: totalPendingOccurrenceCount,
                     overdueOriginText: snapshot.overdueOriginText,
                     totalSubtaskCount: snapshot.totalSubtaskCount,
                     completedSubtaskCount: snapshot.completedSubtaskCount
@@ -915,6 +1083,7 @@ enum TodayTaskProjectionBuilder {
             let todayPendingCount = snapshots.filter {
                 !$0.isCompleted && calendar.isDate($0.occurrenceDate, inSameDayAs: today)
             }.count
+            let totalPendingOccurrenceCount = historicalPendingCount + todayPendingCount
             let upcomingPendingCount = snapshots.filter {
                 !$0.isCompleted && $0.occurrenceDate > today
             }.count
@@ -950,6 +1119,8 @@ enum TodayTaskProjectionBuilder {
                     occurrenceDate: snapshot.occurrenceDate,
                     isCompleted: snapshot.isCompleted,
                     pendingOccurrenceCount: pendingCount,
+                    historicalPendingCount: historicalPendingCount,
+                    totalPendingOccurrenceCount: totalPendingOccurrenceCount,
                     overdueOriginText: snapshot.overdueOriginText,
                     totalSubtaskCount: snapshot.totalSubtaskCount,
                     completedSubtaskCount: snapshot.completedSubtaskCount
@@ -970,6 +1141,8 @@ enum TodayTaskProjectionBuilder {
                 occurrenceDate: projection.occurrenceDate,
                 isCompleted: projection.isCompleted,
                 pendingOccurrenceCount: projection.pendingOccurrenceCount,
+                historicalPendingCount: projection.historicalPendingCount,
+                totalPendingOccurrenceCount: projection.totalPendingOccurrenceCount,
                 overdueOriginText: projection.overdueOriginText,
                 totalSubtaskCount: projection.totalSubtaskCount,
                 completedSubtaskCount: projection.completedSubtaskCount

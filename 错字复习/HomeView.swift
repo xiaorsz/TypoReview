@@ -210,6 +210,8 @@ private struct HomeTaskDisplayItem: Identifiable {
     let occurrenceDate: Date
     let isCompleted: Bool
     let pendingOccurrenceCount: Int
+    let historicalPendingCount: Int
+    let totalPendingOccurrenceCount: Int
     let overdueOriginText: String?
     let totalSubtaskCount: Int
     let completedSubtaskCount: Int
@@ -220,6 +222,8 @@ private struct HomeTaskDisplayItem: Identifiable {
         occurrenceDate = projection.occurrenceDate
         isCompleted = projection.isCompleted
         pendingOccurrenceCount = projection.pendingOccurrenceCount
+        historicalPendingCount = projection.historicalPendingCount
+        totalPendingOccurrenceCount = projection.totalPendingOccurrenceCount
         overdueOriginText = projection.overdueOriginText
         totalSubtaskCount = projection.totalSubtaskCount
         completedSubtaskCount = projection.completedSubtaskCount
@@ -231,6 +235,8 @@ private struct HomeTaskDisplayItem: Identifiable {
         occurrenceDate: Date,
         isCompleted: Bool,
         pendingOccurrenceCount: Int,
+        historicalPendingCount: Int,
+        totalPendingOccurrenceCount: Int,
         overdueOriginText: String?,
         totalSubtaskCount: Int,
         completedSubtaskCount: Int
@@ -240,6 +246,8 @@ private struct HomeTaskDisplayItem: Identifiable {
         self.occurrenceDate = occurrenceDate
         self.isCompleted = isCompleted
         self.pendingOccurrenceCount = pendingOccurrenceCount
+        self.historicalPendingCount = historicalPendingCount
+        self.totalPendingOccurrenceCount = totalPendingOccurrenceCount
         self.overdueOriginText = overdueOriginText
         self.totalSubtaskCount = totalSubtaskCount
         self.completedSubtaskCount = completedSubtaskCount
@@ -359,6 +367,7 @@ struct HomeView: View {
         let todaySchedules: [HomeScheduleProjection]
         let todayPendingTasks: [HomeTaskDisplayItem]
         let historicalPendingTasks: [HomeTaskDisplayItem]
+        let historicalPendingTaskCount: Int
         let todayCompletedTasks: [HomeTaskDisplayItem]
         let todayCompletedTaskCount: Int
         let totalPendingTaskCount: Int
@@ -448,17 +457,27 @@ struct HomeView: View {
                 .filter { $0.shouldAppear(on: referenceDate) && !$0.hasEnded(on: referenceDate, reference: referenceDate) }
                 .sorted { $0.startTimeMinutes < $1.startTimeMinutes }
 
-            let tPendingTasks = taskItems.filter { $0.section == .todayPending }
-            let hPendingTasks = taskItems.filter { $0.section == .historicalPending }
+            let todayTaskItems = taskItems.filter { $0.section == .todayPending }
+            let historicalTaskItems = taskItems.filter { $0.section == .historicalPending }
                 .sorted { lhs, rhs in
                     if lhs.occurrenceDate == rhs.occurrenceDate {
                         return lhs.task.createdAt < rhs.task.createdAt
                     }
                     return lhs.occurrenceDate < rhs.occurrenceDate
                 }
-            let tCompletedTasks = taskItems.filter { $0.section == .todayDone }
+            let orderedTaskItems = todayTaskItems + historicalTaskItems + taskItems.filter { $0.section == .todayDone }
+            let taskSections = TodayTaskSectionSnapshotBuilder.build(
+                from: orderedTaskItems,
+                taskID: { $0.task.id },
+                section: { $0.section },
+                collapseTodayDone: false
+            )
+            let tPendingTasks = taskSections.todayPendingItems
+            let hPendingTasks = taskSections.historicalPendingItems
+            let historicalPendingTaskCount = taskSections.historicalPendingTotalCount
+            let tCompletedTasks = taskSections.todayDoneItems
             let tCompletedTaskCount = tCompletedTasks.count
-            let totPendingTaskCount = tPendingTasks.count + hPendingTasks.count
+            let totPendingTaskCount = todayTaskItems.count + historicalPendingTaskCount
 
             let tasksDone = totPendingTaskCount == 0 && (tCompletedTaskCount > 0 || activeTaskCount == 0)
             let reviewDone = cappedDueContent.isEmpty
@@ -494,7 +513,9 @@ struct HomeView: View {
                     }
                     return "别忘了还有一场「\(session.title)」听写在进行中。"
                 }
-                if !hPendingTasks.isEmpty && tPendingTasks.isEmpty { return "还有 \(hPendingTasks.count) 项历史待完成，先清一清积压吧。" }
+                if historicalPendingTaskCount > 0 && tPendingTasks.isEmpty {
+                    return "还有 \(historicalPendingTaskCount) 次历史待办，先清一清积压吧。"
+                }
                 if totPendingTaskCount > 0 && !cappedDueContent.isEmpty { return "先完成今天的任务，再做错题复习。加油！" }
                 if totPendingTaskCount > 0 { return "先把今天的任务完成吧！" }
                 if allDue.count > dailyLimit { return "今天共有 \(allDue.count) 项到期，推荐先练 \(dailyLimit) 项。" }
@@ -527,6 +548,7 @@ struct HomeView: View {
                 todaySchedules: tSchedules,
                 todayPendingTasks: tPendingTasks,
                 historicalPendingTasks: hPendingTasks,
+                historicalPendingTaskCount: historicalPendingTaskCount,
                 todayCompletedTasks: tCompletedTasks,
                 todayCompletedTaskCount: tCompletedTaskCount,
                 totalPendingTaskCount: totPendingTaskCount,
@@ -803,7 +825,6 @@ struct HomeView: View {
                     },
                     uniquingKeysWith: max
                 )
-                let activeTaskModels = allTaskModels.filter { !$0.isArchived }
                 let visibleTaskModels = allTaskModels.filter { task in
                     guard task.isArchived else { return true }
                     guard task.recurrence.kind == .once,
@@ -812,8 +833,11 @@ struct HomeView: View {
                     }
                     return task.updatedAt <= completedAt
                 }
+                let deduplicatedTaskModels = TaskDedupSupport.deduplicatedTasks(allTaskModels)
+                let deduplicatedVisibleTaskModels = TaskDedupSupport.deduplicatedTasks(visibleTaskModels)
+                let activeTaskModels = deduplicatedTaskModels.filter { !$0.isArchived }
 
-                let taskProjections = visibleTaskModels.map(TaskProjection.init)
+                let taskProjections = deduplicatedVisibleTaskModels.map(TaskProjection.init)
                 let taskProjectionResults = TodayTaskProjectionBuilder.build(
                     from: taskProjections,
                     executions: executionModels.map(TaskExecutionRecordProjection.init),
@@ -824,10 +848,25 @@ struct HomeView: View {
                     taskProjections.map { ($0.id, $0) },
                     uniquingKeysWith: { first, _ in first }
                 )
-                let taskDisplayItems = taskProjectionResults.compactMap { result -> HomeTaskDisplayItem? in
-                    guard let task = tasksByID[result.taskID] else { return nil }
-                    return HomeTaskDisplayItem(task: task, projection: result)
-                }
+                let taskDisplayItems = TaskDedupSupport.deduplicatedDisplayItems(
+                    taskProjectionResults.compactMap { result -> HomeTaskDisplayItem? in
+                        guard let task = tasksByID[result.taskID] else { return nil }
+                        return HomeTaskDisplayItem(task: task, projection: result)
+                    },
+                    title: { $0.task.title },
+                    taskID: { $0.task.id },
+                    section: { $0.section },
+                    occurrenceDate: { $0.occurrenceDate },
+                    sortKey: { item in
+                        TaskDisplayDedupSortKey(
+                            unskippablePriority: item.task.skipPolicy == .unskippable ? 1 : 0,
+                            totalSubtaskCount: item.totalSubtaskCount,
+                            completedSubtaskCount: item.completedSubtaskCount,
+                            createdAt: item.task.createdAt,
+                            stableID: item.task.id.uuidString
+                        )
+                    }
+                )
 
                 #if DEBUG
                 let todayPendingSummaries = taskDisplayItems
@@ -838,7 +877,7 @@ struct HomeView: View {
                     .filter { $0.section == .todayDone }
                     .map { "\($0.task.title)#\($0.task.id.uuidString.prefix(6))@\($0.occurrenceDate.formatted(.dateTime.month().day()))" }
                     .joined(separator: ",")
-                DebugPerf.mark("HomeView background snapshot fetch end reviews=\(reviewModels.count) records=\(reviewRecordModels.count) sessions=\(sessionModels.count) entries=\(entryModels.count) schedules=\(scheduleModels.count) tasks=\(visibleTaskModels.count) todayPending=\(todayPendingSummaries) todayDone=\(todayDoneSummaries)")
+                DebugPerf.mark("HomeView background snapshot fetch end reviews=\(reviewModels.count) records=\(reviewRecordModels.count) sessions=\(sessionModels.count) entries=\(entryModels.count) schedules=\(scheduleModels.count) tasks=\(deduplicatedVisibleTaskModels.count) todayPending=\(todayPendingSummaries) todayDone=\(todayDoneSummaries)")
                 #endif
 
                 return DashboardSnapshot.make(
@@ -1363,11 +1402,11 @@ struct HomeView: View {
 
     @ViewBuilder
     private func todayTasksCard(_ snapshot: DashboardSnapshot) -> some View {
-        let pendingItems = collapsedHomeTaskItems(snapshot.todayPendingTasks)
-        let historicalItems = collapsedHomeTaskItems(snapshot.historicalPendingTasks)
+        let pendingItems = snapshot.todayPendingTasks
+        let historicalItems = snapshot.historicalPendingTasks
         let doneCount = snapshot.todayCompletedTaskCount
         let todayTaskCount = pendingItems.count + doneCount
-        let historyCount = snapshot.historicalPendingTasks.count
+        let historyCount = snapshot.historicalPendingTaskCount
         
         if !pendingItems.isEmpty || doneCount > 0 || !historicalItems.isEmpty || snapshot.activeTaskCount > 0 {
             VStack(alignment: .leading, spacing: 14) {
@@ -1381,7 +1420,7 @@ struct HomeView: View {
 
                     VStack(alignment: .trailing, spacing: 4) {
                         if historyCount > 0 {
-                            Text("另有 \(historyCount) 项历史待完成")
+                            Text("另有 \(historyCount) 次历史待办")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.orange)
                         }
@@ -1521,12 +1560,12 @@ struct HomeView: View {
                                     .foregroundStyle(isDone ? .green : .blue)
                             }
 
-                            if !isDone, item.pendingOccurrenceCount > 1 {
+                            if item.historicalPendingCount > 0 {
                                 Text("·")
                                     .font(.caption2)
                                     .foregroundStyle(.tertiary)
                                     
-                                Text("\(item.pendingOccurrenceCount)次待办")
+                                Text("历史 \(item.historicalPendingCount) 次")
                                     .font(.caption2.weight(.semibold))
                                     .foregroundStyle(.orange)
                             }
@@ -1548,13 +1587,6 @@ struct HomeView: View {
             .buttonStyle(.plain)
         }
         .padding(.vertical, 2)
-    }
-
-    private func collapsedHomeTaskItems(_ items: [HomeTaskDisplayItem]) -> [HomeTaskDisplayItem] {
-        var seenTaskIDs = Set<UUID>()
-        return items.filter { item in
-            seenTaskIDs.insert(item.task.id).inserted
-        }
     }
 
     private func completeTask(_ task: TaskProjection, occurrenceDate: Date) {
@@ -1601,10 +1633,14 @@ struct HomeView: View {
                 occurrenceDate: oldItem.occurrenceDate,
                 isCompleted: true,
                 pendingOccurrenceCount: oldItem.pendingOccurrenceCount,
+                historicalPendingCount: oldItem.historicalPendingCount,
+                totalPendingOccurrenceCount: max(oldItem.totalPendingOccurrenceCount - 1, 0),
                 overdueOriginText: oldItem.overdueOriginText,
                 totalSubtaskCount: oldItem.totalSubtaskCount,
                 completedSubtaskCount: oldItem.totalSubtaskCount
             )
+            let completedTodayPending = oldItem.section == .todayPending
+            let completedHistoricalPending = oldItem.section == .historicalPending
 
             dashboardSnapshot = DashboardSnapshot(
                 childName: snapshot.childName,
@@ -1623,8 +1659,9 @@ struct HomeView: View {
                 todaySchedules: snapshot.todaySchedules,
                 todayPendingTasks: snapshot.todayPendingTasks.filter { !($0.task.id == taskID && $0.occurrenceDate == occurrenceDate) },
                 historicalPendingTasks: snapshot.historicalPendingTasks.filter { !($0.task.id == taskID && $0.occurrenceDate == occurrenceDate) },
-                todayCompletedTasks: snapshot.todayCompletedTasks + [newItem],
-                todayCompletedTaskCount: snapshot.todayCompletedTaskCount + 1,
+                historicalPendingTaskCount: max(snapshot.historicalPendingTaskCount - (completedHistoricalPending ? 1 : 0), 0),
+                todayCompletedTasks: completedTodayPending ? snapshot.todayCompletedTasks + [newItem] : snapshot.todayCompletedTasks,
+                todayCompletedTaskCount: snapshot.todayCompletedTaskCount + (completedTodayPending ? 1 : 0),
                 totalPendingTaskCount: max(snapshot.totalPendingTaskCount - 1, 0),
                 activeTaskCount: snapshot.activeTaskCount,
                 heroIconName: snapshot.heroIconName,
