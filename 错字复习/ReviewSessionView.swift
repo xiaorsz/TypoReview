@@ -325,6 +325,7 @@ struct ReviewSessionView: View {
         )
         output.record.note = ReviewRecord.storedDetailText(detail)
         modelContext.insert(output.record)
+        PointLedgerService.awardReviewRecord(output.record, in: modelContext)
 
         guard persistChanges(
             message: "这题的复习结果没有保存成功，请稍后再试一次。"
@@ -383,6 +384,11 @@ struct ReviewSessionView: View {
 
         // Delete the record
         if let recordID = entry.recordID {
+            PointLedgerService.reverseEntries(
+                sourceType: .reviewRecord,
+                sourceID: recordID,
+                in: modelContext
+            )
             let descriptor = FetchDescriptor<ReviewRecord>(
                 predicate: #Predicate { $0.id == recordID }
             )

@@ -67,6 +67,8 @@ struct RootTabView: View {
             remoteChangeDebounceTask = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s debounce
                 guard !Task.isCancelled else { return }
+                guard canRefreshLiveAppState else { return }
+                appSettingsStore.refreshFromSwiftDataIfPossible(using: modelContext)
                 #if DEBUG
                 DebugPerf.mark("RootTabView posting appDataDidMutate from remote change")
                 #endif

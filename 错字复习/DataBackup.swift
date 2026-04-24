@@ -47,7 +47,7 @@ struct DataBackupDocument: FileDocument {
 }
 
 struct DataBackupPayload: Codable {
-    static let currentVersion = 3
+    static let currentVersion = 4
 
     let version: Int
     let exportedAt: Date
@@ -64,6 +64,8 @@ struct DataBackupPayload: Codable {
     let dictationEntries: [DictationEntrySnapshot]
     let scheduleItems: [ScheduleItemSnapshot]
     let mediaAssets: [MediaAssetSnapshot]
+    let pointLedgerEntries: [PointLedgerEntrySnapshot]
+    let pointRewardStates: [PointRewardStateSnapshot]
 
     enum CodingKeys: String, CodingKey {
         case version
@@ -81,6 +83,8 @@ struct DataBackupPayload: Codable {
         case dictationEntries
         case scheduleItems
         case mediaAssets
+        case pointLedgerEntries
+        case pointRewardStates
     }
 
     init(
@@ -98,7 +102,9 @@ struct DataBackupPayload: Codable {
         dictationSessions: [DictationSessionSnapshot],
         dictationEntries: [DictationEntrySnapshot],
         scheduleItems: [ScheduleItemSnapshot],
-        mediaAssets: [MediaAssetSnapshot] = []
+        mediaAssets: [MediaAssetSnapshot] = [],
+        pointLedgerEntries: [PointLedgerEntrySnapshot] = [],
+        pointRewardStates: [PointRewardStateSnapshot] = []
     ) {
         self.version = version
         self.exportedAt = exportedAt
@@ -115,6 +121,8 @@ struct DataBackupPayload: Codable {
         self.dictationEntries = dictationEntries
         self.scheduleItems = scheduleItems
         self.mediaAssets = mediaAssets
+        self.pointLedgerEntries = pointLedgerEntries
+        self.pointRewardStates = pointRewardStates
     }
 
     init(from decoder: any Decoder) throws {
@@ -134,6 +142,8 @@ struct DataBackupPayload: Codable {
         dictationEntries = try container.decode([DictationEntrySnapshot].self, forKey: .dictationEntries)
         scheduleItems = try container.decode([ScheduleItemSnapshot].self, forKey: .scheduleItems)
         mediaAssets = try container.decodeIfPresent([MediaAssetSnapshot].self, forKey: .mediaAssets) ?? []
+        pointLedgerEntries = try container.decodeIfPresent([PointLedgerEntrySnapshot].self, forKey: .pointLedgerEntries) ?? []
+        pointRewardStates = try container.decodeIfPresent([PointRewardStateSnapshot].self, forKey: .pointRewardStates) ?? []
     }
 
     static var placeholder: DataBackupPayload {
@@ -149,7 +159,9 @@ struct DataBackupPayload: Codable {
             dictationSessions: [],
             dictationEntries: [],
             scheduleItems: [],
-            mediaAssets: []
+            mediaAssets: [],
+            pointLedgerEntries: [],
+            pointRewardStates: []
         )
     }
 
@@ -173,6 +185,8 @@ struct DataBackupPayload: Codable {
         let dictationEntries = try modelContext.fetch(FetchDescriptor<DictationEntry>()).map(DictationEntrySnapshot.init)
         let scheduleItems = try modelContext.fetch(FetchDescriptor<ScheduleItem>()).map(ScheduleItemSnapshot.init)
         let mediaAssetSnapshots = mediaAssets.map(MediaAssetSnapshot.init)
+        let pointLedgerEntries = try modelContext.fetch(FetchDescriptor<PointLedgerEntry>()).map(PointLedgerEntrySnapshot.init)
+        let pointRewardStates = try modelContext.fetch(FetchDescriptor<PointRewardState>()).map(PointRewardStateSnapshot.init)
 
         return DataBackupPayload(
             settings: settings,
@@ -186,7 +200,9 @@ struct DataBackupPayload: Codable {
             dictationSessions: dictationSessions,
             dictationEntries: dictationEntries,
             scheduleItems: scheduleItems,
-            mediaAssets: mediaAssetSnapshots
+            mediaAssets: mediaAssetSnapshots,
+            pointLedgerEntries: pointLedgerEntries,
+            pointRewardStates: pointRewardStates
         )
     }
 
@@ -227,7 +243,8 @@ struct DataBackupPayload: Codable {
             "听写计划 \(dictationSessions.count) 组",
             "听写条目 \(dictationEntries.count) 条",
             "日程 \(scheduleItems.count) 条",
-            "晨读资源 \(mediaAssets.count) 条"
+            "晨读资源 \(mediaAssets.count) 条",
+            "积分流水 \(pointLedgerEntries.count) 条"
         ]
         .compactMap { $0 }
         .joined(separator: "，")
@@ -267,6 +284,8 @@ enum DataBackupService {
         try deleteAll(DictationSession.self, in: modelContext)
         try deleteAll(DictationEntry.self, in: modelContext)
         try deleteAll(ScheduleItem.self, in: modelContext)
+        try deleteAll(PointLedgerEntry.self, in: modelContext)
+        try deleteAll(PointRewardState.self, in: modelContext)
 
         payload.reviewItems
             .map { $0.makeModel() }
@@ -311,6 +330,12 @@ enum DataBackupService {
             .map { $0.makeModel() }
             .forEach { modelContext.insert($0) }
         payload.scheduleItems
+            .map { $0.makeModel() }
+            .forEach { modelContext.insert($0) }
+        payload.pointLedgerEntries
+            .map { $0.makeModel() }
+            .forEach { modelContext.insert($0) }
+        payload.pointRewardStates
             .map { $0.makeModel() }
             .forEach { modelContext.insert($0) }
 
@@ -977,6 +1002,76 @@ struct MediaAssetSnapshot: Codable {
             playlistOrder: playlistOrder,
             isIncludedInPlaylist: isIncludedInPlaylist,
             createdAt: createdAt,
+            updatedAt: updatedAt
+        )
+    }
+}
+
+struct PointLedgerEntrySnapshot: Codable {
+    let id: UUID
+    let createdAt: Date
+    let amount: Int
+    let kindRawValue: String
+    let sourceTypeRawValue: String
+    let sourceIDRawValue: String
+    let idempotencyKey: String
+    let note: String
+    let isReversal: Bool
+    let reversesEntryIDRawValue: String?
+
+    init(_ entry: PointLedgerEntry) {
+        id = entry.id
+        createdAt = entry.createdAt
+        amount = entry.amount
+        kindRawValue = entry.kindRawValue
+        sourceTypeRawValue = entry.sourceTypeRawValue
+        sourceIDRawValue = entry.sourceIDRawValue
+        idempotencyKey = entry.idempotencyKey
+        note = entry.note
+        isReversal = entry.isReversal
+        reversesEntryIDRawValue = entry.reversesEntryIDRawValue
+    }
+
+    func makeModel() -> PointLedgerEntry {
+        let entry = PointLedgerEntry(
+            id: id,
+            createdAt: createdAt,
+            amount: amount,
+            kind: PointLedgerKind(rawValue: kindRawValue) ?? .reward,
+            sourceType: PointLedgerSourceType(rawValue: sourceTypeRawValue) ?? .reviewRecord,
+            sourceIDRawValue: sourceIDRawValue,
+            idempotencyKey: idempotencyKey,
+            note: note,
+            isReversal: isReversal,
+            reversesEntryIDRawValue: reversesEntryIDRawValue
+        )
+        entry.kindRawValue = kindRawValue
+        entry.sourceTypeRawValue = sourceTypeRawValue
+        return entry
+    }
+}
+
+struct PointRewardStateSnapshot: Codable {
+    let id: UUID
+    let currentStreak: Int
+    let lastActiveDay: Date?
+    let longestStreak: Int
+    let updatedAt: Date
+
+    init(_ state: PointRewardState) {
+        id = state.id
+        currentStreak = state.currentStreak
+        lastActiveDay = state.lastActiveDay
+        longestStreak = state.longestStreak
+        updatedAt = state.updatedAt
+    }
+
+    func makeModel() -> PointRewardState {
+        PointRewardState(
+            id: id,
+            currentStreak: currentStreak,
+            lastActiveDay: lastActiveDay,
+            longestStreak: longestStreak,
             updatedAt: updatedAt
         )
     }

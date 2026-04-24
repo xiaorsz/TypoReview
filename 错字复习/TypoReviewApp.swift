@@ -42,7 +42,9 @@ struct TypoReviewApp: App {
             DictationSession.self,
             DictationEntry.self,
             ScheduleItem.self,
-            MediaAsset.self
+            MediaAsset.self,
+            PointLedgerEntry.self,
+            PointRewardState.self
         ])
 
         let fileManager = FileManager.default

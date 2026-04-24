@@ -92,6 +92,21 @@ struct SettingsView: View {
             }
 
             Section {
+                NavigationLink {
+                    PointsDashboardView()
+                } label: {
+                    HStack {
+                        SettingsIcon(name: "star.circle.fill", color: .yellow)
+                        Text("积分与兑换")
+                    }
+                }
+            } header: {
+                Text("积分")
+            } footer: {
+                Text("积分按听写、复习和待办完成自动累计，兑换由家长手动扣除。")
+            }
+
+            Section {
                 Picker(selection: reviewStyle) {
                     ForEach(ReviewInteractionStyle.allCases) { style in
                         Text(style.rawValue).tag(style)

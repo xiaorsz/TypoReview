@@ -372,6 +372,8 @@ struct HomeView: View {
         let todayCompletedTaskCount: Int
         let totalPendingTaskCount: Int
         let activeTaskCount: Int
+        let pointBalance: Int
+        let currentPointStreak: Int
         let heroIconName: String
         let heroMessage: String
         let heroSubtitle: String
@@ -395,6 +397,8 @@ struct HomeView: View {
             schedules: [HomeScheduleProjection],
             taskItems: [HomeTaskDisplayItem],
             activeTaskCount: Int,
+            pointBalance: Int,
+            currentPointStreak: Int,
             referenceDate: Date = .now
         ) -> DashboardSnapshot {
             let name = childName.isEmpty ? "小朋友" : childName
@@ -553,6 +557,8 @@ struct HomeView: View {
                 todayCompletedTaskCount: tCompletedTaskCount,
                 totalPendingTaskCount: totPendingTaskCount,
                 activeTaskCount: activeTaskCount,
+                pointBalance: pointBalance,
+                currentPointStreak: currentPointStreak,
                 heroIconName: hIcon,
                 heroMessage: hMessage,
                 heroSubtitle: hSubtitle,
@@ -611,6 +617,42 @@ struct HomeView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
         .background(.white.opacity(0.15), in: Capsule())
+    }
+
+    private func pointsSummaryCard(_ snapshot: DashboardSnapshot) -> some View {
+        NavigationLink {
+            PointsDashboardView()
+        } label: {
+            HStack(spacing: 14) {
+                Image(systemName: "star.circle.fill")
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(.orange)
+                    .frame(width: 42, height: 42)
+                    .background(Color.orange.opacity(0.12), in: Circle())
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("积分")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("连续学习 \(snapshot.currentPointStreak) 天")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text("\(snapshot.pointBalance)")
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(.orange)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(16)
+            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20))
+        }
+        .buttonStyle(.plain)
     }
 
     var body: some View {
@@ -823,6 +865,7 @@ struct HomeView: View {
                 let subtaskModels = (try? backgroundContext.fetch(
                     FetchDescriptor<TaskSubitem>(predicate: #Predicate<TaskSubitem> { !$0.isArchived })
                 )) ?? []
+                let pointSnapshot = PointLedgerService.currentSnapshot(in: backgroundContext)
 
                 let autoArchivedCompletedAtByTaskID = Dictionary(
                     executionModels.compactMap { record -> (UUID, Date)? in
@@ -900,6 +943,8 @@ struct HomeView: View {
                     schedules: scheduleModels.map(HomeScheduleProjection.init),
                     taskItems: taskDisplayItems,
                     activeTaskCount: activeTaskModels.count,
+                    pointBalance: pointSnapshot.balance,
+                    currentPointStreak: pointSnapshot.currentStreak,
                     referenceDate: referenceDate
                 )
             }.value
@@ -928,6 +973,8 @@ struct HomeView: View {
                     todayScheduleCard(snapshot)
 
                     todayTasksCard(snapshot)
+
+                    pointsSummaryCard(snapshot)
 
                     // Stat grid
                     statGridSection(snapshot)
@@ -1667,6 +1714,8 @@ struct HomeView: View {
                 todayCompletedTaskCount: snapshot.todayCompletedTaskCount + (completedTodayPending ? 1 : 0),
                 totalPendingTaskCount: max(snapshot.totalPendingTaskCount - 1, 0),
                 activeTaskCount: snapshot.activeTaskCount,
+                pointBalance: snapshot.pointBalance + PointLedgerService.taskRewardAmount,
+                currentPointStreak: snapshot.currentPointStreak,
                 heroIconName: snapshot.heroIconName,
                 heroMessage: snapshot.heroMessage,
                 heroSubtitle: snapshot.heroSubtitle,

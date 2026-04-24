@@ -296,6 +296,10 @@ struct DictationReviewView: View {
                     modelContext.insert(newItem)
                 }
             }
+
+            if entry.result != .pending {
+                PointLedgerService.awardDictationEntry(entry, in: modelContext)
+            }
         }
 
         session.reviewedAt = now

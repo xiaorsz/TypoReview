@@ -91,6 +91,8 @@ targets:
         type: file
       - path: 错字复习/ReviewRecord.swift
         type: file
+      - path: 错字复习/Points.swift
+        type: file
       - path: 错字复习/AppSettings.swift
         type: file
       - path: 错字复习/ScheduleItem.swift

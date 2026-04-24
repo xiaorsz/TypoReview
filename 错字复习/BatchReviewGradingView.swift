@@ -345,6 +345,7 @@ struct BatchReviewGradingView: View {
             )
             output.record.note = ReviewRecord.storedDetailText(detail)
             modelContext.insert(output.record)
+            PointLedgerService.awardReviewRecord(output.record, in: modelContext)
 
             summaries.append(
                 SessionReviewSummary(

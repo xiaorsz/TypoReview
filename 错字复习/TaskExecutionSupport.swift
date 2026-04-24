@@ -740,8 +740,10 @@ enum TaskExecutionSupport {
         record: TaskExecutionRecord,
         task: TaskItem,
         subtasks: [TaskSubitem],
-        subtaskExecutions: [TaskSubitemExecutionRecord] = []
+        subtaskExecutions: [TaskSubitemExecutionRecord] = [],
+        modelContext: ModelContext? = nil
     ) {
+        let wasCompleted = record.status == .completed
         let occurrenceSubtasks = executionSubtasks(for: record, in: subtasks)
         if occurrenceSubtasks.isEmpty {
             if record.status == .completed {
@@ -761,6 +763,18 @@ enum TaskExecutionSupport {
             }
         }
         record.updatedAt = .now
+
+        if let modelContext {
+            if !wasCompleted && record.status == .completed {
+                PointLedgerService.awardTaskExecution(record, taskTitle: task.title, in: modelContext)
+            } else if wasCompleted && record.status != .completed {
+                PointLedgerService.reverseEntries(
+                    sourceType: .taskExecution,
+                    sourceID: record.id,
+                    in: modelContext
+                )
+            }
+        }
     }
 
     static func markTaskCompleted(
@@ -775,12 +789,17 @@ enum TaskExecutionSupport {
             existingExecutions: existingExecutions,
             modelContext: modelContext
         )
+        let wasCompleted = record.status == .completed
         record.status = .completed
         record.completedAt = .now
         record.updatedAt = .now
 
         if task.recurrence.kind == .once {
             task.isArchived = true
+        }
+
+        if !wasCompleted {
+            PointLedgerService.awardTaskExecution(record, taskTitle: task.title, in: modelContext)
         }
     }
 
@@ -793,6 +812,7 @@ enum TaskExecutionSupport {
         guard let record = executionRecord(for: task.id, on: occurrenceDate, in: existingExecutions) else {
             return
         }
+        let wasCompleted = record.status == .completed
 
         let isToday = Calendar.current.isDate(occurrenceDate, inSameDayAs: .now)
         if record.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && isToday {
@@ -805,6 +825,14 @@ enum TaskExecutionSupport {
 
         if task.recurrence.kind == .once {
             task.isArchived = false
+        }
+
+        if wasCompleted {
+            PointLedgerService.reverseEntries(
+                sourceType: .taskExecution,
+                sourceID: record.id,
+                in: modelContext
+            )
         }
     }
 

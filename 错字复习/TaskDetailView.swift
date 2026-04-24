@@ -1023,7 +1023,7 @@ struct TaskDetailView: View {
                     }
                 }
 
-                TaskExecutionSupport.syncExecutionStatus(record: record, task: task, subtasks: subtasks)
+                TaskExecutionSupport.syncExecutionStatus(record: record, task: task, subtasks: subtasks, modelContext: ctx)
             }
 
             if !occurrenceMutations.isEmpty {
@@ -1353,7 +1353,7 @@ struct TaskDetailView: View {
             record.updatedAt = .now
             
             let allS = (try? ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))) ?? []
-            TaskExecutionSupport.syncExecutionStatus(record: record, task: (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))!.first!, subtasks: allS)
+            TaskExecutionSupport.syncExecutionStatus(record: record, task: (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))!.first!, subtasks: allS, modelContext: ctx)
             
             try? ctx.save()
                 Self.perfMark("saveParentDetail bg end id=\(actionID) elapsed=\(Self.perfMillis(since: backgroundStartedAt))")
@@ -1448,7 +1448,7 @@ struct TaskDetailView: View {
             
             // 同步状态并存储
             let updatedAllS = allS + [newSub]
-            TaskExecutionSupport.syncExecutionStatus(record: record, task: task, subtasks: updatedAllS)
+            TaskExecutionSupport.syncExecutionStatus(record: record, task: task, subtasks: updatedAllS, modelContext: ctx)
             
             do {
                 try ctx.save()
@@ -1501,7 +1501,7 @@ struct TaskDetailView: View {
                     let t = (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))?.first
                     let allS = (try? ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))) ?? []
                     if let er, let t {
-                        TaskExecutionSupport.syncExecutionStatus(record: er, task: t, subtasks: allS)
+                        TaskExecutionSupport.syncExecutionStatus(record: er, task: t, subtasks: allS, modelContext: ctx)
                     }
                 }
                 
@@ -1551,7 +1551,7 @@ struct TaskDetailView: View {
                     let t = (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))?.first
                     let allS = (try? ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))) ?? []
                     if let er, let t {
-                        TaskExecutionSupport.syncExecutionStatus(record: er, task: t, subtasks: allS)
+                        TaskExecutionSupport.syncExecutionStatus(record: er, task: t, subtasks: allS, modelContext: ctx)
                     }
                 }
                 
