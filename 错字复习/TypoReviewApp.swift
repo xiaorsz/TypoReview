@@ -12,9 +12,8 @@ struct TypoReviewApp: App {
     @State private var syncStatusStore = SyncStatusStore()
     @State private var mediaLibraryStore = MediaLibraryStore()
     @State private var appSettingsStore: AppSettingsStore
-    private let cloudKitContainerIdentifier = Self.cloudKitContainerIdentifierValue
-    private let appGroupIdentifier = Self.appGroupIdentifierValue
     private let sharedModelContainer: ModelContainer
+    private let startupMaintenanceCoordinator: StartupMaintenanceCoordinator
 
     init() {
         #if DEBUG
@@ -52,16 +51,17 @@ struct TypoReviewApp: App {
         let cloudConfiguration: ModelConfiguration
         let fallbackConfiguration: ModelConfiguration
         let pendingExecutionTableRepairStoreURL: URL?
+        var startupMaintenanceStoreURL: URL?
 
-        if let groupURL = fileManager.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier) {
+        if let groupURL = fileManager.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupIdentifierValue) {
             cloudConfiguration = ModelConfiguration(
                 schema: schema,
-                groupContainer: .identifier(appGroupIdentifier),
+                groupContainer: .identifier(Self.appGroupIdentifierValue),
                 cloudKitDatabase: .automatic
             )
             fallbackConfiguration = ModelConfiguration(
                 schema: schema,
-                groupContainer: .identifier(appGroupIdentifier),
+                groupContainer: .identifier(Self.appGroupIdentifierValue),
                 cloudKitDatabase: .none
             )
 
@@ -103,33 +103,14 @@ struct TypoReviewApp: App {
             #if DEBUG
             DebugPerf.mark("TypoReviewApp ModelContainer cloud init success")
             #endif
-            Self.ensureTaskSystemTablesExist(
-                in: container.mainContext,
-                storeURL: cloudConfiguration.url
-            )
-            Self.importLegacyStoreForMissingExecutionTableRepairIfNeeded(
-                from: pendingExecutionTableRepairStoreURL,
-                into: container,
-                fileManager: fileManager
-            )
-            Self.ensureTaskSystemTablesExist(
-                in: container.mainContext,
-                storeURL: cloudConfiguration.url
-            )
-            Self.migrateLegacyTaskExecutionsIfNeeded(in: container.mainContext)
-            TaskExecutionSupport.migrateLegacySubtasksIfNeeded(in: container.mainContext)
-            _ = try? AppSettings.ensureSingleton(in: container.mainContext)
-            Self.normalizeReviewDatesIfNeeded(
-                in: container.mainContext,
-                appGroupIdentifier: Self.appGroupIdentifierValue
-            )
             sharedModelContainer = container
+            startupMaintenanceStoreURL = cloudConfiguration.url
 
             _syncStatusStore = State(initialValue: {
                 let store = SyncStatusStore()
                 store.configure(
                     cloudKitEnabled: true,
-                    containerIdentifier: cloudKitContainerIdentifier
+                    containerIdentifier: Self.cloudKitContainerIdentifierValue
                 )
                 return store
             }())
@@ -148,26 +129,7 @@ struct TypoReviewApp: App {
                 #if DEBUG
                 DebugPerf.mark("TypoReviewApp ModelContainer fallback init success")
                 #endif
-                Self.ensureTaskSystemTablesExist(
-                    in: container.mainContext,
-                    storeURL: fallbackConfiguration.url
-                )
-                Self.importLegacyStoreForMissingExecutionTableRepairIfNeeded(
-                    from: pendingExecutionTableRepairStoreURL,
-                    into: container,
-                    fileManager: fileManager
-                )
-                Self.ensureTaskSystemTablesExist(
-                    in: container.mainContext,
-                    storeURL: fallbackConfiguration.url
-                )
-                Self.migrateLegacyTaskExecutionsIfNeeded(in: container.mainContext)
-                TaskExecutionSupport.migrateLegacySubtasksIfNeeded(in: container.mainContext)
-                _ = try? AppSettings.ensureSingleton(in: container.mainContext)
-                Self.normalizeReviewDatesIfNeeded(
-                    in: container.mainContext,
-                    appGroupIdentifier: Self.appGroupIdentifierValue
-                )
+                startupMaintenanceStoreURL = fallbackConfiguration.url
             } catch {
                 #if DEBUG
                 DebugPerf.mark("TypoReviewApp ModelContainer fallback init failed error=\(error.localizedDescription)")
@@ -175,6 +137,7 @@ struct TypoReviewApp: App {
                 print("Fallback ModelContainer also failed: \(error)")
                 let inMemoryConfig = ModelConfiguration(isStoredInMemoryOnly: true)
                 container = try! ModelContainer(for: schema, configurations: [inMemoryConfig])
+                startupMaintenanceStoreURL = nil
             }
             sharedModelContainer = container
             
@@ -191,15 +154,62 @@ struct TypoReviewApp: App {
                 let store = SyncStatusStore()
                 store.configure(
                     cloudKitEnabled: false,
-                    containerIdentifier: cloudKitContainerIdentifier,
+                    containerIdentifier: Self.cloudKitContainerIdentifierValue,
                     initializationError: detailedError
                 )
                 return store
             }())
         }
 
+        startupMaintenanceCoordinator = StartupMaintenanceCoordinator(
+            storeURL: startupMaintenanceStoreURL,
+            pendingExecutionTableRepairStoreURL: pendingExecutionTableRepairStoreURL,
+            appGroupIdentifier: Self.appGroupIdentifierValue
+        )
+
         #if DEBUG
         DebugPerf.mark("TypoReviewApp init end")
+        #endif
+    }
+
+    @MainActor
+    static func performDeferredStartupMaintenance(
+        using modelContext: ModelContext,
+        storeURL: URL?,
+        pendingExecutionTableRepairStoreURL: URL?,
+        appGroupIdentifier: String?
+    ) {
+        guard let storeURL else { return }
+
+        let fileManager = FileManager.default
+
+        #if DEBUG
+        DebugPerf.mark("TypoReviewApp deferred startup maintenance begin store=\(storeURL.lastPathComponent)")
+        #endif
+
+        Self.ensureTaskSystemTablesExist(
+            in: modelContext,
+            storeURL: storeURL
+        )
+        Self.importLegacyStoreForMissingExecutionTableRepairIfNeeded(
+            from: pendingExecutionTableRepairStoreURL,
+            into: modelContext,
+            fileManager: fileManager
+        )
+        Self.ensureTaskSystemTablesExist(
+            in: modelContext,
+            storeURL: storeURL
+        )
+        Self.migrateLegacyTaskExecutionsIfNeeded(in: modelContext)
+        TaskExecutionSupport.migrateLegacySubtasksIfNeeded(in: modelContext)
+        _ = try? AppSettings.ensureSingleton(in: modelContext)
+        Self.normalizeReviewDatesIfNeeded(
+            in: modelContext,
+            appGroupIdentifier: appGroupIdentifier
+        )
+
+        #if DEBUG
+        DebugPerf.mark("TypoReviewApp deferred startup maintenance end")
         #endif
     }
 
@@ -294,7 +304,7 @@ struct TypoReviewApp: App {
 
     private static func importLegacyStoreForMissingExecutionTableRepairIfNeeded(
         from legacyStoreURL: URL?,
-        into container: ModelContainer,
+        into modelContext: ModelContext,
         fileManager: FileManager
     ) {
         guard let legacyStoreURL else { return }
@@ -325,7 +335,6 @@ struct TypoReviewApp: App {
             )
             let legacyContainer = try ModelContainer(for: legacySchema, configurations: [legacyConfiguration])
             let legacyContext = legacyContainer.mainContext
-            let modelContext = container.mainContext
 
             if let settings = (try? legacyContext.fetch(FetchDescriptor<AppSettings>()))?.first {
                 modelContext.insert(AppSettingsSnapshot(settings).makeModel())
@@ -653,6 +662,7 @@ struct TypoReviewApp: App {
                 .environment(syncStatusStore)
                 .environment(mediaLibraryStore)
                 .environment(appSettingsStore)
+                .environmentObject(startupMaintenanceCoordinator)
                 .environment(\.locale, Locale(identifier: "zh_Hans"))
                 .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
                     #if DEBUG
@@ -666,6 +676,69 @@ struct TypoReviewApp: App {
                 }
         }
         .modelContainer(sharedModelContainer)
+    }
+}
+
+@MainActor
+final class StartupMaintenanceCoordinator: ObservableObject {
+    private let storeURL: URL?
+    private let pendingExecutionTableRepairStoreURL: URL?
+    private let appGroupIdentifier: String?
+
+    private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
+    @Published private(set) var isRunning = false
+    @Published private(set) var hasCompleted = false
+
+    init(
+        storeURL: URL?,
+        pendingExecutionTableRepairStoreURL: URL?,
+        appGroupIdentifier: String?
+    ) {
+        self.storeURL = storeURL
+        self.pendingExecutionTableRepairStoreURL = pendingExecutionTableRepairStoreURL
+        self.appGroupIdentifier = appGroupIdentifier
+    }
+
+    func runIfNeeded(using modelContext: ModelContext) -> Bool {
+        guard !hasCompleted else { return false }
+        guard !isRunning else { return false }
+
+        guard let storeURL else {
+            hasCompleted = true
+            return false
+        }
+
+        isRunning = true
+        beginBackgroundTask()
+
+        defer {
+            endBackgroundTask()
+            isRunning = false
+            hasCompleted = true
+        }
+
+        TypoReviewApp.performDeferredStartupMaintenance(
+            using: modelContext,
+            storeURL: storeURL,
+            pendingExecutionTableRepairStoreURL: pendingExecutionTableRepairStoreURL,
+            appGroupIdentifier: appGroupIdentifier
+        )
+        return true
+    }
+
+    private func beginBackgroundTask() {
+        guard backgroundTaskID == .invalid else { return }
+        backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "TypoReviewStartupMaintenance") { [weak self] in
+            Task { @MainActor in
+                self?.endBackgroundTask()
+            }
+        }
+    }
+
+    private func endBackgroundTask() {
+        guard backgroundTaskID != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTaskID)
+        backgroundTaskID = .invalid
     }
 }
 

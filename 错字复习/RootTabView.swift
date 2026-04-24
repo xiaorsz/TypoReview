@@ -8,9 +8,11 @@ struct RootTabView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(SyncStatusStore.self) private var syncStatusStore
     @Environment(AppSettingsStore.self) private var appSettingsStore
+    @EnvironmentObject private var startupMaintenanceCoordinator: StartupMaintenanceCoordinator
     @State private var refreshAppStateTask: Task<Void, Never>?
     @State private var ios17ShieldStartTask: Task<Void, Never>?
     @State private var remoteChangeDebounceTask: Task<Void, Never>?
+    @State private var startupMaintenanceTask: Task<Void, Never>?
     @State private var hasStartedIOS17BackgroundShield = false
     @State private var selectedLegacyTab: LegacyTab = .home
     @State private var visitedLegacyTabs: Set<LegacyTab> = [.home]
@@ -37,21 +39,25 @@ struct RootTabView: View {
             #endif
             guard canRefreshLiveAppState else { return }
             scheduleIOS17BackgroundShieldStartIfNeeded()
+            scheduleStartupMaintenanceIfNeeded()
             scheduleAppStateRefresh(trigger: .launch, delay: launchRefreshDelay)
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 scheduleIOS17BackgroundShieldStartIfNeeded()
+                scheduleStartupMaintenanceIfNeeded()
                 scheduleAppStateRefresh(trigger: .foreground, delay: foregroundRefreshDelay)
             } else {
                 refreshAppStateTask?.cancel()
                 ios17ShieldStartTask?.cancel()
+                startupMaintenanceTask?.cancel()
             }
         }
         .onDisappear {
             refreshAppStateTask?.cancel()
             ios17ShieldStartTask?.cancel()
             remoteChangeDebounceTask?.cancel()
+            startupMaintenanceTask?.cancel()
         }
         .onReceive(NotificationCenter.default.publisher(for: .NSPersistentStoreRemoteChange)) { _ in
             #if DEBUG
@@ -221,8 +227,34 @@ struct RootTabView: View {
         await syncStatusStore.refresh(using: modelContext, trigger: trigger)
     }
 
+    private func scheduleStartupMaintenanceIfNeeded() {
+        startupMaintenanceTask?.cancel()
+        guard canRefreshLiveAppState else { return }
+        guard !startupMaintenanceCoordinator.hasCompleted else { return }
+
+        startupMaintenanceTask = Task { @MainActor in
+            let nanoseconds = UInt64(startupMaintenanceDelay * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled else { return }
+            guard canRefreshLiveAppState else { return }
+
+            let didRun = startupMaintenanceCoordinator.runIfNeeded(using: modelContext)
+            guard didRun else { return }
+
+            appSettingsStore.refreshFromSwiftDataIfPossible(using: modelContext)
+            NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
+        }
+    }
+
     private var canRefreshLiveAppState: Bool {
         scenePhase == .active && UIApplication.shared.applicationState == .active
+    }
+
+    private var startupMaintenanceDelay: TimeInterval {
+        if #available(iOS 18.0, *) {
+            return 0.4
+        }
+        return 0.8
     }
 
     private var launchRefreshDelay: TimeInterval {
