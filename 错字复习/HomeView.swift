@@ -288,6 +288,10 @@ private struct HomeDictationSessionRoute: Identifiable, Hashable {
     let title: String
 }
 
+private struct HomeDashboardBoardRoute: Identifiable, Hashable {
+    let id = UUID()
+}
+
 struct HomeView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
@@ -301,7 +305,7 @@ struct HomeView: View {
     @State private var activeDictationRoute: HomeDictationSessionRoute?
     @State private var isDictationHomeActive = false
     @State private var isAddReviewActive = false
-    @State private var showingDashboardBoard = false
+    @State private var activeDashboardBoardRoute: HomeDashboardBoardRoute?
     @State private var showQuickEntryHint = false
     @State private var dashboardSnapshot: DashboardSnapshot?
     @State private var dashboardSnapshotTask: Task<Void, Never>?
@@ -749,14 +753,14 @@ struct HomeView: View {
                     .background(Color(uiColor: .systemGroupedBackground))
             }
         }
-        .fullScreenCover(isPresented: $showingDashboardBoard) {
-            DashboardBoardView()
+        .fullScreenCover(item: $activeDashboardBoardRoute) { _ in
+            DeferredDashboardBoardView()
         }
         .toolbar {
             if isPad {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("看板", systemImage: "rectangle.inset.filled.and.person.filled") {
-                        showingDashboardBoard = true
+                        openDashboardBoard()
                     }
                 }
             }
@@ -811,6 +815,16 @@ struct HomeView: View {
         }
 
         scheduleDashboardSnapshotUpdate(delay: delay)
+    }
+
+    private func openDashboardBoard() {
+        #if DEBUG
+        DebugPerf.mark("Home openDashboardBoard")
+        #endif
+        dashboardSnapshotTask?.cancel()
+        isDashboardRefreshInFlight = false
+        needsDashboardRefreshAfterCurrent = false
+        activeDashboardBoardRoute = HomeDashboardBoardRoute()
     }
 
     private func scheduleDashboardSnapshotUpdate(delay: TimeInterval = 0.08) {
@@ -1731,6 +1745,73 @@ struct HomeView: View {
             guard !Task.isCancelled else { return }
             try? modelContext.save()
             WidgetCenter.shared.reloadAllTimelinesInBackground()
+        }
+    }
+
+    private struct DeferredDashboardBoardView: View {
+        @Environment(\.scenePhase) private var scenePhase
+
+        @State private var isReady = false
+        @State private var loadTask: Task<Void, Never>?
+
+        private var canLoad: Bool {
+            scenePhase == .active && UIApplication.shared.applicationState == .active
+        }
+
+        var body: some View {
+            Group {
+                if isReady {
+                    DashboardBoardView()
+                } else {
+                    ZStack {
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.07, green: 0.12, blue: 0.22),
+                                Color(red: 0.04, green: 0.33, blue: 0.47),
+                                Color(red: 0.05, green: 0.52, blue: 0.48)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                        .ignoresSafeArea()
+
+                        VStack(spacing: 12) {
+                            ProgressView()
+                                .tint(.white)
+                            Text("正在打开看板...")
+                                .font(.headline)
+                                .foregroundStyle(.white.opacity(0.9))
+                        }
+                    }
+                }
+            }
+            .onAppear {
+                loadAfterPresentationSettles()
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                if newPhase == .active {
+                    loadAfterPresentationSettles()
+                } else {
+                    loadTask?.cancel()
+                }
+            }
+            .onDisappear {
+                loadTask?.cancel()
+            }
+        }
+
+        private func loadAfterPresentationSettles() {
+            loadTask?.cancel()
+            guard !isReady else { return }
+            guard canLoad else { return }
+
+            loadTask = Task { @MainActor in
+                await Task.yield()
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                guard !Task.isCancelled else { return }
+                guard canLoad else { return }
+                isReady = true
+            }
         }
     }
 

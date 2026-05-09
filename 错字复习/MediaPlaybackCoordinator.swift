@@ -116,6 +116,11 @@ final class MediaPlaybackCoordinator {
         let normalizedPlaylist = normalizedPlaylist(from: playlist)
         self.playlist = normalizedPlaylist
 
+        if isWaitingForDownload {
+            stop()
+            return
+        }
+
         if isPlaying {
             pause()
             return

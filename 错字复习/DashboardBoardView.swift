@@ -19,10 +19,9 @@ struct DashboardBoardView: View {
     @Query(sort: \TaskSubitemExecutionRecord.updatedAt, order: .reverse) private var taskSubitemExecutionRecords: [TaskSubitemExecutionRecord]
     @Query(sort: \ScheduleItem.startTime) private var allSchedules: [ScheduleItem]
 
+    @State private var isIdleTimerOverrideActive = false
+    @State private var idleTimerReinforcementTask: Task<Void, Never>?
     @State private var previousIdleTimerDisabled = false
-    @State private var previousScreenBrightness: CGFloat?
-    @State private var boardBaselineBrightness: Double = 0.6
-    @State private var boardBrightness: Double = 0.45
     @State private var boardNow = Date.now
     @State private var playbackCoordinator = MediaPlaybackCoordinator()
     @State private var lastBoardInteractionAt = Date.now
@@ -306,7 +305,6 @@ struct DashboardBoardView: View {
             guard canRenderLiveContent else { return }
             reinforceIdleTimerOverrideIfNeeded()
             boardNow = $0
-            applyScheduledBoardBrightness(for: $0)
             syncBoardPlayback(for: $0)
         }
         .onChange(of: scenePhase) { _, newPhase in
@@ -316,7 +314,7 @@ struct DashboardBoardView: View {
                 lastBoardInteractionAt = .now
                 isExitButtonVisible = false
                 syncBoardPlayback(for: boardNow)
-            } else if newPhase == .background {
+            } else {
                 restoreIdleTimer()
                 playbackCoordinator.stop()
             }
@@ -397,16 +395,17 @@ struct DashboardBoardView: View {
                             option: snapshot.boardSettings?.boardManualPlaybackOption ?? .untilPlaylistEnds
                         )
                     } label: {
-                        Image(systemName: playbackCoordinator.isPlaying ? "pause.fill" : "play.fill")
+                        Image(systemName: boardPlaybackControlIconName)
                             .font(.system(size: 18, weight: .bold))
                             .foregroundStyle(.white)
-                            .frame(width: 40, height: 40)
+                            .frame(width: 56, height: 56)
                             .background(.white.opacity(0.16), in: Circle())
                     }
                     .buttonStyle(.plain)
+                    .contentShape(Circle())
                     .disabled(snapshot.enabledMediaAssets.isEmpty && playbackCoordinator.currentAsset == nil)
                     .opacity((snapshot.enabledMediaAssets.isEmpty && playbackCoordinator.currentAsset == nil) ? 0.45 : 1)
-                    .accessibilityLabel(playbackCoordinator.isPlaying ? "暂停晨读资源播放" : "开始晨读资源播放")
+                    .accessibilityLabel(boardPlaybackControlAccessibilityLabel)
                 }
 
                 Text(snapshot.todayHeadline)
@@ -465,7 +464,7 @@ struct DashboardBoardView: View {
 
     private func boardContent(_ snapshot: BoardSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 18) {
-            if playbackCoordinator.isPlaying {
+            if shouldShowBoardMediaPanel {
                 boardMediaPanel(snapshot)
             }
 
@@ -494,6 +493,27 @@ struct DashboardBoardView: View {
                 )
             }
         }
+    }
+
+    private var shouldShowBoardMediaPanel: Bool {
+        playbackCoordinator.isPlaying
+            || playbackCoordinator.isWaitingForDownload
+            || playbackCoordinator.currentAsset != nil
+            || playbackCoordinator.isBoardManualSession
+    }
+
+    private var boardPlaybackControlIconName: String {
+        if playbackCoordinator.isWaitingForDownload {
+            return "stop.fill"
+        }
+        return playbackCoordinator.isPlaying ? "pause.fill" : "play.fill"
+    }
+
+    private var boardPlaybackControlAccessibilityLabel: String {
+        if playbackCoordinator.isWaitingForDownload {
+            return "停止准备晨读资源播放"
+        }
+        return playbackCoordinator.isPlaying ? "暂停晨读资源播放" : "开始晨读资源播放"
     }
 
     private func boardMediaPanel(_ snapshot: BoardSnapshot) -> some View {
@@ -880,40 +900,45 @@ struct DashboardBoardView: View {
             .autoconnect()
     }
 
+    @MainActor
     private func activateIdleTimerOverride() {
         let application = UIApplication.shared
-        previousIdleTimerDisabled = application.isIdleTimerDisabled
+        if !isIdleTimerOverrideActive {
+            previousIdleTimerDisabled = application.isIdleTimerDisabled
+            isIdleTimerOverrideActive = true
+            startIdleTimerReinforcement()
+        }
+
         application.isIdleTimerDisabled = true
-
-        if previousScreenBrightness == nil {
-            let currentBrightness = UIScreen.main.brightness
-            previousScreenBrightness = currentBrightness
-            boardBaselineBrightness = Double(currentBrightness)
-        }
-
-        applyScheduledBoardBrightness(for: boardNow)
     }
 
+    @MainActor
     private func restoreIdleTimer() {
-        UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled
+        idleTimerReinforcementTask?.cancel()
+        idleTimerReinforcementTask = nil
 
-        if let previousScreenBrightness {
-            UIScreen.main.brightness = previousScreenBrightness
-            self.previousScreenBrightness = nil
-        }
+        guard isIdleTimerOverrideActive else { return }
+        UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled
+        isIdleTimerOverrideActive = false
     }
 
+    @MainActor
     private func reinforceIdleTimerOverrideIfNeeded() {
-        guard previousScreenBrightness != nil else { return }
+        guard isIdleTimerOverrideActive else { return }
         if !UIApplication.shared.isIdleTimerDisabled {
             UIApplication.shared.isIdleTimerDisabled = true
         }
     }
 
-    private func applyScheduledBoardBrightness(for date: Date) {
-        guard previousScreenBrightness != nil else { return }
-        boardBrightness = scheduledBoardBrightness(for: date)
-        UIScreen.main.brightness = CGFloat(boardBrightness)
+    @MainActor
+    private func startIdleTimerReinforcement() {
+        idleTimerReinforcementTask?.cancel()
+        idleTimerReinforcementTask = Task { @MainActor in
+            while !Task.isCancelled {
+                reinforceIdleTimerOverrideIfNeeded()
+                try? await Task.sleep(for: .seconds(15))
+            }
+        }
     }
 
     private func syncBoardPlayback(for date: Date) {
@@ -948,27 +973,6 @@ struct DashboardBoardView: View {
         lastBoardInteractionAt = .now
     }
 
-    private func scheduledBoardBrightness(for date: Date) -> Double {
-        switch brightnessMode(for: date) {
-        case .normal:
-            return max(min(boardBaselineBrightness, 1.0), 0.1)
-        case .dimmed:
-            return min(boardBaselineBrightness, 0.12)
-        }
-    }
-
-    private func brightnessMode(for date: Date) -> BoardBrightnessMode {
-        let hour = Calendar.current.component(.hour, from: date)
-        if (7..<8).contains(hour) || (16..<22).contains(hour) {
-            return .normal
-        }
-        return .dimmed
-    }
-}
-
-private enum BoardBrightnessMode {
-    case normal
-    case dimmed
 }
 
 private struct BoardTextItem: Identifiable {
