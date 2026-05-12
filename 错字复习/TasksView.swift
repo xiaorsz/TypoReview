@@ -637,7 +637,13 @@ struct TasksView: View {
     private func otherTaskSection(_ title: LocalizedStringKey, tasks: [TaskProjection]) -> some View {
         Section(title) {
             ForEach(tasks, id: \.id) { task in
-                taskRow(task, liveTask: taskModelsByID[task.id], isDone: false, showActions: false)
+                taskRow(
+                    task,
+                    liveTask: taskModelsByID[task.id],
+                    isDone: false,
+                    showActions: false,
+                    allowsArchive: true
+                )
             }
         }
     }
@@ -854,6 +860,7 @@ struct TasksView: View {
         liveTask: TaskItem?,
         isDone: Bool,
         showActions: Bool = true,
+        allowsArchive: Bool = false,
         occurrenceDate: Date? = nil,
         occurrenceLabel: String? = nil,
         totalSubtaskCount: Int? = nil,
@@ -962,8 +969,17 @@ struct TasksView: View {
         .padding(.vertical, 4)
         .iOS17SafeSwipeActions(edge: .trailing, allowsFullSwipe: false) {
             if let liveTask {
-                Button("归档", systemImage: "archivebox", role: .destructive) {
-                    archiveTask(liveTask)
+                if showActions, !isDone, let occurrenceDate {
+                    Button("跳过", systemImage: "forward.end") {
+                        skipTask(liveTask, occurrenceDate: occurrenceDate)
+                    }
+                    .tint(.orange)
+                }
+
+                if allowsArchive {
+                    Button("归档", systemImage: "archivebox", role: .destructive) {
+                        archiveTask(liveTask)
+                    }
                 }
             }
         }
@@ -1048,6 +1064,33 @@ struct TasksView: View {
         }
     }
 
+    private func skipTask(_ task: TaskItem, occurrenceDate: Date) {
+        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+
+        let tid = task.id
+        optimisticSkipTask(
+            taskID: tid,
+            occurrenceDate: occurrenceDate,
+            shouldArchiveTask: task.recurrence.kind == .once
+        )
+
+        let descriptor = FetchDescriptor<TaskExecutionRecord>(
+            predicate: #Predicate<TaskExecutionRecord> { $0.taskID == tid }
+        )
+        let relevantExecutions = (try? modelContext.fetch(descriptor)) ?? []
+
+        TaskExecutionSupport.markTaskSkipped(
+            task: task,
+            occurrenceDate: occurrenceDate,
+            existingExecutions: relevantExecutions,
+            modelContext: modelContext
+        )
+
+        try? modelContext.save()
+        saveAndReloadWidgetsDeferred()
+        NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
+    }
+
     private func saveAndReloadWidgetsDeferred() {
         deferredSaveTask?.cancel()
         deferredSaveTask = Task { @MainActor in
@@ -1090,6 +1133,25 @@ struct TasksView: View {
                 )
                 pageSnapshot.displayItems[index] = replacement
             }
+        }
+    }
+
+    private func optimisticSkipTask(taskID: UUID, occurrenceDate: Date, shouldArchiveTask: Bool) {
+        withAnimation {
+            pageSnapshot = TasksPageSnapshot(
+                displayItems: pageSnapshot.displayItems.filter {
+                    !($0.task.id == taskID && $0.occurrenceDate == occurrenceDate)
+                },
+                taskProjectionsByID: pageSnapshot.taskProjectionsByID,
+                scheduleProjectionsByID: pageSnapshot.scheduleProjectionsByID,
+                activeTaskIDs: pageSnapshot.activeTaskIDs,
+                archivedTaskIDs: shouldArchiveTask
+                    ? [taskID] + pageSnapshot.archivedTaskIDs.filter { $0 != taskID }
+                    : pageSnapshot.archivedTaskIDs,
+                todayScheduleIDs: pageSnapshot.todayScheduleIDs,
+                otherScheduleIDs: pageSnapshot.otherScheduleIDs,
+                archivedScheduleIDs: pageSnapshot.archivedScheduleIDs
+            )
         }
     }
 

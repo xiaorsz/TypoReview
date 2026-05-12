@@ -541,6 +541,9 @@ enum TaskExecutionSupport {
         return task.scheduledOccurrenceDates(upTo: date).compactMap { occurrenceDate in
             let dateKey = day(for: occurrenceDate)
             let record = preferredExecutionRecord(in: executionsByDate[dateKey] ?? [])
+            if record?.status == .skipped {
+                return nil
+            }
 
             // O(1) 获取子任务，避免 O(M) 次读取数据库对象属性
             let occurrenceSubtasks: [TaskSubitem] = {
@@ -602,6 +605,10 @@ enum TaskExecutionSupport {
         return task.scheduledOccurrenceDates(upTo: date).compactMap { occurrenceDate in
             let dateKey = day(for: occurrenceDate)
             let record = preferredExecutionRecord(in: executionsByDate[dateKey] ?? [])
+            if record?.status == .skipped {
+                return nil
+            }
+
             let occurrenceSubtasks: [TaskSubitemProjection] = {
                 guard let executionID = record?.id else { return [] }
                 return (subtasksByExecutionID[executionID] ?? []).sorted(by: sortSubtasks)
@@ -744,6 +751,22 @@ enum TaskExecutionSupport {
         modelContext: ModelContext? = nil
     ) {
         let wasCompleted = record.status == .completed
+        if record.status == .skipped {
+            record.completedAt = nil
+            record.updatedAt = .now
+            if task.recurrence.kind == .once {
+                task.isArchived = true
+            }
+            if wasCompleted, let modelContext {
+                PointLedgerService.reverseEntries(
+                    sourceType: .taskExecution,
+                    sourceID: record.id,
+                    in: modelContext
+                )
+            }
+            return
+        }
+
         let occurrenceSubtasks = executionSubtasks(for: record, in: subtasks)
         if occurrenceSubtasks.isEmpty {
             if record.status == .completed {
@@ -803,6 +826,36 @@ enum TaskExecutionSupport {
         }
     }
 
+    static func markTaskSkipped(
+        task: TaskItem,
+        occurrenceDate: Date,
+        existingExecutions: [TaskExecutionRecord],
+        modelContext: ModelContext
+    ) {
+        let record = ensureExecutionRecord(
+            for: task,
+            occurrenceDate: occurrenceDate,
+            existingExecutions: existingExecutions,
+            modelContext: modelContext
+        )
+        let wasCompleted = record.status == .completed
+        record.status = .skipped
+        record.completedAt = nil
+        record.updatedAt = .now
+
+        if task.recurrence.kind == .once {
+            task.isArchived = true
+        }
+
+        if wasCompleted {
+            PointLedgerService.reverseEntries(
+                sourceType: .taskExecution,
+                sourceID: record.id,
+                in: modelContext
+            )
+        }
+    }
+
     static func reopenTaskCompletion(
         task: TaskItem,
         occurrenceDate: Date,
@@ -856,7 +909,7 @@ enum TaskExecutionSupport {
         for record: TaskExecutionRecord
     ) -> (Int, Date, Date, UUID) {
         (
-            record.status == .completed ? 1 : 0,
+            executionStatusSortPriority(record.status),
             record.completedAt ?? .distantPast,
             record.updatedAt,
             record.id
@@ -867,11 +920,22 @@ enum TaskExecutionSupport {
         for record: TaskExecutionRecordProjection
     ) -> (Int, Date, Date, UUID) {
         (
-            record.status == .completed ? 1 : 0,
+            executionStatusSortPriority(record.status),
             record.completedAt ?? .distantPast,
             record.updatedAt,
             record.id
         )
+    }
+
+    private static func executionStatusSortPriority(_ status: TaskExecutionStatus) -> Int {
+        switch status {
+        case .pending:
+            return 0
+        case .completed:
+            return 1
+        case .skipped:
+            return 2
+        }
     }
 
     static func targetMigrationOccurrenceDate(
@@ -1203,6 +1267,9 @@ enum TodayTaskProjectionBuilder {
         return task.scheduledOccurrenceDates(upTo: targetDate).compactMap { occurrenceDate in
             let dateKey = Calendar.current.startOfDay(for: occurrenceDate)
             let record = preferredExecutionRecord(in: executionsByDate[dateKey] ?? [])
+            if record?.status == .skipped {
+                return nil
+            }
             
             let occurrenceSubtasks: [TaskSubitemProjection] = {
                 guard let executionID = record?.id else { return [] }
@@ -1274,7 +1341,7 @@ enum TodayTaskProjectionBuilder {
         for record: TaskExecutionRecord
     ) -> (Int, Date, Date, UUID) {
         (
-            record.status == .completed ? 1 : 0,
+            executionStatusSortPriority(record.status),
             record.completedAt ?? .distantPast,
             record.updatedAt,
             record.id
@@ -1285,11 +1352,22 @@ enum TodayTaskProjectionBuilder {
         for record: TaskExecutionRecordProjection
     ) -> (Int, Date, Date, UUID) {
         (
-            record.status == .completed ? 1 : 0,
+            executionStatusSortPriority(record.status),
             record.completedAt ?? .distantPast,
             record.updatedAt,
             record.id
         )
+    }
+
+    private static func executionStatusSortPriority(_ status: TaskExecutionStatus) -> Int {
+        switch status {
+        case .pending:
+            return 0
+        case .completed:
+            return 1
+        case .skipped:
+            return 2
+        }
     }
 
     private static func isOccurrenceCompleted(

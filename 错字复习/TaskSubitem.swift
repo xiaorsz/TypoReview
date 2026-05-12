@@ -58,6 +58,7 @@ final class TaskSubitem {
 enum TaskExecutionStatus: String, Codable, CaseIterable, Identifiable, Sendable {
     case pending = "待处理"
     case completed = "已完成"
+    case skipped = "已跳过"
 
     var id: String { rawValue }
 }

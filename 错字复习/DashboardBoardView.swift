@@ -280,7 +280,7 @@ struct DashboardBoardView: View {
     private let boardOverlayVisibilityInterval: TimeInterval = 8
 
     private var canRenderLiveContent: Bool {
-        scenePhase == .active && UIApplication.shared.applicationState == .active
+        scenePhase != .background
     }
 
     var body: some View {
@@ -314,7 +314,7 @@ struct DashboardBoardView: View {
                 lastBoardInteractionAt = .now
                 isExitButtonVisible = false
                 syncBoardPlayback(for: boardNow)
-            } else {
+            } else if newPhase == .background {
                 restoreIdleTimer()
                 playbackCoordinator.stop()
             }
