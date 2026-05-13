@@ -879,6 +879,7 @@ final class IOS17BackgroundSceneShield {
     }
 
     private func shouldShield(_ window: UIWindow) -> Bool {
+        guard !DashboardBoardWakeCoordinator.shared.isActive else { return false }
         guard !window.isHidden else { return false }
         guard window.windowLevel == .normal else { return false }
         guard window.rootViewController != nil else { return false }

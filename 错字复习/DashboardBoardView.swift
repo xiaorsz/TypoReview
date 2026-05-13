@@ -19,9 +19,6 @@ struct DashboardBoardView: View {
     @Query(sort: \TaskSubitemExecutionRecord.updatedAt, order: .reverse) private var taskSubitemExecutionRecords: [TaskSubitemExecutionRecord]
     @Query(sort: \ScheduleItem.startTime) private var allSchedules: [ScheduleItem]
 
-    @State private var isIdleTimerOverrideActive = false
-    @State private var idleTimerReinforcementTask: Task<Void, Never>?
-    @State private var previousIdleTimerDisabled = false
     @State private var boardNow = Date.now
     @State private var playbackCoordinator = MediaPlaybackCoordinator()
     @State private var lastBoardInteractionAt = Date.now
@@ -902,43 +899,17 @@ struct DashboardBoardView: View {
 
     @MainActor
     private func activateIdleTimerOverride() {
-        let application = UIApplication.shared
-        if !isIdleTimerOverrideActive {
-            previousIdleTimerDisabled = application.isIdleTimerDisabled
-            isIdleTimerOverrideActive = true
-            startIdleTimerReinforcement()
-        }
-
-        application.isIdleTimerDisabled = true
+        DashboardBoardWakeCoordinator.shared.activate()
     }
 
     @MainActor
     private func restoreIdleTimer() {
-        idleTimerReinforcementTask?.cancel()
-        idleTimerReinforcementTask = nil
-
-        guard isIdleTimerOverrideActive else { return }
-        UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled
-        isIdleTimerOverrideActive = false
+        DashboardBoardWakeCoordinator.shared.deactivate()
     }
 
     @MainActor
     private func reinforceIdleTimerOverrideIfNeeded() {
-        guard isIdleTimerOverrideActive else { return }
-        if !UIApplication.shared.isIdleTimerDisabled {
-            UIApplication.shared.isIdleTimerDisabled = true
-        }
-    }
-
-    @MainActor
-    private func startIdleTimerReinforcement() {
-        idleTimerReinforcementTask?.cancel()
-        idleTimerReinforcementTask = Task { @MainActor in
-            while !Task.isCancelled {
-                reinforceIdleTimerOverrideIfNeeded()
-                try? await Task.sleep(for: .seconds(15))
-            }
-        }
+        DashboardBoardWakeCoordinator.shared.reinforceIfNeeded()
     }
 
     private func syncBoardPlayback(for date: Date) {
@@ -979,6 +950,54 @@ private struct BoardTextItem: Identifiable {
     let id: UUID
     let text: String
     let detail: String
+}
+
+@MainActor
+final class DashboardBoardWakeCoordinator {
+    static let shared = DashboardBoardWakeCoordinator()
+
+    private(set) var isActive = false
+    private var previousIdleTimerDisabled = false
+    private var reinforcementTask: Task<Void, Never>?
+
+    private init() {}
+
+    func activate() {
+        let application = UIApplication.shared
+        if !isActive {
+            previousIdleTimerDisabled = application.isIdleTimerDisabled
+            isActive = true
+            startReinforcement()
+        }
+
+        application.isIdleTimerDisabled = true
+    }
+
+    func deactivate() {
+        reinforcementTask?.cancel()
+        reinforcementTask = nil
+
+        guard isActive else { return }
+        UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled
+        isActive = false
+    }
+
+    func reinforceIfNeeded() {
+        guard isActive else { return }
+        if !UIApplication.shared.isIdleTimerDisabled {
+            UIApplication.shared.isIdleTimerDisabled = true
+        }
+    }
+
+    private func startReinforcement() {
+        reinforcementTask?.cancel()
+        reinforcementTask = Task { @MainActor in
+            while !Task.isCancelled {
+                reinforceIfNeeded()
+                try? await Task.sleep(for: .seconds(15))
+            }
+        }
+    }
 }
 
 private struct BoardStatCard: View {
