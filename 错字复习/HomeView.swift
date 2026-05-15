@@ -1786,17 +1786,24 @@ struct HomeView: View {
                 }
             }
             .onAppear {
+                DashboardBoardWakeCoordinator.shared.activate(reason: "DeferredDashboardBoardView onAppear")
                 loadAfterPresentationSettles()
             }
             .onChange(of: scenePhase) { _, newPhase in
                 if newPhase == .active {
+                    DashboardBoardWakeCoordinator.shared.activate(reason: "DeferredDashboardBoardView scenePhase active")
                     loadAfterPresentationSettles()
+                } else if newPhase == .background {
+                    DashboardBoardWakeCoordinator.shared.deactivate(reason: "DeferredDashboardBoardView scenePhase background")
+                    loadTask?.cancel()
                 } else {
+                    DashboardBoardWakeCoordinator.shared.reinforceIfNeeded(reason: "DeferredDashboardBoardView scenePhase \(newPhase)")
                     loadTask?.cancel()
                 }
             }
             .onDisappear {
                 loadTask?.cancel()
+                DashboardBoardWakeCoordinator.shared.deactivate(reason: "DeferredDashboardBoardView onDisappear")
             }
         }
 

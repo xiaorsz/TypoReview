@@ -23,6 +23,7 @@ struct DashboardBoardView: View {
     @State private var playbackCoordinator = MediaPlaybackCoordinator()
     @State private var lastBoardInteractionAt = Date.now
     @State private var isExitButtonVisible = false
+    @State private var boardSnapshot: BoardSnapshot?
 
     private struct BoardSnapshot {
         let childName: String
@@ -53,11 +54,11 @@ struct DashboardBoardView: View {
         }
     }
 
-    private func makeBoardSnapshot() -> BoardSnapshot {
+    private func makeBoardSnapshot(at date: Date = Date.now) -> BoardSnapshot {
         let childName = appSettingsStore.childName.isEmpty ? "小朋友" : appSettingsStore.childName
         let calendar = Calendar.current
         let dueItems = reviewItems
-            .filter { ReviewScheduler.isDue($0.nextReviewAt, on: boardNow, calendar: calendar) }
+            .filter { ReviewScheduler.isDue($0.nextReviewAt, on: date, calendar: calendar) }
             .sorted { lhs, rhs in
                 let lhsDay = ReviewScheduler.normalizedReviewDate(lhs.nextReviewAt, calendar: calendar)
                 let rhsDay = ReviewScheduler.normalizedReviewDate(rhs.nextReviewAt, calendar: calendar)
@@ -70,7 +71,7 @@ struct DashboardBoardView: View {
                 }
                 return lhs.id.uuidString < rhs.id.uuidString
             }
-        let pendingDictationSessions = pendingDictationSessions(for: boardNow)
+        let pendingDictationSessions = pendingDictationSessions(for: date)
         let pendingSessionIDs = Set(pendingDictationSessions.map(\.id))
         let pendingDictationBoardItems = dictationEntries
             .filter { pendingSessionIDs.contains($0.sessionID) }
@@ -83,8 +84,8 @@ struct DashboardBoardView: View {
             .map { entry in
                 BoardTextItem(id: entry.id, text: entry.content, detail: "")
             }
-        let taskSnapshot = boardTaskSnapshot(on: boardNow)
-        let todaySchedules = todaySchedules(on: boardNow)
+        let taskSnapshot = boardTaskSnapshot(on: date)
+        let todaySchedules = todaySchedules(on: date)
         let boardSettings = appSettingsStore.modelRepresentation
         let enabledMediaAssets = enabledPlaylist()
 
@@ -282,39 +283,61 @@ struct DashboardBoardView: View {
 
     var body: some View {
         Group {
-            if canRenderLiveContent {
-                boardActiveView(makeBoardSnapshot())
+            if canRenderLiveContent, let boardSnapshot {
+                boardActiveView(boardSnapshot)
+            } else if canRenderLiveContent {
+                boardLoadingView
             } else {
                 Color.clear
             }
         }
         .onAppear {
-            activateIdleTimerOverride()
+            refreshBoardSnapshot(reason: "onAppear")
+            reinforceIdleTimerOverrideIfNeeded()
             lastBoardInteractionAt = .now
             isExitButtonVisible = false
             syncBoardPlayback(for: boardNow)
         }
         .onDisappear {
-            restoreIdleTimer()
             playbackCoordinator.stop()
         }
-        .onReceive(boardRefreshTimer) {
+        .onReceive(boardSnapshotRefreshTimer) { _ in
+            guard canRenderLiveContent else { return }
+            refreshBoardSnapshot(reason: "snapshot timer")
+        }
+        .onReceive(boardPlaybackTimer) {
             guard canRenderLiveContent else { return }
             reinforceIdleTimerOverrideIfNeeded()
-            boardNow = $0
             syncBoardPlayback(for: $0)
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
-                boardNow = .now
-                activateIdleTimerOverride()
+                refreshBoardSnapshot(reason: "scenePhase active")
+                reinforceIdleTimerOverrideIfNeeded()
                 lastBoardInteractionAt = .now
                 isExitButtonVisible = false
                 syncBoardPlayback(for: boardNow)
             } else if newPhase == .background {
-                restoreIdleTimer()
                 playbackCoordinator.stop()
             }
+        }
+    }
+
+    private var boardLoadingView: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.07, green: 0.12, blue: 0.22),
+                    Color(red: 0.04, green: 0.33, blue: 0.47),
+                    Color(red: 0.05, green: 0.52, blue: 0.48)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+
+            ProgressView()
+                .tint(.white)
         }
     }
 
@@ -887,8 +910,13 @@ struct DashboardBoardView: View {
         .buttonStyle(.plain)
     }
 
-    private var boardRefreshTimer: Publishers.Autoconnect<Timer.TimerPublisher> {
-        Timer.publish(every: 5, on: .main, in: .common)
+    private var boardSnapshotRefreshTimer: Publishers.Autoconnect<Timer.TimerPublisher> {
+        Timer.publish(every: 600, on: .main, in: .common)
+            .autoconnect()
+    }
+
+    private var boardPlaybackTimer: Publishers.Autoconnect<Timer.TimerPublisher> {
+        Timer.publish(every: 15, on: .main, in: .common)
             .autoconnect()
     }
 
@@ -898,18 +926,17 @@ struct DashboardBoardView: View {
     }
 
     @MainActor
-    private func activateIdleTimerOverride() {
-        DashboardBoardWakeCoordinator.shared.activate()
-    }
-
-    @MainActor
-    private func restoreIdleTimer() {
-        DashboardBoardWakeCoordinator.shared.deactivate()
-    }
-
-    @MainActor
     private func reinforceIdleTimerOverrideIfNeeded() {
         DashboardBoardWakeCoordinator.shared.reinforceIfNeeded()
+    }
+
+    private func refreshBoardSnapshot(reason: String) {
+        let now = Date.now
+        boardNow = now
+        boardSnapshot = makeBoardSnapshot(at: now)
+        #if DEBUG
+        DebugPerf.mark("DashboardBoardView refreshBoardSnapshot reason=\(reason)")
+        #endif
     }
 
     private func syncBoardPlayback(for date: Date) {
@@ -959,33 +986,47 @@ final class DashboardBoardWakeCoordinator {
     private(set) var isActive = false
     private var previousIdleTimerDisabled = false
     private var reinforcementTask: Task<Void, Never>?
+    private var observers: [NSObjectProtocol] = []
+    #if DEBUG
+    private var lastDiagnosticLogAt = Date.distantPast
+    #endif
 
     private init() {}
 
-    func activate() {
+    func activate(reason: String = "activate") {
         let application = UIApplication.shared
         if !isActive {
             previousIdleTimerDisabled = application.isIdleTimerDisabled
             isActive = true
             startReinforcement()
+            startObservers()
+            logDiagnostic("activate reason=\(reason) previousIdleDisabled=\(previousIdleTimerDisabled)")
         }
 
         application.isIdleTimerDisabled = true
+        logDiagnostic("activate applied reason=\(reason)")
     }
 
-    func deactivate() {
+    func deactivate(reason: String = "deactivate") {
+        logDiagnostic("deactivate requested reason=\(reason)")
         reinforcementTask?.cancel()
         reinforcementTask = nil
+        stopObservers()
 
         guard isActive else { return }
         UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled
         isActive = false
+        logDiagnostic("deactivate restored reason=\(reason) restoredIdleDisabled=\(previousIdleTimerDisabled)")
     }
 
-    func reinforceIfNeeded() {
+    func reinforceIfNeeded(reason: String = "timer") {
         guard isActive else { return }
-        if !UIApplication.shared.isIdleTimerDisabled {
-            UIApplication.shared.isIdleTimerDisabled = true
+        let application = UIApplication.shared
+        if !application.isIdleTimerDisabled {
+            application.isIdleTimerDisabled = true
+            logDiagnostic("reinforce restored reason=\(reason)")
+        } else {
+            logHeartbeatIfNeeded(reason: reason)
         }
     }
 
@@ -993,11 +1034,129 @@ final class DashboardBoardWakeCoordinator {
         reinforcementTask?.cancel()
         reinforcementTask = Task { @MainActor in
             while !Task.isCancelled {
-                reinforceIfNeeded()
+                reinforceIfNeeded(reason: "timer")
                 try? await Task.sleep(for: .seconds(15))
             }
         }
     }
+
+    private func startObservers() {
+        stopObservers()
+
+        let center = NotificationCenter.default
+        observers = [
+            center.addObserver(
+                forName: UIApplication.willResignActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.logDiagnostic("notification willResignActive")
+                    self?.reinforceIfNeeded(reason: "willResignActive")
+                }
+            },
+            center.addObserver(
+                forName: UIApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.logDiagnostic("notification didBecomeActive")
+                    self?.reinforceIfNeeded(reason: "didBecomeActive")
+                }
+            },
+            center.addObserver(
+                forName: UIApplication.didEnterBackgroundNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.logDiagnostic("notification didEnterBackground")
+                    #if DEBUG
+                    DebugPerf.flushRecentEvents()
+                    #endif
+                }
+            },
+            center.addObserver(
+                forName: UIScene.willDeactivateNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.logDiagnostic("notification sceneWillDeactivate")
+                    self?.reinforceIfNeeded(reason: "sceneWillDeactivate")
+                }
+            },
+            center.addObserver(
+                forName: UIScene.didActivateNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.logDiagnostic("notification sceneDidActivate")
+                    self?.reinforceIfNeeded(reason: "sceneDidActivate")
+                }
+            }
+        ]
+    }
+
+    private func stopObservers() {
+        let center = NotificationCenter.default
+        observers.forEach { center.removeObserver($0) }
+        observers.removeAll()
+    }
+
+    private func logHeartbeatIfNeeded(reason: String) {
+        #if DEBUG
+        let now = Date()
+        guard now.timeIntervalSince(lastDiagnosticLogAt) >= 60 else { return }
+        lastDiagnosticLogAt = now
+        logDiagnostic("heartbeat reason=\(reason)")
+        #endif
+    }
+
+    private func logDiagnostic(_ message: String) {
+        #if DEBUG
+        DebugPerf.mark(
+            "DashboardBoardWake \(message) active=\(isActive) idleDisabled=\(UIApplication.shared.isIdleTimerDisabled) appState=\(applicationStateDescription()) scenes=\(sceneStateDescription())"
+        )
+        #endif
+    }
+
+    #if DEBUG
+    private func applicationStateDescription() -> String {
+        switch UIApplication.shared.applicationState {
+        case .active:
+            return "active"
+        case .inactive:
+            return "inactive"
+        case .background:
+            return "background"
+        @unknown default:
+            return "unknown"
+        }
+    }
+
+    private func sceneStateDescription() -> String {
+        UIApplication.shared.connectedScenes
+            .compactMap { scene -> String? in
+                guard scene.session.role == .windowApplication else { return nil }
+                switch scene.activationState {
+                case .foregroundActive:
+                    return "foregroundActive"
+                case .foregroundInactive:
+                    return "foregroundInactive"
+                case .background:
+                    return "background"
+                case .unattached:
+                    return "unattached"
+                @unknown default:
+                    return "unknown"
+                }
+            }
+            .joined(separator: ",")
+    }
+    #endif
 }
 
 private struct BoardStatCard: View {

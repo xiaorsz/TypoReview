@@ -822,11 +822,7 @@ final class IOS17BackgroundSceneShield {
     }
 
     private var isEnabled: Bool {
-        if #available(iOS 18.0, *) {
-            false
-        } else {
-            true
-        }
+        false
     }
 
     private func shieldActiveWindows() {
