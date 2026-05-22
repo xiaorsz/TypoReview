@@ -19,9 +19,14 @@ final class MediaLibraryStore {
 
     private(set) var mediaAssets: [MediaLibraryAsset] = []
     private(set) var lastErrorMessage: String?
+    private var metadataChangeObserver: MediaLibraryMetadataChangeObserver?
 
     init() {
         reload()
+        metadataChangeObserver = MediaLibraryMetadataChangeObserver { [weak self] in
+            self?.reload()
+        }
+        metadataChangeObserver?.start()
     }
 
     func reload() {
@@ -119,16 +124,34 @@ final class MediaLibraryStore {
 
     private func loadAssets() throws -> [MediaLibraryAsset] {
         let preferredMetadataURL = try? MediaLibraryStorage.preferredMetadataURL().fileURL
+        var preferredCandidateFailed = false
+        var lastReadError: Error?
 
         for url in MediaLibraryStorage.metadataCandidateURLs() where FileManager.default.fileExists(atPath: url.path) {
-            let data = try Data(contentsOf: url)
-            let document = try Self.makeDecoder().decode(MetadataDocument.self, from: data)
+            MediaLibraryStorage.startDownloadingIfNeeded(at: url)
 
-            if let preferredMetadataURL, preferredMetadataURL.path != url.path {
-                try write(document, to: preferredMetadataURL)
+            do {
+                let data = try Data(contentsOf: url)
+                let document = try Self.makeDecoder().decode(MetadataDocument.self, from: data)
+
+                if let preferredMetadataURL,
+                   preferredMetadataURL.path != url.path,
+                   !preferredCandidateFailed {
+                    try write(document, to: preferredMetadataURL)
+                }
+
+                return document.assets
+            } catch {
+                lastReadError = error
+                if preferredMetadataURL?.path == url.path {
+                    preferredCandidateFailed = true
+                }
+                continue
             }
+        }
 
-            return document.assets
+        if let lastReadError {
+            throw lastReadError
         }
 
         return []
@@ -177,5 +200,59 @@ final class MediaLibraryStore {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return encoder
+    }
+}
+
+private final class MediaLibraryMetadataChangeObserver {
+    private let query = NSMetadataQuery()
+    private let onChange: @MainActor () -> Void
+    private var observers: [NSObjectProtocol] = []
+
+    init(onChange: @escaping @MainActor () -> Void) {
+        self.onChange = onChange
+        query.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]
+        query.predicate = NSPredicate(
+            format: "%K == %@",
+            NSMetadataItemFSNameKey,
+            MediaLibraryStorage.metadataFilename
+        )
+    }
+
+    func start() {
+        guard observers.isEmpty else { return }
+
+        let notificationCenter = NotificationCenter.default
+        observers = [
+            notificationCenter.addObserver(
+                forName: .NSMetadataQueryDidFinishGathering,
+                object: query,
+                queue: .main
+            ) { [weak self] _ in
+                self?.handleMetadataChange()
+            },
+            notificationCenter.addObserver(
+                forName: .NSMetadataQueryDidUpdate,
+                object: query,
+                queue: .main
+            ) { [weak self] _ in
+                self?.handleMetadataChange()
+            }
+        ]
+
+        query.start()
+    }
+
+    private func handleMetadataChange() {
+        query.disableUpdates()
+        defer { query.enableUpdates() }
+
+        Task { @MainActor in
+            onChange()
+        }
+    }
+
+    deinit {
+        query.stop()
+        observers.forEach(NotificationCenter.default.removeObserver)
     }
 }

@@ -8,7 +8,7 @@ enum MediaFileAvailability {
 
 enum MediaLibraryStorage {
     private static let directoryName = "MediaLibrary"
-    private static let metadataFilename = "media-library.json"
+    static let metadataFilename = "media-library.json"
     private static let ubiquityContainerIdentifier = "iCloud.cc.xiaorsz.typo-review"
 
     static func fileURL(for storedFilename: String) -> URL {
@@ -108,6 +108,13 @@ enum MediaLibraryStorage {
 
         urls.append(localDirectoryURL().appendingPathComponent(metadataFilename, isDirectory: false))
         return urls
+    }
+
+    static func startDownloadingIfNeeded(at url: URL) {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        guard isUbiquitous(url), !isDownloaded(url) else { return }
+        try? fileManager.startDownloadingUbiquitousItem(at: url)
     }
 
     private static func preferredStorageLocation() throws -> (directoryURL: URL, storageScope: MediaStorageScope) {

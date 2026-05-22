@@ -7,6 +7,7 @@ struct RootTabView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
     @Environment(SyncStatusStore.self) private var syncStatusStore
+    @Environment(MediaLibraryStore.self) private var mediaLibraryStore
     @Environment(AppSettingsStore.self) private var appSettingsStore
     @EnvironmentObject private var startupMaintenanceCoordinator: StartupMaintenanceCoordinator
     @State private var refreshAppStateTask: Task<Void, Never>?
@@ -51,12 +52,14 @@ struct RootTabView: View {
             DebugPerf.mark("RootTabView .task scenePhase=\(scenePhase)")
             #endif
             guard canRefreshLiveAppState else { return }
+            mediaLibraryStore.reload()
             scheduleIOS17BackgroundShieldStartIfNeeded()
             scheduleStartupMaintenanceIfNeeded()
             scheduleAppStateRefresh(trigger: .launch, delay: launchRefreshDelay)
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
+                mediaLibraryStore.reload()
                 scheduleIOS17BackgroundShieldStartIfNeeded()
                 scheduleStartupMaintenanceIfNeeded()
                 scheduleAppStateRefresh(trigger: .foreground, delay: foregroundRefreshDelay)
@@ -237,6 +240,7 @@ struct RootTabView: View {
     }
 
     private func refreshAppState(trigger: SyncStatusStore.Trigger) async {
+        mediaLibraryStore.reload()
         appSettingsStore.bootstrap(using: modelContext)
         appSettingsStore.refreshFromSwiftDataIfPossible(using: modelContext)
         await syncStatusStore.refresh(using: modelContext, trigger: trigger)
