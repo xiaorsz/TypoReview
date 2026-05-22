@@ -25,6 +25,12 @@ struct RootTabView: View {
         case settings
     }
 
+    init() {
+        let initialTab = Self.initialPreviewTab
+        _selectedLegacyTab = State(initialValue: initialTab)
+        _visitedLegacyTabs = State(initialValue: [.home, initialTab])
+    }
+
     var body: some View {
         Group {
             if #available(iOS 18.0, *) {
@@ -34,6 +40,13 @@ struct RootTabView: View {
             }
         }
         .task {
+            #if DEBUG
+            if AppStorePreviewMode.isEnabled {
+                AppStorePreviewData.seedIfNeeded(in: modelContext)
+                appSettingsStore.bootstrap(using: modelContext)
+                appSettingsStore.refreshFromSwiftDataIfPossible(using: modelContext)
+            }
+            #endif
             #if DEBUG
             DebugPerf.mark("RootTabView .task scenePhase=\(scenePhase)")
             #endif
@@ -79,32 +92,32 @@ struct RootTabView: View {
 
     @available(iOS 18.0, *)
     private var modernTabView: some View {
-        TabView {
-            Tab("首页", systemImage: "house.fill") {
+        TabView(selection: $selectedLegacyTab) {
+            Tab("首页", systemImage: "house.fill", value: LegacyTab.home) {
                 NavigationStack {
                     HomeView()
                 }
             }
 
-            Tab("题库", systemImage: "square.grid.2x2.fill") {
+            Tab("题库", systemImage: "square.grid.2x2.fill", value: LegacyTab.library) {
                 NavigationStack {
                     LibraryView()
                 }
             }
 
-            Tab("听写", systemImage: "text.book.closed.fill") {
+            Tab("听写", systemImage: "text.book.closed.fill", value: LegacyTab.dictation) {
                 NavigationStack {
                     DictationHomeView()
                 }
             }
 
-            Tab("待办", systemImage: "checklist") {
+            Tab("待办", systemImage: "checklist", value: LegacyTab.tasks) {
                 NavigationStack {
                     TasksView()
                 }
             }
 
-            Tab("设置", systemImage: "gearshape.fill") {
+            Tab("设置", systemImage: "gearshape.fill", value: LegacyTab.settings) {
                 NavigationStack {
                     SettingsView()
                 }
@@ -271,6 +284,23 @@ struct RootTabView: View {
             return 2.0
         }
         return 5.0
+    }
+
+    private static var initialPreviewTab: LegacyTab {
+        guard AppStorePreviewMode.isEnabled else { return .home }
+
+        switch ProcessInfo.processInfo.environment["APP_STORE_PREVIEW_TAB"]?.lowercased() {
+        case "library":
+            return .library
+        case "dictation":
+            return .dictation
+        case "tasks":
+            return .tasks
+        case "settings":
+            return .settings
+        default:
+            return .home
+        }
     }
 
     private func scheduleIOS17BackgroundShieldStartIfNeeded() {

@@ -47,6 +47,26 @@ struct TypoReviewApp: App {
             PointRewardState.self
         ])
 
+        if AppStorePreviewMode.isEnabled {
+            let previewConfiguration = ModelConfiguration(isStoredInMemoryOnly: true)
+            let container = try! ModelContainer(for: schema, configurations: [previewConfiguration])
+            sharedModelContainer = container
+            startupMaintenanceCoordinator = StartupMaintenanceCoordinator(
+                storeURL: nil,
+                pendingExecutionTableRepairStoreURL: nil,
+                appGroupIdentifier: nil
+            )
+            _syncStatusStore = State(initialValue: {
+                let store = SyncStatusStore()
+                store.configure(
+                    cloudKitEnabled: false,
+                    containerIdentifier: Self.cloudKitContainerIdentifierValue
+                )
+                return store
+            }())
+            return
+        }
+
         let fileManager = FileManager.default
         let appSupportDir = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? fileManager.temporaryDirectory
         let defaultStoreURL = appSupportDir.appendingPathComponent("default.store")
@@ -920,3 +940,225 @@ private final class IOS17BackgroundShieldViewController: UIViewController {
         .all
     }
 }
+
+enum AppStorePreviewMode {
+    static var isEnabled: Bool {
+        #if DEBUG
+        let processInfo = ProcessInfo.processInfo
+        return processInfo.arguments.contains("--app-store-preview-mode") ||
+            processInfo.environment["APP_STORE_PREVIEW_MODE"] == "1"
+        #else
+        return false
+        #endif
+    }
+}
+
+#if DEBUG
+enum AppStorePreviewData {
+    @MainActor
+    static func seedIfNeeded(in modelContext: ModelContext) {
+        let existingItems = (try? modelContext.fetch(FetchDescriptor<ReviewItem>())) ?? []
+        guard existingItems.isEmpty else { return }
+
+        let calendar = Calendar.current
+        let now = Date.now
+        let today = calendar.startOfDay(for: now)
+        func day(_ offset: Int) -> Date {
+            calendar.date(byAdding: .day, value: offset, to: today) ?? today
+        }
+        func time(hour: Int, minute: Int) -> Date {
+            calendar.date(bySettingHour: hour, minute: minute, second: 0, of: today) ?? today
+        }
+
+        let settings = AppSettings(
+            childName: "小夏",
+            dailyLimit: 8,
+            remindHour: 19,
+            remindMinute: 30,
+            reviewInteractionStyle: .batch
+        )
+        modelContext.insert(settings)
+
+        let reviewItems = [
+            ReviewItem(
+                type: .phrase,
+                content: "清澈",
+                prompt: "注意右边是“曷”，不要写成“喝”。",
+                note: "语文第三单元",
+                source: "错题本",
+                stage: 2,
+                nextReviewAt: day(0),
+                lastReviewedAt: day(-2),
+                consecutiveWrongCount: 1,
+                isPriority: true,
+                createdAt: day(-12),
+                updatedAt: now
+            ),
+            ReviewItem(
+                type: .chineseCharacter,
+                content: "辨",
+                prompt: "组词：分辨、辨认；中间是点撇。",
+                source: "周三听写",
+                stage: 1,
+                nextReviewAt: day(0),
+                createdAt: day(-6),
+                updatedAt: now
+            ),
+            ReviewItem(
+                type: .phrase,
+                content: "融化",
+                prompt: "“融”左下不是“虫”少一横。",
+                source: "看拼音写词语",
+                stage: 3,
+                nextReviewAt: day(0),
+                lastReviewedAt: day(-1),
+                createdAt: day(-18),
+                updatedAt: now
+            ),
+            ReviewItem(
+                type: .englishWord,
+                content: "environment",
+                prompt: "en-vi-ron-ment，注意中间 ron。",
+                source: "英语单词",
+                stage: 2,
+                nextReviewAt: day(1),
+                createdAt: day(-8),
+                updatedAt: now
+            ),
+            ReviewItem(
+                type: .phrase,
+                content: "坚持",
+                prompt: "已经稳定掌握，进入长期复习。",
+                source: "已掌握",
+                stage: 5,
+                nextReviewAt: day(14),
+                lastReviewedAt: day(-1),
+                consecutiveCorrectCount: 4,
+                createdAt: day(-30),
+                updatedAt: now
+            )
+        ]
+
+        for item in reviewItems {
+            modelContext.insert(item)
+        }
+
+        let reviewRecords = [
+            ReviewRecord(itemID: reviewItems[0].id, reviewedAt: time(hour: 8, minute: 10), result: .wrong, mode: .scheduled, oldStage: 2, newStage: 1, note: "偏旁写错"),
+            ReviewRecord(itemID: reviewItems[2].id, reviewedAt: time(hour: 8, minute: 12), result: .correct, mode: .scheduled, oldStage: 2, newStage: 3),
+            ReviewRecord(itemID: reviewItems[4].id, reviewedAt: time(hour: 8, minute: 15), result: .correct, mode: .scheduled, oldStage: 4, newStage: 5),
+            ReviewRecord(itemID: reviewItems[1].id, reviewedAt: day(-1), result: .correct, mode: .retry, oldStage: 0, newStage: 1)
+        ]
+        for record in reviewRecords {
+            modelContext.insert(record)
+            _ = PointLedgerService.awardReviewRecord(record, in: modelContext)
+        }
+
+        let dictationTodayID = UUID()
+        let dictationTomorrowID = UUID()
+        let sessions = [
+            DictationSession(id: dictationTodayID, title: "第三单元词语听写", type: .phrase, createdAt: day(-1), updatedAt: now, scheduledDate: day(0)),
+            DictationSession(id: dictationTomorrowID, title: "英语高频词复习", type: .englishWord, createdAt: day(-2), updatedAt: now, scheduledDate: day(1))
+        ]
+        for session in sessions {
+            modelContext.insert(session)
+        }
+
+        let dictationEntries = [
+            DictationEntry(sessionID: dictationTodayID, sortOrder: 0, type: .phrase, content: "清澈", prompt: "湖水很清澈", source: "语文书"),
+            DictationEntry(sessionID: dictationTodayID, sortOrder: 1, type: .phrase, content: "辨认", prompt: "辨认方向", source: "语文书"),
+            DictationEntry(sessionID: dictationTodayID, sortOrder: 2, type: .phrase, content: "融化", prompt: "冰雪融化", source: "错题本"),
+            DictationEntry(sessionID: dictationTomorrowID, sortOrder: 0, type: .englishWord, content: "environment", prompt: "环境", source: "英语课本"),
+            DictationEntry(sessionID: dictationTomorrowID, sortOrder: 1, type: .englishWord, content: "important", prompt: "重要的", source: "英语课本")
+        ]
+        for entry in dictationEntries {
+            modelContext.insert(entry)
+        }
+
+        let taskIDs = [UUID(), UUID(), UUID()]
+        let tasks = [
+            TaskItem(
+                id: taskIDs[0],
+                title: "完成语文订正并拍照",
+                note: "订正后家长检查错别字",
+                recurrence: .daily,
+                skipPolicy: .unskippable,
+                startDate: day(-2),
+                createdAt: day(-2),
+                updatedAt: now
+            ),
+            TaskItem(
+                id: taskIDs[1],
+                title: "睡前 8 分钟错字复盘",
+                note: "只看重点复习",
+                recurrence: .daily,
+                startDate: day(0),
+                createdAt: day(-3),
+                updatedAt: now
+            ),
+            TaskItem(
+                id: taskIDs[2],
+                title: "整理本周听写错词",
+                note: "周末前完成",
+                recurrence: .once,
+                startDate: day(2),
+                createdAt: day(-1),
+                updatedAt: now
+            )
+        ]
+        for task in tasks {
+            modelContext.insert(task)
+        }
+
+        modelContext.insert(TaskSubitem(parentTaskID: taskIDs[0], title: "把“清澈”重写 3 遍", sortOrder: 0, createdAt: day(-2), updatedAt: now))
+        modelContext.insert(TaskSubitem(parentTaskID: taskIDs[0], title: "读一遍第三单元词语表", sortOrder: 1, createdAt: day(-2), updatedAt: now))
+        let completedTaskRecord = TaskExecutionRecord(
+            taskID: taskIDs[1],
+            occurrenceDate: day(0),
+            status: .completed,
+            completedAt: time(hour: 7, minute: 50),
+            createdAt: now,
+            updatedAt: now
+        )
+        modelContext.insert(completedTaskRecord)
+        _ = PointLedgerService.awardTaskExecution(completedTaskRecord, taskTitle: tasks[1].title, in: modelContext)
+
+        let schedules = [
+            ScheduleItem(
+                title: "晚饭后听写",
+                note: "先听写，再复盘错词",
+                startTime: time(hour: 19, minute: 30),
+                endTime: time(hour: 20, minute: 0),
+                repeatRule: .daily,
+                effectiveStartDate: day(-5),
+                createdAt: day(-5),
+                updatedAt: now
+            ),
+            ScheduleItem(
+                title: "周末错题整理",
+                note: "把本周错词加入题库",
+                startTime: day(2),
+                endTime: calendar.date(byAdding: .minute, value: 45, to: day(2)) ?? day(2),
+                repeatRule: .once,
+                createdAt: day(-1),
+                updatedAt: now
+            )
+        ]
+        for schedule in schedules {
+            modelContext.insert(schedule)
+        }
+
+        modelContext.insert(
+            PointRewardState(
+                currentStreak: 6,
+                lastActiveDay: today,
+                longestStreak: 12,
+                updatedAt: now
+            )
+        )
+
+        try? modelContext.save()
+        NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
+    }
+}
+#endif

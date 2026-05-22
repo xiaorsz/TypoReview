@@ -384,7 +384,10 @@ struct HomeView: View {
         let heroGradientColors: [Color]
 
         var dueItemIDs: [UUID] {
-            dueItems.map(\.id)
+            var seenIDs = Set<UUID>()
+            return dueItems.compactMap { item in
+                seenIDs.insert(item.id).inserted ? item.id : nil
+            }
         }
 
         func dictationEntries(for session: HomeDictationSessionProjection) -> [HomeDictationEntryProjection] {
@@ -409,7 +412,7 @@ struct HomeView: View {
             let calendar = Calendar.current
             let todayStart = calendar.startOfDay(for: referenceDate)
 
-            let allDue = reviewItems
+            let sortedDue = reviewItems
                 .filter { ReviewScheduler.isDue($0.nextReviewAt, on: referenceDate, calendar: calendar) }
                 .sorted { lhs, rhs in
                     let lhsDay = ReviewScheduler.normalizedReviewDate(lhs.nextReviewAt, calendar: calendar)
@@ -423,6 +426,10 @@ struct HomeView: View {
                     }
                     return lhs.id.uuidString < rhs.id.uuidString
                 }
+            var seenDueItemIDs = Set<UUID>()
+            let allDue = sortedDue.filter { item in
+                seenDueItemIDs.insert(item.id).inserted
+            }
             let cappedDueContent = Array(allDue.prefix(dailyLimit))
             let masteredReviewCount = reviewItems.filter(\.isMastered).count
 
@@ -980,7 +987,7 @@ struct HomeView: View {
                 VStack(spacing: 20) {
                     heroCard(snapshot)
 
-                    if syncStatusStore.syncNoticeKind != .ready {
+                    if !AppStorePreviewMode.isEnabled && syncStatusStore.syncNoticeKind != .ready {
                         syncStatusSummaryCard
                     }
 
@@ -1948,7 +1955,10 @@ struct HomeView: View {
                 let pids = await Task.detached(priority: .userInitiated) {
                     let ctx = ModelContext(container)
                     let ids = route.itemIDs
-                    let order = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($0.element, $0.offset) })
+                    let order = Dictionary(
+                        ids.enumerated().map { ($0.element, $0.offset) },
+                        uniquingKeysWith: { first, _ in first }
+                    )
                     let fetched = (try? ctx.fetch(FetchDescriptor<ReviewItem>())) ?? []
                     let filtered = fetched
                         .filter { order[$0.id] != nil }
