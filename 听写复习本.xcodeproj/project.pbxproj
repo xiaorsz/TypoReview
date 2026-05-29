@@ -49,6 +49,7 @@
 		7C846FEEA034B97E5EA18910 /* ScheduleItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0A42DE1DFCACBAA52B4531 /* ScheduleItem.swift */; };
 		7DA63F70908CC43C3F19C94F /* TaskExecutionSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D919BCC4163E4167EBAE825F /* TaskExecutionSupport.swift */; };
 		8101EFDBFE693CE7C0CEF6CE /* DataBackup.swift in Sources */ = {isa = PBXBuildFile; fileRef = D52668595FD4C40411DDCF20 /* DataBackup.swift */; };
+		A1D5A1110000000000000002 /* DailySummaryAI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1D5A1110000000000000001 /* DailySummaryAI.swift */; };
 		8B58527C28E31748BB6A27C5 /* AddDictationSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35B9623148B3E1F3AF728F7B /* AddDictationSessionView.swift */; };
 		8DD0DB1825D5A2A8FBA4F3AD /* Contents.json in Resources */ = {isa = PBXBuildFile; fileRef = 86837560373D9A64F21BD7FB /* Contents.json */; };
 		932330CC5F580390519EA018 /* BatchReviewGradingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD3384CB49CD514C167C97AA /* BatchReviewGradingView.swift */; };
@@ -161,6 +162,7 @@
 		D462982FDCF82CEE1F04B828 /* MediaAsset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaAsset.swift; sourceTree = "<group>"; };
 		D475A66F00FA0F89DB5D4410 /* SharedUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedUI.swift; sourceTree = "<group>"; };
 		D52668595FD4C40411DDCF20 /* DataBackup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataBackup.swift; sourceTree = "<group>"; };
+		A1D5A1110000000000000001 /* DailySummaryAI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DailySummaryAI.swift; sourceTree = "<group>"; };
 		D919BCC4163E4167EBAE825F /* TaskExecutionSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskExecutionSupport.swift; sourceTree = "<group>"; };
 		DCF86A62DB2A1AA848434BAC /* MediaLibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryStore.swift; sourceTree = "<group>"; };
 		E981311286FBC45F0EFB2166 /* TypoWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TypoWidget.entitlements; sourceTree = "<group>"; };
@@ -188,6 +190,7 @@
 				CA218905C6AD638CB04C774E /* BatchReviewSessionView.swift */,
 				4DAC45C1C6C9D73CED4CF57E /* DashboardBoardView.swift */,
 				D52668595FD4C40411DDCF20 /* DataBackup.swift */,
+				A1D5A1110000000000000001 /* DailySummaryAI.swift */,
 				D0F396BBF587A380BEE3F397 /* DictationEntry.swift */,
 				31BDBB729EB669636A559549 /* DictationHomeView.swift */,
 				54E7E4D3A83E8BB53D0F1DBA /* DictationReviewView.swift */,
@@ -423,6 +426,7 @@
 				231AA24240FC6FCBD6A369F2 /* BatchReviewSessionView.swift in Sources */,
 				5FCF0E1D826394BF87A3A0AE /* DashboardBoardView.swift in Sources */,
 				8101EFDBFE693CE7C0CEF6CE /* DataBackup.swift in Sources */,
+				A1D5A1110000000000000002 /* DailySummaryAI.swift in Sources */,
 				2A7CAA439DC94CE3F611031F /* DictationEntry.swift in Sources */,
 				33ABD76890827A3B0D6FB67D /* DictationHomeView.swift in Sources */,
 				9B3748AF8610AB9DAEDC55A3 /* DictationReviewView.swift in Sources */,

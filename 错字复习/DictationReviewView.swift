@@ -337,6 +337,14 @@ private struct DictationEntrySummary: Identifiable {
 
 private struct DictationSummaryView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppSettingsStore.self) private var settings
+
+    @State private var learningSessionSummary: LearningSessionSummaryResult?
+    @State private var learningSessionSummaryInputHash = ""
+    @State private var isLoadingLearningSessionSummary = false
+    @State private var learningSessionSummaryTask: Task<Void, Never>?
+    @AppStorage(DailySummaryAISettings.isEnabledKey) private var aiSummaryEnabled = false
+    @AppStorage(DailySummaryAISettings.modelKey) private var aiSummaryModelRawValue = DailySummaryAISettings.defaultModel
 
     let title: String
     let summaries: [DictationEntrySummary]
@@ -401,6 +409,8 @@ private struct DictationSummaryView: View {
                         StatGridCard(icon: "percent", title: "正确率", value: accuracyText, tint: .orange)
                     }
 
+                    learningSessionSummaryCard
+
                     VStack(alignment: .leading, spacing: 12) {
                         Text("本次结果")
                             .font(.headline)
@@ -448,10 +458,16 @@ private struct DictationSummaryView: View {
                     .buttonStyle(ResultButtonStyle(color: .blue))
                 }
                 .padding(isWide ? 32 : 20)
+                .onAppear {
+                    refreshLearningSessionSummary(force: false)
+                }
             }
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+        .onDisappear {
+            learningSessionSummaryTask?.cancel()
+        }
     }
 
     private var summaryText: String {
@@ -460,6 +476,141 @@ private struct DictationSummaryView: View {
         }
 
         return "这次一共完成 \(totalCount) 条，其中答错 \(wrongCount) 条。答错内容会从明天开始进入待复习；如果第二天没复习，会继续保留在今日待复习中。"
+    }
+
+    private var learningSessionSummaryCard: some View {
+        let result = learningSessionSummary ?? makeLearningSessionSummaryInput().localFallbackResult()
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: wrongCount == 0 ? "sparkles" : "lightbulb.max.fill")
+                    .foregroundStyle(.purple)
+                Text(wrongCount == 0 ? "AI 本次小结" : "AI 错项建议")
+                    .font(.headline)
+
+                Spacer()
+
+                if isLoadingLearningSessionSummary {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                if aiSummaryEnabled {
+                    Button {
+                        refreshLearningSessionSummary(force: true)
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(isLoadingLearningSessionSummary)
+                    .accessibilityLabel("重新生成 AI 错项建议")
+                }
+            }
+
+            Text(result.message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            if !result.suggestions.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(result.suggestions.prefix(3).enumerated()), id: \.offset) { _, suggestion in
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                                .padding(.top, 2)
+                            Text(suggestion)
+                                .font(.subheadline.weight(.medium))
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(20)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private func makeLearningSessionSummaryInput() -> LearningSessionSummaryInput {
+        LearningSessionSummaryInput(
+            kind: .dictation,
+            title: title,
+            date: DailySummaryInput.dateKey(),
+            childName: settings.childName.isEmpty ? "小朋友" : settings.childName,
+            metrics: LearningSessionSummaryInput.Metrics(
+                totalCount: totalCount,
+                correctCount: correctCount,
+                wrongCount: wrongCount,
+                accuracyText: accuracyText
+            ),
+            samples: LearningSessionSummaryInput.Samples(
+                wrongItems: summaries.filter { $0.result == .wrong }.map(\.content).prefix(8).map { $0 },
+                correctItems: summaries.filter { $0.result == .correct }.map(\.content).prefix(4).map { $0 }
+            )
+        )
+    }
+
+    private func refreshLearningSessionSummary(force: Bool) {
+        let input = makeLearningSessionSummaryInput()
+        let inputHash = input.stableHash()
+        let model = DeepSeekSummaryModel(rawValue: aiSummaryModelRawValue) ?? .flash
+        let fallback = input.localFallbackResult()
+
+        guard aiSummaryEnabled else {
+            learningSessionSummaryTask?.cancel()
+            learningSessionSummaryInputHash = inputHash
+            learningSessionSummary = fallback
+            isLoadingLearningSessionSummary = false
+            return
+        }
+
+        guard let apiKey = try? DeepSeekAPIKeyStore.loadAPIKey(),
+              !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            learningSessionSummaryTask?.cancel()
+            learningSessionSummaryInputHash = inputHash
+            learningSessionSummary = fallback
+            isLoadingLearningSessionSummary = false
+            return
+        }
+
+        if !force,
+           learningSessionSummaryInputHash == inputHash,
+           learningSessionSummary != nil {
+            return
+        }
+
+        if !force,
+           let cached = LearningSessionSummaryCache.load(inputHash: inputHash, model: model.rawValue) {
+            learningSessionSummaryTask?.cancel()
+            learningSessionSummaryInputHash = inputHash
+            learningSessionSummary = cached
+            isLoadingLearningSessionSummary = false
+            return
+        }
+
+        learningSessionSummaryTask?.cancel()
+        learningSessionSummaryInputHash = inputHash
+        learningSessionSummary = fallback
+        isLoadingLearningSessionSummary = true
+
+        learningSessionSummaryTask = Task {
+            do {
+                let result = try await DeepSeekSummaryClient(apiKey: apiKey, model: model.rawValue)
+                    .generateLearningSessionSummary(for: input)
+                await MainActor.run {
+                    LearningSessionSummaryCache.save(result, inputHash: inputHash, model: model.rawValue)
+                    learningSessionSummary = result
+                    learningSessionSummaryInputHash = inputHash
+                    isLoadingLearningSessionSummary = false
+                }
+            } catch {
+                await MainActor.run {
+                    learningSessionSummary = fallback
+                    learningSessionSummaryInputHash = inputHash
+                    isLoadingLearningSessionSummary = false
+                }
+            }
+        }
     }
 
 }

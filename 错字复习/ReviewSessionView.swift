@@ -5,6 +5,7 @@ import SwiftData
 struct ReviewSessionView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Environment(AppSettingsStore.self) private var settings
 
     @State private var sessionItems: [ReviewItem]
     @State private var currentIndex = 0
@@ -17,6 +18,12 @@ struct ReviewSessionView: View {
     @State private var lastResultCorrect = true
     @State private var undoStack: [UndoEntry] = []
     @State private var saveErrorMessage: String?
+    @State private var learningSessionSummary: LearningSessionSummaryResult?
+    @State private var learningSessionSummaryInputHash = ""
+    @State private var isLoadingLearningSessionSummary = false
+    @State private var learningSessionSummaryTask: Task<Void, Never>?
+    @AppStorage(DailySummaryAISettings.isEnabledKey) private var aiSummaryEnabled = false
+    @AppStorage(DailySummaryAISettings.modelKey) private var aiSummaryModelRawValue = DailySummaryAISettings.defaultModel
     @StateObject private var speaker = ReviewSpeaker()
 
     private let scheduler = ReviewScheduler()
@@ -213,6 +220,7 @@ struct ReviewSessionView: View {
         }
         .onDisappear {
             speaker.stop()
+            learningSessionSummaryTask?.cancel()
         }
         .alert("保存失败", isPresented: saveErrorBinding) {
             Button("知道了", role: .cancel) {
@@ -266,6 +274,8 @@ struct ReviewSessionView: View {
                         StatGridCard(icon: "percent", title: "正确率", value: accuracyText, tint: .orange)
                     }
 
+                    learningSessionSummaryCard
+
                     if !reviewedSummaries.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("本次结果")
@@ -301,6 +311,9 @@ struct ReviewSessionView: View {
                     .buttonStyle(ResultButtonStyle(color: .blue))
                 }
                 .padding(isWide ? 32 : 20)
+                .onAppear {
+                    refreshLearningSessionSummary(force: false)
+                }
             }
         }
     }
@@ -531,6 +544,141 @@ struct ReviewSessionView: View {
         }
 
         return "这次一共完成 \(completedCount) 题，其中答错 \(wrongCount) 题。答错的内容会安排到之后的日期，今天不会重复出现。"
+    }
+
+    private var learningSessionSummaryCard: some View {
+        let result = learningSessionSummary ?? makeLearningSessionSummaryInput().localFallbackResult()
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: wrongCount == 0 ? "sparkles" : "lightbulb.max.fill")
+                    .foregroundStyle(.purple)
+                Text(wrongCount == 0 ? "AI 本次小结" : "AI 错项建议")
+                    .font(.headline)
+
+                Spacer()
+
+                if isLoadingLearningSessionSummary {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                if aiSummaryEnabled {
+                    Button {
+                        refreshLearningSessionSummary(force: true)
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(isLoadingLearningSessionSummary)
+                    .accessibilityLabel("重新生成 AI 错项建议")
+                }
+            }
+
+            Text(result.message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            if !result.suggestions.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(result.suggestions.prefix(3).enumerated()), id: \.offset) { _, suggestion in
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                                .padding(.top, 2)
+                            Text(suggestion)
+                                .font(.subheadline.weight(.medium))
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(20)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private func makeLearningSessionSummaryInput() -> LearningSessionSummaryInput {
+        LearningSessionSummaryInput(
+            kind: .review,
+            title: "今日复习",
+            date: DailySummaryInput.dateKey(),
+            childName: settings.childName.isEmpty ? "小朋友" : settings.childName,
+            metrics: LearningSessionSummaryInput.Metrics(
+                totalCount: completedCount,
+                correctCount: correctCount,
+                wrongCount: wrongCount,
+                accuracyText: accuracyText
+            ),
+            samples: LearningSessionSummaryInput.Samples(
+                wrongItems: reviewedSummaries.filter { $0.result == .wrong }.map(\.content).prefix(8).map { $0 },
+                correctItems: reviewedSummaries.filter { $0.result == .correct }.map(\.content).prefix(4).map { $0 }
+            )
+        )
+    }
+
+    private func refreshLearningSessionSummary(force: Bool) {
+        let input = makeLearningSessionSummaryInput()
+        let inputHash = input.stableHash()
+        let model = DeepSeekSummaryModel(rawValue: aiSummaryModelRawValue) ?? .flash
+        let fallback = input.localFallbackResult()
+
+        guard aiSummaryEnabled else {
+            learningSessionSummaryTask?.cancel()
+            learningSessionSummaryInputHash = inputHash
+            learningSessionSummary = fallback
+            isLoadingLearningSessionSummary = false
+            return
+        }
+
+        guard let apiKey = try? DeepSeekAPIKeyStore.loadAPIKey(),
+              !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            learningSessionSummaryTask?.cancel()
+            learningSessionSummaryInputHash = inputHash
+            learningSessionSummary = fallback
+            isLoadingLearningSessionSummary = false
+            return
+        }
+
+        if !force,
+           learningSessionSummaryInputHash == inputHash,
+           learningSessionSummary != nil {
+            return
+        }
+
+        if !force,
+           let cached = LearningSessionSummaryCache.load(inputHash: inputHash, model: model.rawValue) {
+            learningSessionSummaryTask?.cancel()
+            learningSessionSummaryInputHash = inputHash
+            learningSessionSummary = cached
+            isLoadingLearningSessionSummary = false
+            return
+        }
+
+        learningSessionSummaryTask?.cancel()
+        learningSessionSummaryInputHash = inputHash
+        learningSessionSummary = fallback
+        isLoadingLearningSessionSummary = true
+
+        learningSessionSummaryTask = Task {
+            do {
+                let result = try await DeepSeekSummaryClient(apiKey: apiKey, model: model.rawValue)
+                    .generateLearningSessionSummary(for: input)
+                await MainActor.run {
+                    LearningSessionSummaryCache.save(result, inputHash: inputHash, model: model.rawValue)
+                    learningSessionSummary = result
+                    learningSessionSummaryInputHash = inputHash
+                    isLoadingLearningSessionSummary = false
+                }
+            } catch {
+                await MainActor.run {
+                    learningSessionSummary = fallback
+                    learningSessionSummaryInputHash = inputHash
+                    isLoadingLearningSessionSummary = false
+                }
+            }
+        }
     }
 
     private var saveErrorBinding: Binding<Bool> {

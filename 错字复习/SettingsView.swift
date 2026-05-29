@@ -18,6 +18,10 @@ struct SettingsView: View {
     @State private var isRestoringBackup = false
     @State private var isUpdatingEnglishGlosses = false
     @State private var isConfirmingEnglishGlossUpdate = false
+    @State private var deepSeekAPIKey = ""
+    @State private var isTestingDeepSeekConnection = false
+    @AppStorage(DailySummaryAISettings.isEnabledKey) private var aiSummaryEnabled = false
+    @AppStorage(DailySummaryAISettings.modelKey) private var aiSummaryModelRawValue = DailySummaryAISettings.defaultModel
 
     private var reviewStyle: Binding<ReviewInteractionStyle> {
         Binding(
@@ -127,6 +131,82 @@ struct SettingsView: View {
                     SettingsNoteRow(
                         icon: "calendar.badge.clock",
                         text: "阶段复习间隔：同一题目当天只复习一次。答对或答错会自动按艾宾浩斯记忆曲线安排后续复习。"
+                    )
+                }
+            }
+
+            Section {
+                Toggle(isOn: $aiSummaryEnabled) {
+                    HStack {
+                        SettingsIcon(name: "sparkles", color: .purple)
+                        Text("启用 AI 今日小结")
+                    }
+                }
+
+                if aiSummaryEnabled {
+                    Picker(selection: $aiSummaryModelRawValue) {
+                        ForEach(DeepSeekSummaryModel.allCases) { model in
+                            Text(model.title).tag(model.rawValue)
+                        }
+                    } label: {
+                        HStack {
+                            SettingsIcon(name: "brain.head.profile", color: .indigo)
+                            Text("DeepSeek 模型")
+                        }
+                    }
+
+                    SecureField("DeepSeek API Key", text: $deepSeekAPIKey)
+                        .textContentType(.password)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onSubmit {
+                            saveDeepSeekAPIKey()
+                        }
+
+                    HStack {
+                        Button {
+                            saveDeepSeekAPIKey()
+                        } label: {
+                            Label("保存 Key", systemImage: "key.fill")
+                        }
+                        .buttonStyle(.borderless)
+
+                        Spacer()
+
+                        Button(role: .destructive) {
+                            clearDeepSeekAPIKey()
+                        } label: {
+                            Label("清空", systemImage: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+
+                    Button {
+                        testDeepSeekConnection()
+                    } label: {
+                        HStack {
+                            SettingsIcon(name: "network", color: .blue)
+                            Text("测试连接")
+                            Spacer()
+                            if isTestingDeepSeekConnection {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                        }
+                    }
+                    .disabled(isTestingDeepSeekConnection || deepSeekAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            } header: {
+                Text("AI 小结")
+            } footer: {
+                VStack(alignment: .leading, spacing: 6) {
+                    SettingsNoteRow(
+                        icon: "lock.shield.fill",
+                        text: "DeepSeek API Key 只保存在本机 Keychain，不进入 iCloud 同步、SwiftData 或备份导出。"
+                    )
+                    SettingsNoteRow(
+                        icon: "arrow.up.doc.fill",
+                        text: "启用后，首页会把当天复习、听写、任务和积分统计发送给 DeepSeek 生成小结；不会上传完整题库和历史记录。"
                     )
                 }
             }
@@ -365,6 +445,9 @@ struct SettingsView: View {
         }
         .navigationTitle("设置")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            loadDeepSeekAPIKey()
+        }
         .fileExporter(
             isPresented: $isExportingBackup,
             document: exportDocument,
@@ -626,6 +709,86 @@ struct SettingsView: View {
                 title: "更新失败",
                 message: error.localizedDescription
             )
+        }
+    }
+
+    private func loadDeepSeekAPIKey() {
+        do {
+            deepSeekAPIKey = try DeepSeekAPIKeyStore.loadAPIKey()
+        } catch {
+            showInfoAlert(title: "读取 API Key 失败", message: error.localizedDescription)
+        }
+    }
+
+    private func saveDeepSeekAPIKey() {
+        let trimmedKey = deepSeekAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKey.isEmpty else {
+            showInfoAlert(title: "缺少 API Key", message: "请先填写 DeepSeek API Key；如果要删除已保存的 Key，请点「清空」。")
+            return
+        }
+
+        do {
+            try DeepSeekAPIKeyStore.saveAPIKey(trimmedKey)
+            deepSeekAPIKey = try DeepSeekAPIKeyStore.loadAPIKey()
+            showInfoAlert(title: "保存成功", message: "DeepSeek API Key 已保存在本机 Keychain。")
+        } catch {
+            showInfoAlert(title: "保存失败", message: error.localizedDescription)
+        }
+    }
+
+    private func clearDeepSeekAPIKey() {
+        DeepSeekAPIKeyStore.deleteAPIKey()
+        deepSeekAPIKey = ""
+        showInfoAlert(title: "已清空", message: "DeepSeek API Key 已从本机 Keychain 移除。")
+    }
+
+    private func testDeepSeekConnection() {
+        let trimmedKey = deepSeekAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKey.isEmpty else {
+            showInfoAlert(title: "缺少 API Key", message: "请先填写 DeepSeek API Key。")
+            return
+        }
+
+        isTestingDeepSeekConnection = true
+        Task {
+            do {
+                try DeepSeekAPIKeyStore.saveAPIKey(trimmedKey)
+                let model = DeepSeekSummaryModel(rawValue: aiSummaryModelRawValue) ?? .flash
+                let input = DailySummaryInput(
+                    date: DailySummaryInput.dateKey(),
+                    locale: "zh-Hans",
+                    tone: "parent_encouraging",
+                    childName: settings.childName.isEmpty ? "小朋友" : settings.childName,
+                    metrics: DailySummaryInput.Metrics(
+                        reviewCompleted: 1,
+                        reviewCorrect: 1,
+                        reviewWrong: 0,
+                        reviewAccuracyText: "100%",
+                        dictationReviewedEntries: 0,
+                        tasksCompleted: 1,
+                        tasksPending: 0,
+                        pointsEarnedToday: 6,
+                        currentStreak: 1
+                    ),
+                    highlights: DailySummaryInput.Highlights(
+                        completedTaskTitles: ["测试连接"],
+                        wrongReviewSamples: []
+                    )
+                )
+                let result = try await DeepSeekSummaryClient(apiKey: trimmedKey, model: model.rawValue)
+                    .generateSummary(for: input)
+
+                await MainActor.run {
+                    isTestingDeepSeekConnection = false
+                    deepSeekAPIKey = trimmedKey
+                    showInfoAlert(title: "连接成功", message: result.displayText)
+                }
+            } catch {
+                await MainActor.run {
+                    isTestingDeepSeekConnection = false
+                    showInfoAlert(title: "连接失败", message: error.localizedDescription)
+                }
+            }
         }
     }
 

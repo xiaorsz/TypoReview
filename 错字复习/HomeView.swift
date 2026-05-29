@@ -34,10 +34,12 @@ private struct HomeReviewItemProjection: Identifiable, Hashable {
 }
 
 private struct HomeReviewRecordProjection {
+    let itemID: UUID
     let reviewedAt: Date
     let result: ReviewResult
 
     init(_ record: ReviewRecord) {
+        itemID = record.itemID
         reviewedAt = record.reviewedAt
         result = record.result
     }
@@ -73,6 +75,7 @@ private struct HomeDictationEntryProjection: Identifiable, Hashable {
     let type: ReviewItemType
     let content: String
     let prompt: String
+    let result: DictationResult
 
     init(_ entry: DictationEntry) {
         id = entry.id
@@ -81,6 +84,7 @@ private struct HomeDictationEntryProjection: Identifiable, Hashable {
         type = entry.type
         content = entry.content
         prompt = entry.prompt
+        result = entry.result
     }
 }
 
@@ -265,6 +269,39 @@ private struct HomeTaskDisplayItem: Identifiable {
     }
 }
 
+private struct HomeCalendarTaskProjection: Sendable {
+    let task: TaskProjection
+    let isArchived: Bool
+
+    init(_ task: TaskItem) {
+        self.task = TaskProjection(task)
+        self.isArchived = task.isArchived
+    }
+}
+
+private struct HomeCalendarWeekSummary: Identifiable, Hashable {
+    let title: String
+    let days: [HomeCalendarDaySummary]
+
+    var id: String { title }
+}
+
+private struct HomeCalendarDaySummary: Identifiable, Hashable {
+    let date: Date
+    let taskCompletedCount: Int
+    let taskTotalCount: Int
+    let reviewCompletedCount: Int
+    let dictationReviewedCount: Int
+    let isToday: Bool
+
+    var id: TimeInterval { date.timeIntervalSinceReferenceDate }
+    var hasIncompleteTasks: Bool { taskCompletedCount < taskTotalCount }
+    var hasTasks: Bool { taskTotalCount > 0 }
+    var hasActivity: Bool {
+        hasTasks || reviewCompletedCount > 0 || dictationReviewedCount > 0
+    }
+}
+
 private struct HomeReviewRoute: Identifiable, Hashable {
     let itemIDs: [UUID]
     let style: ReviewInteractionStyle
@@ -313,6 +350,10 @@ struct HomeView: View {
     @State private var isViewVisible = false
     @State private var isDashboardRefreshInFlight = false
     @State private var needsDashboardRefreshAfterCurrent = false
+    @State private var dailySummaryPresentation: DailySummaryPresentation?
+    @State private var dailySummaryTask: Task<Void, Never>?
+    @AppStorage(DailySummaryAISettings.isEnabledKey) private var aiSummaryEnabled = false
+    @AppStorage(DailySummaryAISettings.modelKey) private var aiSummaryModelRawValue = DailySummaryAISettings.defaultModel
 
     private let isPad = UIDevice.current.userInterfaceIdiom == .pad
 
@@ -354,6 +395,14 @@ struct HomeView: View {
         let title: String
     }
 
+    private struct DailySummaryPresentation {
+        let inputHash: String
+        let modelRawValue: String
+        let result: DailySummaryResult
+        let isAIResult: Bool
+        let isLoading: Bool
+    }
+
     private struct DashboardSnapshot {
         let childName: String
         let dueItems: [HomeReviewItemProjection]
@@ -363,6 +412,7 @@ struct HomeView: View {
         let todayWrongCount: Int
         let todayCorrectCount: Int
         let todayAccuracyText: String
+        let todayDictationReviewedEntryCount: Int
         let pendingDictationCount: Int
         let pendingDictationSessionCount: Int
         let latestDictationSession: HomeDictationSessionProjection?
@@ -375,9 +425,12 @@ struct HomeView: View {
         let todayCompletedTasks: [HomeTaskDisplayItem]
         let todayCompletedTaskCount: Int
         let totalPendingTaskCount: Int
+        let calendarWeeks: [HomeCalendarWeekSummary]
         let activeTaskCount: Int
         let pointBalance: Int
+        let pointsEarnedToday: Int
         let currentPointStreak: Int
+        let wrongReviewSamples: [String]
         let heroIconName: String
         let heroMessage: String
         let heroSubtitle: String
@@ -403,8 +456,12 @@ struct HomeView: View {
             dictationEntries: [HomeDictationEntryProjection],
             schedules: [HomeScheduleProjection],
             taskItems: [HomeTaskDisplayItem],
+            calendarTasks: [HomeCalendarTaskProjection],
+            taskExecutions: [TaskExecutionRecordProjection],
+            taskSubtasks: [TaskSubitemProjection],
             activeTaskCount: Int,
             pointBalance: Int,
+            pointsEarnedToday: Int,
             currentPointStreak: Int,
             referenceDate: Date = .now
         ) -> DashboardSnapshot {
@@ -438,6 +495,27 @@ struct HomeView: View {
             let tWrong = todayRecs.filter { $0.result == .wrong }.count
             let tCorrect = todayRecs.filter { $0.result == .correct }.count
             let tAccuracy = tCompleted > 0 ? "\(Int((Double(tCorrect) / Double(tCompleted) * 100).rounded()))%" : "--"
+            let reviewContentByID = Dictionary(
+                reviewItems.map { ($0.id, $0.content) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            let wrongSamples = Array(
+                todayRecs
+                    .filter { $0.result == .wrong }
+                    .compactMap { reviewContentByID[$0.itemID] }
+                    .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                    .prefix(5)
+            )
+            let calendarWeeks = buildCalendarWeeks(
+                tasks: calendarTasks,
+                taskExecutions: taskExecutions,
+                taskSubtasks: taskSubtasks,
+                reviewRecords: reviewRecords,
+                dictationSessions: dictationSessions,
+                dictationEntries: dictationEntries,
+                referenceDate: referenceDate,
+                calendar: calendar
+            )
 
             let pendingSessions = dictationSessions.filter {
                 !$0.isReviewed && calendar.startOfDay(for: $0.scheduledDate) <= todayStart
@@ -456,8 +534,18 @@ struct HomeView: View {
                 .mapValues { entries in entries.sorted { $0.sortOrder < $1.sortOrder } }
             let pendingSessionIDs = Set(pendingSessions.map(\.id))
             let latestSessionID = latestDS?.id
+            let todayReviewedSessionIDs = Set(
+                dictationSessions.compactMap { session -> UUID? in
+                    guard let reviewedAt = session.reviewedAt,
+                          calendar.isDate(reviewedAt, inSameDayAs: referenceDate) else {
+                        return nil
+                    }
+                    return session.id
+                }
+            )
             var pendingDictationEntryCount = 0
             var latestDictationEntryCount = 0
+            var todayDictationReviewedEntryCount = 0
 
             for entry in dictationEntries {
                 if pendingSessionIDs.contains(entry.sessionID) {
@@ -465,6 +553,9 @@ struct HomeView: View {
                 }
                 if entry.sessionID == latestSessionID {
                     latestDictationEntryCount += 1
+                }
+                if todayReviewedSessionIDs.contains(entry.sessionID), entry.result != .pending {
+                    todayDictationReviewedEntryCount += 1
                 }
             }
 
@@ -555,6 +646,7 @@ struct HomeView: View {
                 todayWrongCount: tWrong,
                 todayCorrectCount: tCorrect,
                 todayAccuracyText: tAccuracy,
+                todayDictationReviewedEntryCount: todayDictationReviewedEntryCount,
                 pendingDictationCount: pendingDictationEntryCount,
                 pendingDictationSessionCount: pendingDictationSessionCount,
                 latestDictationSession: latestDS,
@@ -567,19 +659,324 @@ struct HomeView: View {
                 todayCompletedTasks: tCompletedTasks,
                 todayCompletedTaskCount: tCompletedTaskCount,
                 totalPendingTaskCount: totPendingTaskCount,
+                calendarWeeks: calendarWeeks,
                 activeTaskCount: activeTaskCount,
                 pointBalance: pointBalance,
+                pointsEarnedToday: pointsEarnedToday,
                 currentPointStreak: currentPointStreak,
+                wrongReviewSamples: wrongSamples,
                 heroIconName: hIcon,
                 heroMessage: hMessage,
                 heroSubtitle: hSubtitle,
                 heroGradientColors: hGradient
             )
         }
+
+        private static func buildCalendarWeeks(
+            tasks: [HomeCalendarTaskProjection],
+            taskExecutions: [TaskExecutionRecordProjection],
+            taskSubtasks: [TaskSubitemProjection],
+            reviewRecords: [HomeReviewRecordProjection],
+            dictationSessions: [HomeDictationSessionProjection],
+            dictationEntries: [HomeDictationEntryProjection],
+            referenceDate: Date,
+            calendar: Calendar
+        ) -> [HomeCalendarWeekSummary] {
+            let today = calendar.startOfDay(for: referenceDate)
+            let currentWeekStart = calendar.dateInterval(of: .weekOfYear, for: today)?.start ?? today
+            return [
+                HomeCalendarWeekSummary(
+                    title: "本周",
+                    days: buildCalendarDays(
+                        startingAt: currentWeekStart,
+                        tasks: tasks,
+                        taskExecutions: taskExecutions,
+                        taskSubtasks: taskSubtasks,
+                        reviewRecords: reviewRecords,
+                        dictationSessions: dictationSessions,
+                        dictationEntries: dictationEntries,
+                        today: today,
+                        calendar: calendar
+                    )
+                )
+            ]
+        }
+
+        private static func buildCalendarDays(
+            startingAt weekStart: Date,
+            tasks: [HomeCalendarTaskProjection],
+            taskExecutions: [TaskExecutionRecordProjection],
+            taskSubtasks: [TaskSubitemProjection],
+            reviewRecords: [HomeReviewRecordProjection],
+            dictationSessions: [HomeDictationSessionProjection],
+            dictationEntries: [HomeDictationEntryProjection],
+            today: Date,
+            calendar: Calendar
+        ) -> [HomeCalendarDaySummary] {
+            let executionsByTask = Dictionary(grouping: taskExecutions, by: \.taskID)
+            let subtasksByExecutionID = Dictionary(
+                grouping: taskSubtasks.filter { !$0.isArchived && $0.taskExecutionID != nil },
+                by: { $0.taskExecutionID! }
+            )
+
+            return (0..<7).compactMap { offset in
+                guard let date = calendar.date(byAdding: .day, value: offset, to: weekStart) else { return nil }
+                let day = calendar.startOfDay(for: date)
+                let taskCounts = taskCompletionCounts(
+                    on: day,
+                    tasks: tasks,
+                    executionsByTask: executionsByTask,
+                    subtasksByExecutionID: subtasksByExecutionID,
+                    calendar: calendar
+                )
+                let reviewCount = reviewRecords.filter {
+                    calendar.isDate($0.reviewedAt, inSameDayAs: day)
+                }.count
+                let reviewedSessionIDs = Set(
+                    dictationSessions.compactMap { session -> UUID? in
+                        guard let reviewedAt = session.reviewedAt,
+                              calendar.isDate(reviewedAt, inSameDayAs: day) else {
+                            return nil
+                        }
+                        return session.id
+                    }
+                )
+                let dictationReviewedCount = dictationEntries.filter {
+                    reviewedSessionIDs.contains($0.sessionID)
+                }.count
+
+                return HomeCalendarDaySummary(
+                    date: day,
+                    taskCompletedCount: taskCounts.completed,
+                    taskTotalCount: taskCounts.total,
+                    reviewCompletedCount: reviewCount,
+                    dictationReviewedCount: dictationReviewedCount,
+                    isToday: calendar.isDate(day, inSameDayAs: today)
+                )
+            }
+        }
+
+        private static func taskCompletionCounts(
+            on day: Date,
+            tasks: [HomeCalendarTaskProjection],
+            executionsByTask: [UUID: [TaskExecutionRecordProjection]],
+            subtasksByExecutionID: [UUID: [TaskSubitemProjection]],
+            calendar: Calendar
+        ) -> (completed: Int, total: Int) {
+            var completed = 0
+            var total = 0
+
+            for calendarTask in tasks {
+                let occurrenceDay = calendar.startOfDay(for: day)
+                guard taskOccurs(calendarTask.task, on: occurrenceDay, calendar: calendar) else { continue }
+
+                let execution = preferredExecutionRecord(
+                    for: calendarTask.task.id,
+                    on: occurrenceDay,
+                    in: executionsByTask[calendarTask.task.id] ?? [],
+                    calendar: calendar
+                )
+                guard !calendarTask.isArchived || execution != nil else { continue }
+
+                total += 1
+                if isTaskCompleted(execution: execution, subtasksByExecutionID: subtasksByExecutionID) {
+                    completed += 1
+                }
+            }
+
+            return (completed, total)
+        }
+
+        private static func taskOccurs(
+            _ task: TaskProjection,
+            on day: Date,
+            calendar: Calendar
+        ) -> Bool {
+            let start = calendar.startOfDay(for: task.startDate)
+            guard day >= start else { return false }
+
+            if let endDate = task.endDate, day > calendar.startOfDay(for: endDate) {
+                return false
+            }
+
+            switch task.recurrence.kind {
+            case .once:
+                return calendar.isDate(day, inSameDayAs: start)
+            case .daily:
+                return true
+            case .weekly:
+                return task.recurrence.weekdays.contains(calendar.component(.weekday, from: day))
+            }
+        }
+
+        private static func preferredExecutionRecord(
+            for taskID: UUID,
+            on day: Date,
+            in records: [TaskExecutionRecordProjection],
+            calendar: Calendar
+        ) -> TaskExecutionRecordProjection? {
+            records
+                .filter { $0.taskID == taskID && calendar.isDate($0.occurrenceDate, inSameDayAs: day) }
+                .max { lhs, rhs in
+                    executionRecordSortKey(for: lhs) < executionRecordSortKey(for: rhs)
+                }
+        }
+
+        private static func isTaskCompleted(
+            execution: TaskExecutionRecordProjection?,
+            subtasksByExecutionID: [UUID: [TaskSubitemProjection]]
+        ) -> Bool {
+            guard let execution else { return false }
+            let subtasks = subtasksByExecutionID[execution.id] ?? []
+
+            if subtasks.isEmpty {
+                return execution.status == .completed
+            }
+
+            return subtasks.allSatisfy { $0.status == .completed }
+        }
+
+        private static func executionRecordSortKey(
+            for record: TaskExecutionRecordProjection
+        ) -> (Int, Date, Date, UUID) {
+            (
+                executionStatusSortPriority(record.status),
+                record.completedAt ?? .distantPast,
+                record.updatedAt,
+                record.id
+            )
+        }
+
+        private static func executionStatusSortPriority(_ status: TaskExecutionStatus) -> Int {
+            switch status {
+            case .pending:
+                return 0
+            case .completed:
+                return 1
+            case .skipped:
+                return 2
+            }
+        }
+    }
+
+    private func makeDailySummaryInput(from snapshot: DashboardSnapshot) -> DailySummaryInput {
+        DailySummaryInput(
+            date: DailySummaryInput.dateKey(),
+            locale: "zh-Hans",
+            tone: "parent_encouraging",
+            childName: snapshot.childName,
+            metrics: DailySummaryInput.Metrics(
+                reviewCompleted: snapshot.todayCompletedCount,
+                reviewCorrect: snapshot.todayCorrectCount,
+                reviewWrong: snapshot.todayWrongCount,
+                reviewAccuracyText: snapshot.todayAccuracyText,
+                dictationReviewedEntries: snapshot.todayDictationReviewedEntryCount,
+                tasksCompleted: snapshot.todayCompletedTaskCount,
+                tasksPending: snapshot.totalPendingTaskCount,
+                pointsEarnedToday: snapshot.pointsEarnedToday,
+                currentStreak: snapshot.currentPointStreak
+            ),
+            highlights: DailySummaryInput.Highlights(
+                completedTaskTitles: Array(snapshot.todayCompletedTasks.map(\.task.title).prefix(5)),
+                wrongReviewSamples: snapshot.wrongReviewSamples
+            )
+        )
+    }
+
+    private func refreshDailySummary(for snapshot: DashboardSnapshot, force: Bool) {
+        let input = makeDailySummaryInput(from: snapshot)
+        let inputHash = input.stableHash()
+        let model = DeepSeekSummaryModel(rawValue: aiSummaryModelRawValue) ?? .flash
+        let fallbackResult = input.localFallbackResult()
+
+        guard aiSummaryEnabled else {
+            dailySummaryTask?.cancel()
+            dailySummaryPresentation = DailySummaryPresentation(
+                inputHash: inputHash,
+                modelRawValue: model.rawValue,
+                result: fallbackResult,
+                isAIResult: false,
+                isLoading: false
+            )
+            return
+        }
+
+        guard let apiKey = try? DeepSeekAPIKeyStore.loadAPIKey(),
+              !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            dailySummaryTask?.cancel()
+            dailySummaryPresentation = DailySummaryPresentation(
+                inputHash: inputHash,
+                modelRawValue: model.rawValue,
+                result: fallbackResult,
+                isAIResult: false,
+                isLoading: false
+            )
+            return
+        }
+
+        if !force,
+           let cachedResult = DailySummaryCache.load(inputHash: inputHash, model: model.rawValue) {
+            dailySummaryTask?.cancel()
+            dailySummaryPresentation = DailySummaryPresentation(
+                inputHash: inputHash,
+                modelRawValue: model.rawValue,
+                result: cachedResult,
+                isAIResult: true,
+                isLoading: false
+            )
+            return
+        }
+
+        dailySummaryTask?.cancel()
+        dailySummaryPresentation = DailySummaryPresentation(
+            inputHash: inputHash,
+            modelRawValue: model.rawValue,
+            result: fallbackResult,
+            isAIResult: false,
+            isLoading: true
+        )
+
+        dailySummaryTask = Task {
+            do {
+                let result = try await DeepSeekSummaryClient(apiKey: apiKey, model: model.rawValue)
+                    .generateSummary(for: input)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    DailySummaryCache.save(result, inputHash: inputHash, model: model.rawValue)
+                    dailySummaryPresentation = DailySummaryPresentation(
+                        inputHash: inputHash,
+                        modelRawValue: model.rawValue,
+                        result: result,
+                        isAIResult: true,
+                        isLoading: false
+                    )
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    dailySummaryPresentation = DailySummaryPresentation(
+                        inputHash: inputHash,
+                        modelRawValue: model.rawValue,
+                        result: fallbackResult,
+                        isAIResult: false,
+                        isLoading: false
+                    )
+                }
+            }
+        }
     }
 
     private func heroCard(_ snapshot: DashboardSnapshot) -> some View {
-        HStack(alignment: .center, spacing: 16) {
+        let summaryInput = makeDailySummaryInput(from: snapshot)
+        let summaryHash = summaryInput.stableHash()
+        let summaryResult = dailySummaryPresentation?.inputHash == summaryHash
+            ? dailySummaryPresentation?.result
+            : summaryInput.localFallbackResult()
+        let isSummaryLoading = dailySummaryPresentation?.inputHash == summaryHash
+            ? dailySummaryPresentation?.isLoading == true
+            : false
+
+        return HStack(alignment: .center, spacing: 16) {
             Image(systemName: snapshot.heroIconName)
                 .font(.system(size: 32))
                 .symbolRenderingMode(.hierarchical)
@@ -594,10 +991,39 @@ struct HomeView: View {
                     .foregroundStyle(.white)
                     .lineLimit(1)
 
-                Text(snapshot.heroSubtitle)
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.85))
-                    .lineLimit(2)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "sparkles")
+                            .font(.caption2.weight(.semibold))
+                        Text("今日小结")
+                            .font(.caption2.weight(.semibold))
+
+                        if isSummaryLoading {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.white)
+                        }
+
+                        if aiSummaryEnabled {
+                            Button {
+                                refreshDailySummary(for: snapshot, force: true)
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.caption2.weight(.semibold))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isSummaryLoading)
+                            .accessibilityLabel("重新生成今日小结")
+                        }
+                    }
+                    .foregroundStyle(.white.opacity(0.9))
+
+                    Text(summaryResult?.displayText ?? snapshot.heroSubtitle)
+                        .font(.subheadline)
+                        .lineSpacing(2)
+                        .foregroundStyle(.white.opacity(0.85))
+                        .lineLimit(3)
+                }
                 
                 syncStatusBadge
                     .padding(.top, 2)
@@ -666,6 +1092,135 @@ struct HomeView: View {
         .buttonStyle(.plain)
     }
 
+    private func learningCalendarCard(_ snapshot: DashboardSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Image(systemName: "calendar.badge.checkmark")
+                    .font(.title3)
+                    .foregroundStyle(.blue)
+                Text("学习日历")
+                    .font(.headline)
+                Spacer()
+                Text("本周")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(spacing: 8) {
+                calendarWeekdayHeader
+
+                ForEach(snapshot.calendarWeeks) { week in
+                    HStack(spacing: 4) {
+                        ForEach(week.days) { day in
+                            calendarDayCell(day)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(20)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private var calendarWeekdayHeader: some View {
+        HStack(spacing: 4) {
+            ForEach(calendarWeekdayHeaderTexts, id: \.self) { weekday in
+                Text(weekday)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .padding(.horizontal, 1)
+    }
+
+    private var calendarWeekdayHeaderTexts: [String] {
+        let shortSymbols = Calendar.current.veryShortWeekdaySymbols
+        let firstWeekday = Calendar.current.firstWeekday
+        return (0..<7).map { offset in
+            let index = (firstWeekday - 1 + offset) % 7
+            return shortSymbols[index]
+        }
+    }
+
+    private func calendarDayCell(_ day: HomeCalendarDaySummary) -> some View {
+        VStack(spacing: 4) {
+            ZStack(alignment: .topTrailing) {
+                Text(calendarDayText(for: day.date))
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .foregroundStyle(calendarDayTint(day))
+                    .frame(maxWidth: .infinity)
+
+                if day.isToday {
+                    Text("今")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.blue)
+                        .padding(.trailing, 1)
+                }
+            }
+            .frame(height: 18)
+
+            Text(day.hasTasks ? "\(day.taskCompletedCount)/\(day.taskTotalCount)" : "无")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(day.hasTasks ? calendarDayTint(day) : .secondary)
+                .lineLimit(1)
+
+            HStack(spacing: 3) {
+                calendarMiniMetric(icon: "book.closed", value: day.reviewCompletedCount)
+                calendarMiniMetric(icon: "text.book.closed", value: day.dictationReviewedCount)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 62)
+        .padding(.vertical, 6)
+        .background(calendarDayBackground(day), in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            if day.isToday {
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(.blue.opacity(0.7), lineWidth: 1.5)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(calendarAccessibilityText(for: day))
+    }
+
+    private func calendarMiniMetric(icon: String, value: Int) -> some View {
+        HStack(spacing: 1) {
+            Image(systemName: icon)
+                .font(.system(size: 8, weight: .semibold))
+            Text("\(value)")
+                .font(.system(size: 9, weight: .semibold))
+        }
+        .foregroundStyle(value > 0 ? .primary : .tertiary)
+        .frame(minWidth: 16)
+    }
+
+    private func calendarDayBackground(_ day: HomeCalendarDaySummary) -> Color {
+        if !day.hasTasks {
+            return Color(uiColor: .tertiarySystemGroupedBackground)
+        }
+        return day.hasIncompleteTasks ? .orange.opacity(0.14) : .green.opacity(0.14)
+    }
+
+    private func calendarDayTint(_ day: HomeCalendarDaySummary) -> Color {
+        if !day.hasTasks {
+            return .secondary
+        }
+        return day.hasIncompleteTasks ? .orange : .green
+    }
+
+    private func calendarDayText(for date: Date) -> String {
+        "\(Calendar.current.component(.day, from: date))"
+    }
+
+    private func calendarAccessibilityText(for day: HomeCalendarDaySummary) -> String {
+        let dateText = day.date.formatted(.dateTime.month().day().weekday())
+        let taskText = day.hasTasks
+            ? "任务完成 \(day.taskCompletedCount) 项，共 \(day.taskTotalCount) 项"
+            : "无任务"
+        return "\(dateText)，\(taskText)，复习 \(day.reviewCompletedCount) 项，听写 \(day.dictationReviewedCount) 条"
+    }
+
     var body: some View {
         Group {
             if let snapshot = dashboardSnapshot {
@@ -698,12 +1253,23 @@ struct HomeView: View {
                 }
             }
         ))
+        .onChange(of: aiSummaryEnabled) { _, _ in
+            if let dashboardSnapshot {
+                refreshDailySummary(for: dashboardSnapshot, force: true)
+            }
+        }
+        .onChange(of: aiSummaryModelRawValue) { _, _ in
+            if let dashboardSnapshot {
+                refreshDailySummary(for: dashboardSnapshot, force: true)
+            }
+        }
         .onDisappear {
             isViewVisible = false
             #if DEBUG
             DebugPerf.mark("HomeView onDisappear")
             #endif
             dashboardSnapshotTask?.cancel()
+            dailySummaryTask?.cancel()
         }
         .sheet(item: $previewSession) { session in
             if let snapshot = dashboardSnapshot {
@@ -887,6 +1453,10 @@ struct HomeView: View {
                     FetchDescriptor<TaskSubitem>(predicate: #Predicate<TaskSubitem> { !$0.isArchived })
                 )) ?? []
                 let pointSnapshot = PointLedgerService.currentSnapshot(in: backgroundContext)
+                let pointEntryModels = (try? backgroundContext.fetch(FetchDescriptor<PointLedgerEntry>())) ?? []
+                let pointsEarnedToday = pointEntryModels
+                    .filter { $0.amount > 0 && calendar.isDate($0.createdAt, inSameDayAs: referenceDate) }
+                    .reduce(0) { $0 + $1.amount }
 
                 let autoArchivedCompletedAtByTaskID = Dictionary(
                     executionModels.compactMap { record -> (UUID, Date)? in
@@ -912,10 +1482,12 @@ struct HomeView: View {
                 let activeTaskModels = deduplicatedTaskModels.filter { !$0.isArchived }
 
                 let taskProjections = deduplicatedVisibleTaskModels.map(TaskProjection.init)
+                let taskExecutionProjections = executionModels.map(TaskExecutionRecordProjection.init)
+                let taskSubitemProjections = subtaskModels.map(TaskSubitemProjection.init)
                 let taskProjectionResults = TodayTaskProjectionBuilder.build(
                     from: taskProjections,
-                    executions: executionModels.map(TaskExecutionRecordProjection.init),
-                    subtasks: subtaskModels.map(TaskSubitemProjection.init),
+                    executions: taskExecutionProjections,
+                    subtasks: taskSubitemProjections,
                     on: referenceDate
                 )
                 let tasksByID = Dictionary(
@@ -963,8 +1535,12 @@ struct HomeView: View {
                     dictationEntries: entryModels.map(HomeDictationEntryProjection.init),
                     schedules: scheduleModels.map(HomeScheduleProjection.init),
                     taskItems: taskDisplayItems,
+                    calendarTasks: deduplicatedTaskModels.map(HomeCalendarTaskProjection.init),
+                    taskExecutions: taskExecutionProjections,
+                    taskSubtasks: taskSubitemProjections,
                     activeTaskCount: activeTaskModels.count,
                     pointBalance: pointSnapshot.balance,
+                    pointsEarnedToday: pointsEarnedToday,
                     currentPointStreak: pointSnapshot.currentStreak,
                     referenceDate: referenceDate
                 )
@@ -973,6 +1549,7 @@ struct HomeView: View {
             guard !Task.isCancelled else { return }
             guard canRenderLiveContent else { return }
             dashboardSnapshot = snapshot
+            refreshDailySummary(for: snapshot, force: false)
             #if DEBUG
             DebugPerf.mark("HomeView dashboardSnapshot applied")
             #endif
@@ -994,6 +1571,8 @@ struct HomeView: View {
                     todayScheduleCard(snapshot)
 
                     todayTasksCard(snapshot)
+
+                    learningCalendarCard(snapshot)
 
                     pointsSummaryCard(snapshot)
 
@@ -1722,6 +2301,7 @@ struct HomeView: View {
                 todayWrongCount: snapshot.todayWrongCount,
                 todayCorrectCount: snapshot.todayCorrectCount,
                 todayAccuracyText: snapshot.todayAccuracyText,
+                todayDictationReviewedEntryCount: snapshot.todayDictationReviewedEntryCount,
                 pendingDictationCount: snapshot.pendingDictationCount,
                 pendingDictationSessionCount: snapshot.pendingDictationSessionCount,
                 latestDictationSession: snapshot.latestDictationSession,
@@ -1734,14 +2314,21 @@ struct HomeView: View {
                 todayCompletedTasks: completedTodayPending ? snapshot.todayCompletedTasks + [newItem] : snapshot.todayCompletedTasks,
                 todayCompletedTaskCount: snapshot.todayCompletedTaskCount + (completedTodayPending ? 1 : 0),
                 totalPendingTaskCount: max(snapshot.totalPendingTaskCount - 1, 0),
+                calendarWeeks: snapshot.calendarWeeks,
                 activeTaskCount: snapshot.activeTaskCount,
                 pointBalance: snapshot.pointBalance + PointLedgerService.taskRewardAmount,
+                pointsEarnedToday: snapshot.pointsEarnedToday + PointLedgerService.taskRewardAmount,
                 currentPointStreak: snapshot.currentPointStreak,
+                wrongReviewSamples: snapshot.wrongReviewSamples,
                 heroIconName: snapshot.heroIconName,
                 heroMessage: snapshot.heroMessage,
                 heroSubtitle: snapshot.heroSubtitle,
                 heroGradientColors: snapshot.heroGradientColors
             )
+        }
+
+        if let dashboardSnapshot {
+            refreshDailySummary(for: dashboardSnapshot, force: false)
         }
     }
 
