@@ -394,6 +394,8 @@ struct StatGridCard: View {
                 Image(systemName: icon)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(tint)
+                    .frame(width: 24, height: 24)
+                    .background(tint.opacity(0.15), in: Circle())
                 Text(title)
                     .font(.subheadline)
                     .lineLimit(1)
@@ -402,6 +404,7 @@ struct StatGridCard: View {
             Text(value)
                 .font(.system(.title2, design: .rounded, weight: .bold))
                 .foregroundStyle(tint)
+                .contentTransition(.numericText())
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)

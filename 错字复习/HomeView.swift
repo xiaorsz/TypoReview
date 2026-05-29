@@ -1071,9 +1071,14 @@ struct HomeView: View {
                     Text("积分")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.primary)
-                    Text("连续学习 \(snapshot.currentPointStreak) 天")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        Image(systemName: "flame.fill")
+                            .font(.caption2)
+                            .foregroundStyle(snapshot.currentPointStreak >= 7 ? .orange : .secondary)
+                        Text("连续 \(snapshot.currentPointStreak) 天")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(snapshot.currentPointStreak >= 7 ? .orange : .secondary)
+                    }
                 }
 
                 Spacer()
@@ -1093,30 +1098,56 @@ struct HomeView: View {
     }
 
     private func learningCalendarCard(_ snapshot: DashboardSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let weekDays = snapshot.calendarWeeks.first?.days ?? []
+        let daysWithTasks = weekDays.filter { $0.hasTasks }.count
+        let daysCompleted = weekDays.filter { $0.hasTasks && !$0.hasIncompleteTasks }.count
+
+        return VStack(alignment: .leading, spacing: isPad ? 20 : 14) {
             HStack {
                 Image(systemName: "calendar.badge.checkmark")
-                    .font(.title3)
+                    .font(isPad ? .title2 : .title3)
                     .foregroundStyle(.blue)
                 Text("学习日历")
-                    .font(.headline)
+                    .font(isPad ? .title3.weight(.bold) : .headline)
                 Spacer()
-                Text("本周")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                if daysWithTasks > 0 {
+                    Text("\(daysCompleted)/\(daysWithTasks) 天完成")
+                        .font(isPad ? Font.subheadline.weight(.bold) : Font.caption.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, isPad ? 14 : 10)
+                        .padding(.vertical, isPad ? 6 : 4)
+                        .background(
+                            daysCompleted == daysWithTasks ? Color.green : Color.blue,
+                            in: Capsule()
+                        )
+                } else {
+                    Text("本周")
+                        .font(isPad ? Font.subheadline.weight(.semibold) : Font.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
             }
 
-            VStack(spacing: 8) {
+            VStack(spacing: isPad ? 12 : 8) {
                 calendarWeekdayHeader
 
                 ForEach(snapshot.calendarWeeks) { week in
-                    HStack(spacing: 4) {
+                    HStack(spacing: isPad ? 8 : 4) {
                         ForEach(week.days) { day in
                             calendarDayCell(day)
                         }
                     }
                 }
             }
+
+            // 底部颜色图例
+            HStack(spacing: isPad ? 24 : 16) {
+                calendarLegendItem(color: .green, label: "已完成")
+                calendarLegendItem(color: .orange, label: "进行中")
+                calendarLegendItem(color: .purple, label: "复习")
+                calendarLegendItem(color: .cyan, label: "听写")
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 4)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(20)
@@ -1127,7 +1158,7 @@ struct HomeView: View {
         HStack(spacing: 4) {
             ForEach(calendarWeekdayHeaderTexts, id: \.self) { weekday in
                 Text(weekday)
-                    .font(.system(size: 10, weight: .bold))
+                    .font(.system(size: isPad ? 14 : 10, weight: .bold))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity)
             }
@@ -1145,64 +1176,112 @@ struct HomeView: View {
     }
 
     private func calendarDayCell(_ day: HomeCalendarDaySummary) -> some View {
-        VStack(spacing: 4) {
-            ZStack(alignment: .topTrailing) {
+        VStack(spacing: isPad ? 10 : 6) {
+            // 日期数字 + 今天圆点指示器
+            VStack(spacing: isPad ? 4 : 2) {
                 Text(calendarDayText(for: day.date))
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
-                    .foregroundStyle(calendarDayTint(day))
+                    .font(.system(size: isPad ? 22 : 16, weight: .bold, design: .rounded))
+                    .foregroundStyle(day.isToday ? .white : calendarDayTint(day))
                     .frame(maxWidth: .infinity)
 
-                if day.isToday {
-                    Text("今")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.blue)
-                        .padding(.trailing, 1)
+                Circle()
+                    .fill(day.isToday ? .white : .clear)
+                    .frame(width: isPad ? 6 : 4, height: isPad ? 6 : 4)
+            }
+
+            // 任务进度环
+            if day.hasTasks {
+                ZStack {
+                    Circle()
+                        .stroke(calendarDayTint(day).opacity(0.25), lineWidth: isPad ? 3.5 : 2.5)
+                    Circle()
+                        .trim(from: 0, to: CGFloat(day.taskCompletedCount) / CGFloat(max(day.taskTotalCount, 1)))
+                        .stroke(calendarDayTint(day), style: StrokeStyle(lineWidth: isPad ? 3.5 : 2.5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+
+                    if !day.hasIncompleteTasks {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: isPad ? 12 : 8, weight: .bold))
+                            .foregroundStyle(calendarDayTint(day))
+                    } else {
+                        Text("\(day.taskCompletedCount)")
+                            .font(.system(size: isPad ? 13 : 9, weight: .bold, design: .rounded))
+                            .foregroundStyle(calendarDayTint(day))
+                    }
+                }
+                .frame(width: isPad ? 32 : 22, height: isPad ? 32 : 22)
+
+                Text("\(day.taskCompletedCount)/\(day.taskTotalCount)")
+                    .font(.system(size: isPad ? 12 : 9, weight: .semibold, design: .rounded))
+                    .foregroundStyle(day.isToday ? .white.opacity(0.85) : calendarDayTint(day).opacity(0.8))
+            } else {
+                Text("—")
+                    .font(.system(size: isPad ? 16 : 11, weight: .medium))
+                    .foregroundStyle(.quaternary)
+                    .frame(width: isPad ? 32 : 22, height: isPad ? 32 : 22)
+
+                Text("无")
+                    .font(.system(size: isPad ? 12 : 9, weight: .semibold))
+                    .foregroundStyle(day.isToday ? .white.opacity(0.6) : .secondary.opacity(0.5))
+            }
+
+            // 底部复习/听写小药丸
+            HStack(spacing: isPad ? 4 : 2) {
+                if day.reviewCompletedCount > 0 {
+                    calendarMiniPill(color: .purple, value: day.reviewCompletedCount)
+                }
+                if day.dictationReviewedCount > 0 {
+                    calendarMiniPill(color: .cyan, value: day.dictationReviewedCount)
                 }
             }
-            .frame(height: 18)
-
-            Text(day.hasTasks ? "\(day.taskCompletedCount)/\(day.taskTotalCount)" : "无")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(day.hasTasks ? calendarDayTint(day) : .secondary)
-                .lineLimit(1)
-
-            HStack(spacing: 3) {
-                calendarMiniMetric(icon: "book.closed", value: day.reviewCompletedCount)
-                calendarMiniMetric(icon: "text.book.closed", value: day.dictationReviewedCount)
-            }
+            .frame(height: isPad ? 20 : 14)
         }
-        .frame(maxWidth: .infinity, minHeight: 62)
-        .padding(.vertical, 6)
-        .background(calendarDayBackground(day), in: RoundedRectangle(cornerRadius: 10))
+        .frame(maxWidth: .infinity, minHeight: isPad ? 120 : 80)
+        .padding(.vertical, isPad ? 12 : 6)
+        .padding(.horizontal, isPad ? 6 : 2)
+        .background(calendarDayBackground(day), in: RoundedRectangle(cornerRadius: isPad ? 18 : 12))
         .overlay {
             if day.isToday {
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(.blue.opacity(0.7), lineWidth: 1.5)
+                RoundedRectangle(cornerRadius: isPad ? 18 : 12)
+                    .stroke(.blue, lineWidth: 2)
             }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(calendarAccessibilityText(for: day))
     }
 
-    private func calendarMiniMetric(icon: String, value: Int) -> some View {
-        HStack(spacing: 1) {
-            Image(systemName: icon)
-                .font(.system(size: 8, weight: .semibold))
-            Text("\(value)")
-                .font(.system(size: 9, weight: .semibold))
+    private func calendarMiniPill(color: Color, value: Int) -> some View {
+        Text("\(value)")
+            .font(.system(size: isPad ? 11 : 8, weight: .bold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, isPad ? 6 : 4)
+            .padding(.vertical, isPad ? 2 : 1)
+            .background(color, in: Capsule())
+    }
+
+    private func calendarLegendItem(color: Color, label: String) -> some View {
+        HStack(spacing: 4) {
+            Circle().fill(color).frame(width: isPad ? 8 : 6, height: isPad ? 8 : 6)
+            Text(label)
+                .font(.system(size: isPad ? 13 : 9, weight: .medium))
+                .foregroundStyle(.secondary)
         }
-        .foregroundStyle(value > 0 ? .primary : .tertiary)
-        .frame(minWidth: 16)
     }
 
     private func calendarDayBackground(_ day: HomeCalendarDaySummary) -> Color {
+        if day.isToday {
+            return .blue
+        }
         if !day.hasTasks {
             return Color(uiColor: .tertiarySystemGroupedBackground)
         }
-        return day.hasIncompleteTasks ? .orange.opacity(0.14) : .green.opacity(0.14)
+        return day.hasIncompleteTasks ? .orange.opacity(0.12) : .green.opacity(0.15)
     }
 
     private func calendarDayTint(_ day: HomeCalendarDaySummary) -> Color {
+        if day.isToday {
+            return .white
+        }
         if !day.hasTasks {
             return .secondary
         }
@@ -1826,7 +1905,9 @@ struct HomeView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.borderedProminent)
+            .tint(.blue.opacity(0.15))
+            .foregroundStyle(.blue)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(20)
@@ -1878,9 +1959,19 @@ struct HomeView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
-        .background(snapshot.dueItems.isEmpty ? Color.gray : Color.accentColor)
+        .padding(.vertical, 4)
+        .background(
+            LinearGradient(
+                colors: snapshot.dueItems.isEmpty
+                    ? [.gray, .gray.opacity(0.8)]
+                    : [.accentColor, .accentColor.opacity(0.8)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
         .foregroundStyle(.white)
-        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .clipShape(RoundedRectangle(cornerRadius: 24))
+        .shadow(color: (snapshot.dueItems.isEmpty ? Color.gray : Color.accentColor).opacity(0.3), radius: 12, y: 6)
     }
 
     private func dictationEntryButton(_ snapshot: DashboardSnapshot) -> some View {
@@ -1930,9 +2021,17 @@ struct HomeView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
-        .background(Color.teal)
+        .padding(.vertical, 4)
+        .background(
+            LinearGradient(
+                colors: [.teal, .teal.opacity(0.8)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
         .foregroundStyle(.white)
-        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .clipShape(RoundedRectangle(cornerRadius: 24))
+        .shadow(color: .teal.opacity(0.3), radius: 12, y: 6)
     }
 
     private func openDictationHome(source: String) {
@@ -2068,17 +2167,26 @@ struct HomeView: View {
                         .font(.headline)
                     Spacer()
 
-                    VStack(alignment: .trailing, spacing: 4) {
+                    HStack(spacing: 6) {
                         if historyCount > 0 {
-                            Text("另有 \(historyCount) 次历史待办")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.orange)
+                            Text("历史 \(historyCount)")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(.orange, in: Capsule())
                         }
 
                         if todayTaskCount > 0 {
-                            Text("\(doneCount)/\(todayTaskCount) 已完成")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(doneCount == todayTaskCount ? .green : .orange)
+                            Text("\(doneCount)/\(todayTaskCount) 完成")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(
+                                    doneCount == todayTaskCount ? Color.green : Color.purple,
+                                    in: Capsule()
+                                )
                         }
                     }
                 }
@@ -2096,13 +2204,20 @@ struct HomeView: View {
                     }
                     
                     if !historicalItems.isEmpty {
-                        Divider()
-                            .padding(.vertical, 8)
-                        
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("历史待完成")
-                                .font(.subheadline.weight(.bold))
-                                .foregroundStyle(.orange)
+                            HStack {
+                                Text("历史待完成")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                                    .background(.orange, in: Capsule())
+                                Text("\(historicalItems.count) 项")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                            }
+                            .padding(.top, 8)
                             
                             ForEach(historicalItems) { item in
                                 todayTaskRow(item)
@@ -2111,13 +2226,20 @@ struct HomeView: View {
                     }
                     
                     if !snapshot.todayCompletedTasks.isEmpty {
-                        Divider()
-                            .padding(.vertical, 8)
-                        
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("今日已完成")
-                                .font(.subheadline.weight(.bold))
-                                .foregroundStyle(.green)
+                            HStack {
+                                Text("今日已完成")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                                    .background(.green, in: Capsule())
+                                Text("\(snapshot.todayCompletedTasks.count) 项")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                            }
+                            .padding(.top, 8)
                             
                             ForEach(snapshot.todayCompletedTasks) { item in
                                 todayTaskRow(item)
@@ -2748,9 +2870,9 @@ struct HomeView: View {
                     .padding(.top, 4)
             }
         }
-        .padding(16)
+        .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(style.background, in: RoundedRectangle(cornerRadius: 16))
+        .background(style.background, in: RoundedRectangle(cornerRadius: 24))
     }
 
     private var syncSummaryStyle: (symbol: String, tint: Color, background: Color) {
