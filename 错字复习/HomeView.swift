@@ -2559,7 +2559,7 @@ private struct HomeDictationPreviewView: View {
                                 Spacer()
 
                                 Button {
-                                    speaker.speak(content: entry.content, type: entry.type)
+                                    speaker.speak(content: entry.content, type: entry.type, prompt: entry.prompt)
                                 } label: {
                                     Image(systemName: "speaker.wave.2.circle.fill")
                                         .font(.title2)
@@ -2681,7 +2681,7 @@ private struct ReviewPreviewView: View {
                                 Spacer()
                                 
                                 Button {
-                                    speaker.speak(content: item.content, type: item.type)
+                                    speaker.speak(content: item.content, type: item.type, prompt: item.prompt)
                                 } label: {
                                     Image(systemName: "speaker.wave.2.circle.fill")
                                         .font(.title2)

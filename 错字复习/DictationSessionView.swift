@@ -62,13 +62,13 @@ struct DictationSessionView: View {
         }
         .onAppear {
             if let currentEntry {
-                speaker.prepare(content: currentEntry.content, type: currentEntry.type)
+                speaker.prepare(content: currentEntry.content, type: currentEntry.type, prompt: currentEntry.prompt)
             }
         }
         .onChange(of: currentIndex) {
             isContentRevealed = false
             if let currentEntry {
-                speaker.speak(content: currentEntry.content, type: currentEntry.type)
+                speaker.speak(content: currentEntry.content, type: currentEntry.type, prompt: currentEntry.prompt)
             }
         }
         .onDisappear {
@@ -210,7 +210,7 @@ struct DictationSessionView: View {
 
     private func speakButton(for entry: DictationEntry) -> some View {
         Button {
-            speaker.speak(content: entry.content, type: entry.type)
+            speaker.speak(content: entry.content, type: entry.type, prompt: entry.prompt)
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: speaker.isSpeaking ? "speaker.wave.3.fill" : "speaker.wave.2.fill")

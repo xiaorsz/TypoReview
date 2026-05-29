@@ -614,7 +614,7 @@ private final class ReviewSpeaker: NSObject, ObservableObject {
 
     private let synthesizer = AVSpeechSynthesizer()
     private var currentItem: ReviewItem?
-    private var lastUtteranceText = ""
+    private var pendingUtteranceCount = 0
 
     override init() {
         super.init()
@@ -623,19 +623,18 @@ private final class ReviewSpeaker: NSObject, ObservableObject {
 
     func prepare(_ item: ReviewItem) {
         currentItem = item
-        lastUtteranceText = speechText(for: item)
         stop()
     }
 
     func speak(_ item: ReviewItem) {
         currentItem = item
-        lastUtteranceText = speechText(for: item)
-        speakCurrentText(for: item.type)
+        speakCurrentText(for: item)
     }
 
     func stop() {
         synthesizer.stopSpeaking(at: .immediate)
         SpeechAudioSession.deactivate()
+        pendingUtteranceCount = 0
         isSpeaking = false
     }
 
@@ -644,31 +643,31 @@ private final class ReviewSpeaker: NSObject, ObservableObject {
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        SpeechAudioSession.deactivate()
-        isSpeaking = false
+        pendingUtteranceCount = max(pendingUtteranceCount - 1, 0)
+        if pendingUtteranceCount == 0 {
+            SpeechAudioSession.deactivate()
+            isSpeaking = false
+        }
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        pendingUtteranceCount = 0
         SpeechAudioSession.deactivate()
         isSpeaking = false
     }
 
-    private func speakCurrentText(for type: ReviewItemType) {
-        guard !lastUtteranceText.isEmpty else { return }
+    private func speakCurrentText(for item: ReviewItem) {
+        stop()
+        let utterances = SpeechUtteranceBuilder.utterances(
+            content: item.content,
+            type: item.type,
+            prompt: item.prompt
+        )
+        guard !utterances.isEmpty else { return }
 
-        synthesizer.stopSpeaking(at: .immediate)
+        pendingUtteranceCount = utterances.count
         SpeechAudioSession.activate()
-
-        let utterance = AVSpeechUtterance(string: lastUtteranceText)
-        utterance.voice = SpeechVoicePicker.voice(for: type)
-        utterance.rate = type == .englishWord ? 0.42 : 0.36
-        utterance.pitchMultiplier = 1.0
-
-        synthesizer.speak(utterance)
-    }
-
-    private func speechText(for item: ReviewItem) -> String {
-        item.content
+        utterances.forEach { synthesizer.speak($0) }
     }
 }
 

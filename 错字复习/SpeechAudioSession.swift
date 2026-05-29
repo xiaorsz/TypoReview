@@ -111,3 +111,56 @@ enum SpeechVoicePicker {
     }
 }
 
+enum SpeechUtteranceBuilder {
+    static func utterances(
+        content: String,
+        type: ReviewItemType,
+        prompt: String? = nil
+    ) -> [AVSpeechUtterance] {
+        let trimmedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedContent.isEmpty else { return [] }
+
+        var utterances = [
+            utterance(
+                text: trimmedContent,
+                voiceType: type,
+                rate: type == .englishWord ? 0.42 : 0.36
+            )
+        ]
+
+        if type == .englishWord, let chineseText = chinesePrompt(for: trimmedContent, prompt: prompt) {
+            utterances.append(
+                utterance(
+                    text: chineseText,
+                    voiceType: .phrase,
+                    rate: 0.36
+                )
+            )
+        }
+
+        return utterances
+    }
+
+    private static func utterance(
+        text: String,
+        voiceType: ReviewItemType,
+        rate: Float
+    ) -> AVSpeechUtterance {
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = SpeechVoicePicker.voice(for: voiceType)
+        utterance.rate = rate
+        utterance.pitchMultiplier = 1.0
+        return utterance
+    }
+
+    private static func chinesePrompt(for content: String, prompt: String?) -> String? {
+        let enteredPrompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !enteredPrompt.isEmpty {
+            return enteredPrompt
+        }
+
+        let translation = EnglishGlossService.shared.lookup(text: content)?.translation ?? ""
+        let trimmedTranslation = translation.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedTranslation.isEmpty ? nil : trimmedTranslation
+    }
+}

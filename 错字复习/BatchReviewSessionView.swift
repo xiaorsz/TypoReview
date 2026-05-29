@@ -329,8 +329,10 @@ private final class BatchReviewSpeaker: NSObject, ObservableObject {
     @Published var isSpeaking = false
 
     private let synthesizer = AVSpeechSynthesizer()
-    private var lastUtteranceText = ""
+    private var lastContent = ""
     private var lastType: ReviewItemType = .chineseCharacter
+    private var lastPrompt = ""
+    private var pendingUtteranceCount = 0
 
     override init() {
         super.init()
@@ -338,31 +340,38 @@ private final class BatchReviewSpeaker: NSObject, ObservableObject {
     }
 
     func prepare(_ item: ReviewItem) {
-        lastUtteranceText = item.content
+        lastContent = item.content
         lastType = item.type
+        lastPrompt = item.prompt
         stop()
     }
 
     func speak(_ item: ReviewItem) {
-        lastUtteranceText = item.content
+        lastContent = item.content
         lastType = item.type
+        lastPrompt = item.prompt
         speakCurrentText()
     }
 
     func stop() {
         synthesizer.stopSpeaking(at: .immediate)
         SpeechAudioSession.deactivate()
+        pendingUtteranceCount = 0
         isSpeaking = false
     }
 
     private func speakCurrentText() {
         stop()
+        let utterances = SpeechUtteranceBuilder.utterances(
+            content: lastContent,
+            type: lastType,
+            prompt: lastPrompt
+        )
+        guard !utterances.isEmpty else { return }
+
+        pendingUtteranceCount = utterances.count
         SpeechAudioSession.activate()
-        let utterance = AVSpeechUtterance(string: lastUtteranceText)
-        utterance.voice = SpeechVoicePicker.voice(for: lastType)
-        utterance.rate = lastType == .englishWord ? 0.42 : 0.36
-        utterance.pitchMultiplier = 1.0
-        synthesizer.speak(utterance)
+        utterances.forEach { synthesizer.speak($0) }
     }
 }
 
@@ -371,10 +380,14 @@ extension BatchReviewSpeaker: @preconcurrency AVSpeechSynthesizerDelegate {
         isSpeaking = true
     }
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        SpeechAudioSession.deactivate()
-        isSpeaking = false
+        pendingUtteranceCount = max(pendingUtteranceCount - 1, 0)
+        if pendingUtteranceCount == 0 {
+            SpeechAudioSession.deactivate()
+            isSpeaking = false
+        }
     }
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        pendingUtteranceCount = 0
         SpeechAudioSession.deactivate()
         isSpeaking = false
     }
