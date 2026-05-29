@@ -194,6 +194,26 @@ final class MediaPlaybackCoordinator {
         pendingAssetTitle = nil
     }
 
+    func pauseForTemporaryInterruption() {
+        guard currentAsset != nil, isPlaying else { return }
+        player.pause()
+        isPlaying = false
+    }
+
+    func resumeAfterTemporaryInterruption() {
+        guard currentAsset != nil,
+              player.currentItem != nil,
+              !isPlaying,
+              !isManuallyPaused,
+              !isWaitingForDownload else {
+            return
+        }
+
+        MediaAudioSession.activate()
+        player.play()
+        isPlaying = true
+    }
+
     func stop() {
         player.pause()
         player.replaceCurrentItem(with: nil)

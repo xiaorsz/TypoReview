@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import AVFoundation
 import AVKit
 import UIKit
 import Combine
@@ -21,9 +22,13 @@ struct DashboardBoardView: View {
 
     @State private var boardNow = Date.now
     @State private var playbackCoordinator = MediaPlaybackCoordinator()
+    @StateObject private var taskReminderSpeaker = BoardTaskReminderSpeaker()
     @State private var lastBoardInteractionAt = Date.now
     @State private var isExitButtonVisible = false
     @State private var boardSnapshot: BoardSnapshot?
+    @State private var remindedTaskReminderSlots: Set<String> = []
+    @State private var remindedTaskReminderDay = Calendar.current.startOfDay(for: Date.now)
+    @State private var shouldResumePlaybackAfterTaskReminder = false
 
     private struct BoardSnapshot {
         let childName: String
@@ -299,6 +304,8 @@ struct DashboardBoardView: View {
             syncBoardPlayback(for: boardNow)
         }
         .onDisappear {
+            shouldResumePlaybackAfterTaskReminder = false
+            taskReminderSpeaker.stop()
             playbackCoordinator.stop()
         }
         .onReceive(boardSnapshotRefreshTimer) { _ in
@@ -308,6 +315,8 @@ struct DashboardBoardView: View {
         .onReceive(boardPlaybackTimer) {
             guard canRenderLiveContent else { return }
             reinforceIdleTimerOverrideIfNeeded()
+            checkTaskReminderIfNeeded(at: $0)
+            guard !taskReminderSpeaker.isSpeaking else { return }
             syncBoardPlayback(for: $0)
         }
         .onChange(of: scenePhase) { _, newPhase in
@@ -316,8 +325,12 @@ struct DashboardBoardView: View {
                 reinforceIdleTimerOverrideIfNeeded()
                 lastBoardInteractionAt = .now
                 isExitButtonVisible = false
-                syncBoardPlayback(for: boardNow)
+                if !taskReminderSpeaker.isSpeaking && !shouldResumePlaybackAfterTaskReminder {
+                    syncBoardPlayback(for: boardNow)
+                }
             } else if newPhase == .background {
+                shouldResumePlaybackAfterTaskReminder = false
+                taskReminderSpeaker.stop()
                 playbackCoordinator.stop()
             }
         }
@@ -947,6 +960,94 @@ struct DashboardBoardView: View {
         )
     }
 
+    private func checkTaskReminderIfNeeded(at date: Date) {
+        guard scenePhase == .active,
+              let boardSnapshot,
+              let slotID = taskReminderSlotID(for: date),
+              !remindedTaskReminderSlots.contains(slotID),
+              !taskReminderSpeaker.isSpeaking else {
+            return
+        }
+
+        resetTaskReminderSlotsIfNeeded(for: date)
+        guard !remindedTaskReminderSlots.contains(slotID) else { return }
+
+        let reminderText = taskReminderText(for: boardSnapshot)
+        remindedTaskReminderSlots.insert(slotID)
+
+        let shouldResumePlayback = playbackCoordinator.isPlaying
+        if shouldResumePlayback {
+            playbackCoordinator.pauseForTemporaryInterruption()
+        }
+        shouldResumePlaybackAfterTaskReminder = shouldResumePlayback
+
+        taskReminderSpeaker.speak(reminderText) {
+            if shouldResumePlaybackAfterTaskReminder, scenePhase == .active, canRenderLiveContent {
+                playbackCoordinator.resumeAfterTemporaryInterruption()
+            }
+            shouldResumePlaybackAfterTaskReminder = false
+        }
+    }
+
+    private func resetTaskReminderSlotsIfNeeded(for date: Date) {
+        let day = Calendar.current.startOfDay(for: date)
+        guard day != remindedTaskReminderDay else { return }
+        remindedTaskReminderDay = day
+        remindedTaskReminderSlots.removeAll()
+    }
+
+    private func taskReminderSlotID(for date: Date) -> String? {
+        let calendar = Calendar.current
+        let components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+        guard let year = components.year,
+              let month = components.month,
+              let day = components.day,
+              let hour = components.hour,
+              let minute = components.minute else {
+            return nil
+        }
+
+        let isReminderMinute = minute == 0 || minute == 30
+        let isReminderHour = (17...20).contains(hour) || (hour == 21 && minute == 0)
+        guard isReminderMinute, isReminderHour else { return nil }
+
+        return String(format: "%04d-%02d-%02d %02d:%02d", year, month, day, hour, minute)
+    }
+
+    private func taskReminderText(for snapshot: BoardSnapshot) -> String {
+        let todayPendingTasks = snapshot.boardTaskItems
+            .filter { $0.section == .todayPending && !$0.isCompleted }
+        let displayedTaskCount = min(todayPendingTasks.count, 5)
+        let pendingTaskTitles = todayPendingTasks
+            .prefix(5)
+            .map { $0.task.title.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .map { $0.isEmpty ? "未命名任务" : $0 }
+
+        var parts: [String] = []
+        if todayPendingTasks.count > 0 {
+            var taskText = "今天还有 \(todayPendingTasks.count) 项任务待完成"
+            if !pendingTaskTitles.isEmpty {
+                taskText += "，分别是：" + pendingTaskTitles.joined(separator: "，")
+            }
+
+            let hiddenTaskCount = max(todayPendingTasks.count - displayedTaskCount, 0)
+            if hiddenTaskCount > 0 {
+                taskText += "，还有 \(hiddenTaskCount) 项未播报"
+            }
+            parts.append(taskText)
+        }
+
+        if snapshot.pendingDictationCount > 0 {
+            parts.append("还有 \(snapshot.pendingDictationCount) 条待听写")
+        }
+
+        if parts.isEmpty {
+            return "今天的任务都完成了。"
+        }
+
+        return parts.joined(separator: "；") + "。"
+    }
+
     private func recordBoardInteraction() {
         lastBoardInteractionAt = .now
         if !isExitButtonVisible {
@@ -977,6 +1078,79 @@ private struct BoardTextItem: Identifiable {
     let id: UUID
     let text: String
     let detail: String
+}
+
+@MainActor
+private final class BoardTaskReminderSpeaker: NSObject, ObservableObject {
+    @Published var isSpeaking = false
+
+    private let synthesizer = AVSpeechSynthesizer()
+    private var pendingUtteranceCount = 0
+    private var onFinish: (() -> Void)?
+
+    override init() {
+        super.init()
+        synthesizer.delegate = self
+    }
+
+    func speak(_ text: String, onFinish: @escaping () -> Void) {
+        stop()
+
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else {
+            onFinish()
+            return
+        }
+
+        self.onFinish = onFinish
+        let utterances = SpeechUtteranceBuilder.utterances(content: trimmedText, type: .phrase)
+        guard !utterances.isEmpty else {
+            finishSpeaking()
+            return
+        }
+
+        pendingUtteranceCount = utterances.count
+        isSpeaking = true
+        SpeechAudioSession.activate()
+        utterances.forEach { synthesizer.speak($0) }
+    }
+
+    func stop() {
+        synthesizer.stopSpeaking(at: .immediate)
+        SpeechAudioSession.deactivate()
+        pendingUtteranceCount = 0
+        isSpeaking = false
+        onFinish = nil
+    }
+
+    private func finishSpeaking() {
+        pendingUtteranceCount = 0
+        SpeechAudioSession.deactivate()
+        isSpeaking = false
+        let finish = onFinish
+        onFinish = nil
+        finish?()
+    }
+}
+
+extension BoardTaskReminderSpeaker: @preconcurrency AVSpeechSynthesizerDelegate {
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        isSpeaking = true
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        pendingUtteranceCount = max(pendingUtteranceCount - 1, 0)
+        if pendingUtteranceCount == 0 {
+            finishSpeaking()
+        }
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        pendingUtteranceCount = 0
+        SpeechAudioSession.deactivate()
+        isSpeaking = false
+        onFinish = nil
+    }
 }
 
 @MainActor
