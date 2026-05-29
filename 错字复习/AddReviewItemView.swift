@@ -73,6 +73,7 @@ struct AddReviewItemView: View {
 
     private let scheduler = ReviewScheduler()
     private let existingItem: ReviewItem?
+    @Query(sort: \ReviewItem.updatedAt, order: .reverse) private var reviewItems: [ReviewItem]
     @Query private var reviewRecords: [ReviewRecord]
     @State private var type: ReviewItemType?
     @State private var content = ""
@@ -532,31 +533,52 @@ struct AddReviewItemView: View {
     }
 
     private func persist(context: PendingReviewItemSaveContext) {
+        let sanitizedContent = ReviewContentIdentity.displayContent(context.content)
+        let duplicateItem = reviewItems.first {
+            $0.persistentModelID != existingItem?.persistentModelID &&
+            ReviewContentIdentity.isSameContent($0, type: context.type, content: sanitizedContent)
+        }
+
         if let existingItem {
             #if DEBUG
             DebugPerf.mark("AddReviewItemView updating existing item")
             #endif
-            existingItem.type = context.type
-            existingItem.content = context.content
-            existingItem.prompt = context.prompt
-            existingItem.note = context.note
-            existingItem.source = context.source
-            existingItem.updatedAt = .now
+            let targetItem = duplicateItem ?? existingItem
+            targetItem.type = context.type
+            targetItem.content = sanitizedContent
+            targetItem.prompt = context.prompt
+            targetItem.note = context.note
+            targetItem.source = context.source
+            targetItem.updatedAt = .now
+
+            if let duplicateItem, duplicateItem.persistentModelID != existingItem.persistentModelID {
+                for record in reviewRecords {
+                    record.itemID = duplicateItem.id
+                }
+                modelContext.delete(existingItem)
+            }
         } else {
             #if DEBUG
             DebugPerf.mark("AddReviewItemView inserting new ReviewItem")
             #endif
-            modelContext.insert(
-                ReviewItem(
-                    type: context.type,
-                    content: context.content,
-                    prompt: context.prompt,
-                    note: context.note,
-                    source: context.source,
-                    stage: 0,
-                    nextReviewAt: scheduler.nextDayStart()
+            if let duplicateItem {
+                duplicateItem.prompt = context.prompt
+                duplicateItem.note = context.note
+                duplicateItem.source = context.source
+                duplicateItem.updatedAt = .now
+            } else {
+                modelContext.insert(
+                    ReviewItem(
+                        type: context.type,
+                        content: sanitizedContent,
+                        prompt: context.prompt,
+                        note: context.note,
+                        source: context.source,
+                        stage: 0,
+                        nextReviewAt: scheduler.nextDayStart()
+                    )
                 )
-            )
+            }
         }
 
         NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)

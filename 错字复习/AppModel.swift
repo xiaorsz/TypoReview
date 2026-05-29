@@ -10,6 +10,7 @@ enum AppSection: Hashable {
 enum ReviewMode: String, Codable, CaseIterable {
     case scheduled
     case retry
+    case dictation
 }
 
 enum ReviewResult: String, Codable, CaseIterable {

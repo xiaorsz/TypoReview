@@ -62,7 +62,7 @@ struct DashboardBoardView: View {
     private func makeBoardSnapshot(at date: Date = Date.now) -> BoardSnapshot {
         let childName = appSettingsStore.childName.isEmpty ? "小朋友" : appSettingsStore.childName
         let calendar = Calendar.current
-        let dueItems = reviewItems
+        let dueItems = ReviewContentIdentity.canonicalReviewItems(from: reviewItems)
             .filter { ReviewScheduler.isDue($0.nextReviewAt, on: date, calendar: calendar) }
             .sorted { lhs, rhs in
                 let lhsDay = ReviewScheduler.normalizedReviewDate(lhs.nextReviewAt, calendar: calendar)

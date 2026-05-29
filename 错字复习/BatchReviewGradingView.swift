@@ -357,7 +357,9 @@ struct BatchReviewGradingView: View {
         }
         
         // Ensure data is saved
-        try? modelContext.save()
+        if (try? modelContext.save()) != nil {
+            NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
+        }
         
         self.reviewedSummaries = summaries
         

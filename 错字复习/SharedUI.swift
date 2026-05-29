@@ -214,8 +214,16 @@ extension ReviewItem {
             let newLabel = Self.followUpLabel(for: reviewTrack, step: resolvedDictationFollowUpStep)
 
             if result == .correct {
-                if oldTrack == .dictationFollowUp && reviewTrack == .standard && stage >= ReviewScheduler.intervals.count - 1 {
+                if oldTrack == .dictationFollowUp,
+                   reviewTrack == .standard,
+                   stage >= ReviewScheduler.completionStage,
+                   nextReviewAt == .distantFuture {
                     return "已完成听写跟进，当前标记为已掌握"
+                }
+                if oldTrack == .dictationFollowUp,
+                   reviewTrack == .standard,
+                   stage >= ReviewScheduler.dictationFollowUpCompleteStage {
+                    return "已完成听写跟进，已进入阶段 \(stage)"
                 }
                 if !oldLabel.isEmpty && !newLabel.isEmpty {
                     return "已从\(oldLabel)进入\(newLabel)"
@@ -230,6 +238,9 @@ extension ReviewItem {
         }
 
         if result == .correct {
+            if stage >= ReviewScheduler.completionStage && nextReviewAt == .distantFuture {
+                return "已完成所有复习，当前标记为已掌握"
+            }
             if oldStage == 0 && stage >= 2 {
                 return "已通过首次复习，下一次会跳过明天再出现"
             }
@@ -287,11 +298,35 @@ extension ReviewRecord {
             return nil
         case .retry:
             return "重试"
+        case .dictation:
+            return "听写"
         }
     }
 
     var stageTransitionText: String {
-        "阶段 \(oldStage) -> \(newStage)"
+        if let cachedDetailText {
+            switch cachedDetailText {
+            case "已从第3天复习进入第7天复习":
+                return "第3天复习 -> 第7天复习"
+            case "已完成听写跟进，当前标记为已掌握",
+                 "已完成本轮听写跟进":
+                return "第7天复习 -> 已掌握"
+            case "已完成听写跟进，已进入阶段 6":
+                return "第7天复习 -> 阶段 6"
+            case "已完成听写跟进，已进入阶段 7":
+                return "第7天复习 -> 已掌握"
+            case "已完成所有复习，当前标记为已掌握":
+                return "阶段 \(ReviewScheduler.completionStage) -> 已掌握"
+            case "本次判错，已从第二天开始进入错题复习":
+                return "听写跟进 -> 阶段 1"
+            default:
+                break
+            }
+        }
+
+        let oldLabel = Self.stageTransitionLabel(for: oldStage)
+        let newLabel = Self.stageTransitionLabel(for: newStage)
+        return "\(oldLabel) -> \(newLabel)"
     }
 
     var displayDetailText: String {
@@ -340,6 +375,10 @@ extension ReviewRecord {
 
         let detail = String(trimmedNote.dropFirst(Self.detailNotePrefix.count))
         return detail.isEmpty ? nil : detail
+    }
+
+    private static func stageTransitionLabel(for stage: Int) -> String {
+        return "阶段 \(stage)"
     }
 }
 

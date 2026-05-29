@@ -29,7 +29,12 @@ private struct HomeReviewItemProjection: Identifiable, Hashable {
     }
 
     var isMastered: Bool {
-        stage >= ReviewScheduler.intervals.count - 1 && consecutiveWrongCount == 0
+        ReviewScheduler.isMastered(stage: stage, consecutiveWrongCount: consecutiveWrongCount)
+            && nextReviewAt == .distantFuture
+    }
+
+    var contentIdentityKey: String {
+        ReviewContentIdentity.key(type: type, content: content)
     }
 }
 
@@ -469,7 +474,8 @@ struct HomeView: View {
             let calendar = Calendar.current
             let todayStart = calendar.startOfDay(for: referenceDate)
 
-            let sortedDue = reviewItems
+            let canonicalReviewItems = canonicalItems(from: reviewItems)
+            let sortedDue = canonicalReviewItems
                 .filter { ReviewScheduler.isDue($0.nextReviewAt, on: referenceDate, calendar: calendar) }
                 .sorted { lhs, rhs in
                     let lhsDay = ReviewScheduler.normalizedReviewDate(lhs.nextReviewAt, calendar: calendar)
@@ -488,7 +494,7 @@ struct HomeView: View {
                 seenDueItemIDs.insert(item.id).inserted
             }
             let cappedDueContent = Array(allDue.prefix(dailyLimit))
-            let masteredReviewCount = reviewItems.filter(\.isMastered).count
+            let masteredReviewCount = canonicalReviewItems.filter(\.isMastered).count
 
             let todayRecs = reviewRecords.filter { calendar.isDate($0.reviewedAt, inSameDayAs: referenceDate) }
             let tCompleted = todayRecs.count
@@ -670,6 +676,44 @@ struct HomeView: View {
                 heroSubtitle: hSubtitle,
                 heroGradientColors: hGradient
             )
+        }
+
+        private static func canonicalItems(from items: [HomeReviewItemProjection]) -> [HomeReviewItemProjection] {
+            var canonicalByKey: [String: HomeReviewItemProjection] = [:]
+
+            for item in items {
+                guard !ReviewContentIdentity.normalizedContent(item.content, type: item.type).isEmpty else { continue }
+                if let current = canonicalByKey[item.contentIdentityKey] {
+                    if isPreferred(item, over: current) {
+                        canonicalByKey[item.contentIdentityKey] = item
+                    }
+                } else {
+                    canonicalByKey[item.contentIdentityKey] = item
+                }
+            }
+
+            return Array(canonicalByKey.values)
+        }
+
+        private static func isPreferred(_ candidate: HomeReviewItemProjection, over current: HomeReviewItemProjection) -> Bool {
+            let candidateFinished = candidate.nextReviewAt == .distantFuture
+            let currentFinished = current.nextReviewAt == .distantFuture
+            if candidateFinished != currentFinished {
+                return candidateFinished
+            }
+            if candidate.stage != current.stage {
+                return candidate.stage > current.stage
+            }
+            if candidate.consecutiveWrongCount != current.consecutiveWrongCount {
+                return candidate.consecutiveWrongCount < current.consecutiveWrongCount
+            }
+            if candidate.nextReviewAt != current.nextReviewAt {
+                return candidate.nextReviewAt > current.nextReviewAt
+            }
+            if candidate.createdAt != current.createdAt {
+                return candidate.createdAt < current.createdAt
+            }
+            return candidate.id.uuidString < current.id.uuidString
         }
 
         private static func buildCalendarWeeks(
@@ -2664,6 +2708,8 @@ struct HomeView: View {
                 let pids = await Task.detached(priority: .userInitiated) {
                     let ctx = ModelContext(container)
                     let ids = route.itemIDs
+                    let now = Date()
+                    let calendar = Calendar.current
                     let order = Dictionary(
                         ids.enumerated().map { ($0.element, $0.offset) },
                         uniquingKeysWith: { first, _ in first }
@@ -2671,6 +2717,7 @@ struct HomeView: View {
                     let fetched = (try? ctx.fetch(FetchDescriptor<ReviewItem>())) ?? []
                     let filtered = fetched
                         .filter { order[$0.id] != nil }
+                        .filter { ReviewScheduler.isDue($0.nextReviewAt, on: now, calendar: calendar) }
                         .sorted { (order[$0.id] ?? 0) < (order[$1.id] ?? 0) }
                     var seenIDs = Set<UUID>()
                     let deduplicated = filtered.filter { item in

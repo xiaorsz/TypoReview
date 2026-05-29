@@ -11,7 +11,14 @@ struct LibraryView: View {
 
     private var filteredItems: [ReviewItem] {
         let now = Date()
-        let scopedItems = reviewItems.filter { item in
+        let canonicalItems = ReviewContentIdentity.canonicalReviewItems(from: reviewItems)
+            .sorted {
+                if $0.updatedAt != $1.updatedAt {
+                    return $0.updatedAt > $1.updatedAt
+                }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+        let scopedItems = canonicalItems.filter { item in
             switch filter {
             case .all:
                 return true

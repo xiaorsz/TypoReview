@@ -106,3 +106,79 @@ final class ReviewItem {
         reviewTrack == .dictationFollowUp || isDictationPass
     }
 }
+
+enum ReviewContentIdentity {
+    static func displayContent(_ content: String) -> String {
+        content
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+    }
+
+    static func normalizedContent(_ content: String, type: ReviewItemType) -> String {
+        displayContent(content).lowercased()
+    }
+
+    static func key(type: ReviewItemType, content: String) -> String {
+        "\(type.rawValue)|\(normalizedContent(content, type: type))"
+    }
+
+    static func key(for item: ReviewItem) -> String {
+        key(type: item.type, content: item.content)
+    }
+
+    static func isSameContent(_ item: ReviewItem, type: ReviewItemType, content: String) -> Bool {
+        key(for: item) == key(type: type, content: content)
+    }
+
+    static func preferredReviewItem(from items: [ReviewItem]) -> ReviewItem? {
+        items.max { lhs, rhs in
+            isPreferred(rhs, over: lhs)
+        }
+    }
+
+    static func canonicalReviewItems(from items: [ReviewItem]) -> [ReviewItem] {
+        var canonicalByKey: [String: ReviewItem] = [:]
+
+        for item in items {
+            let itemKey = key(for: item)
+            guard !itemKey.hasSuffix("|") else { continue }
+
+            if let current = canonicalByKey[itemKey] {
+                if isPreferred(item, over: current) {
+                    canonicalByKey[itemKey] = item
+                }
+            } else {
+                canonicalByKey[itemKey] = item
+            }
+        }
+
+        return Array(canonicalByKey.values)
+    }
+
+    static func isPreferred(_ candidate: ReviewItem, over current: ReviewItem) -> Bool {
+        let candidateFinished = candidate.nextReviewAt == .distantFuture
+        let currentFinished = current.nextReviewAt == .distantFuture
+        if candidateFinished != currentFinished {
+            return candidateFinished
+        }
+        if candidate.stage != current.stage {
+            return candidate.stage > current.stage
+        }
+        if candidate.consecutiveWrongCount != current.consecutiveWrongCount {
+            return candidate.consecutiveWrongCount < current.consecutiveWrongCount
+        }
+        if candidate.nextReviewAt != current.nextReviewAt {
+            return candidate.nextReviewAt > current.nextReviewAt
+        }
+
+        let candidateReviewedAt = candidate.lastReviewedAt ?? .distantPast
+        let currentReviewedAt = current.lastReviewedAt ?? .distantPast
+        if candidateReviewedAt != currentReviewedAt {
+            return candidateReviewedAt > currentReviewedAt
+        }
+        if candidate.updatedAt != current.updatedAt {
+            return candidate.updatedAt > current.updatedAt
+        }
+        return candidate.createdAt < current.createdAt
+    }
+}

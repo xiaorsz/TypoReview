@@ -229,6 +229,18 @@ struct TypoReviewApp: App {
             in: modelContext,
             appGroupIdentifier: appGroupIdentifier
         )
+        Self.deduplicateReviewItemsIfNeeded(
+            in: modelContext,
+            appGroupIdentifier: appGroupIdentifier
+        )
+        Self.migrateLegacyStageSevenCapsIfNeeded(
+            in: modelContext,
+            appGroupIdentifier: appGroupIdentifier
+        )
+        Self.deduplicateReviewItemsIfNeeded(
+            in: modelContext,
+            appGroupIdentifier: appGroupIdentifier
+        )
 
         #if DEBUG
         DebugPerf.mark("TypoReviewApp deferred startup maintenance end")
@@ -675,6 +687,46 @@ struct TypoReviewApp: App {
             DebugPerf.mark("TypoReviewApp review date normalization failed error=\(error.localizedDescription)")
             #endif
             print("Review date normalization failed: \(error)")
+        }
+    }
+
+    private static func migrateLegacyStageSevenCapsIfNeeded(
+        in modelContext: ModelContext,
+        appGroupIdentifier _: String?
+    ) {
+        do {
+            let migratedCount = try ReviewScheduler.migrateLegacyStageSevenCaps(in: modelContext)
+            if modelContext.hasChanges {
+                try modelContext.save()
+            }
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp migrated legacy stage 7 caps count=\(migratedCount)")
+            #endif
+        } catch {
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp legacy stage 7 cap migration failed error=\(error.localizedDescription)")
+            #endif
+            print("Legacy stage 7 cap migration failed: \(error)")
+        }
+    }
+
+    private static func deduplicateReviewItemsIfNeeded(
+        in modelContext: ModelContext,
+        appGroupIdentifier _: String?
+    ) {
+        do {
+            let deduplicatedCount = try ReviewScheduler.deduplicateReviewItems(in: modelContext)
+            if modelContext.hasChanges {
+                try modelContext.save()
+            }
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp deduplicated review items count=\(deduplicatedCount)")
+            #endif
+        } catch {
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp review item deduplication failed error=\(error.localizedDescription)")
+            #endif
+            print("Review item deduplication failed: \(error)")
         }
     }
 

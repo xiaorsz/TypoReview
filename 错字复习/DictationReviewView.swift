@@ -235,25 +235,17 @@ struct DictationReviewView: View {
 
         for entry in entries {
             if entry.result == .wrong {
-                if let existing = reviewItems.first(where: { $0.type == entry.type && $0.content == entry.content }) {
-                    let shouldPreserveStage = existing.reviewTrack == .standard && !scheduler.isMastered(existing)
+                if let existing = existingReviewItem(for: entry) {
                     existing.prompt = entry.prompt
                     existing.note = entry.note
                     existing.source = entry.source
-                    existing.nextReviewAt = nextReviewStart
-                    existing.isPriority = true
-                    existing.reviewTrack = .standard
-                    existing.dictationFollowUpStep = 0
                     existing.updatedAt = now
-                    existing.isDictationPass = false
-                    existing.stage = shouldPreserveStage ? existing.stage : 0
-                    existing.consecutiveCorrectCount = 0
-                    existing.consecutiveWrongCount = max(existing.consecutiveWrongCount, 1)
+                    recordDictationResult(.wrong, for: existing, using: scheduler, now: now)
                 } else {
                     modelContext.insert(
                         ReviewItem(
                             type: entry.type,
-                            content: entry.content,
+                            content: ReviewContentIdentity.displayContent(entry.content),
                             prompt: entry.prompt,
                             note: entry.note,
                             source: entry.source,
@@ -265,24 +257,16 @@ struct DictationReviewView: View {
                     )
                 }
             } else if entry.result == .correct {
-                if let existing = reviewItems.first(where: { $0.type == entry.type && $0.content == entry.content }) {
+                if let existing = existingReviewItem(for: entry) {
                     existing.prompt = entry.prompt
                     existing.note = entry.note
                     existing.source = entry.source
-                    existing.reviewTrack = .dictationFollowUp
-                    existing.dictationFollowUpStep = 1
-                    existing.isDictationPass = true
-                    existing.stage = 1
-                    existing.nextReviewAt = firstFollowUpDate
-                    existing.isPriority = false
-                    existing.lastReviewedAt = now
                     existing.updatedAt = now
-                    existing.consecutiveCorrectCount = 0
-                    existing.consecutiveWrongCount = 0
+                    recordDictationResult(.correct, for: existing, using: scheduler, now: now)
                 } else {
                     let newItem = ReviewItem(
                         type: entry.type,
-                        content: entry.content,
+                        content: ReviewContentIdentity.displayContent(entry.content),
                         prompt: entry.prompt,
                         note: entry.note,
                         source: entry.source,
@@ -313,6 +297,33 @@ struct DictationReviewView: View {
         } catch {
             saveErrorMessage = "这次判定没有保存成功，请再试一次。\(error.localizedDescription)"
         }
+    }
+
+    private func existingReviewItem(for entry: DictationEntry) -> ReviewItem? {
+        ReviewContentIdentity.preferredReviewItem(
+            from: reviewItems.filter {
+                ReviewContentIdentity.isSameContent($0, type: entry.type, content: entry.content)
+            }
+        )
+    }
+
+    private func recordDictationResult(
+        _ result: ReviewResult,
+        for item: ReviewItem,
+        using scheduler: ReviewScheduler,
+        now: Date
+    ) {
+        let oldTrack = item.reviewTrack
+        let oldFollowUpStep = item.resolvedDictationFollowUpStep
+        let output = scheduler.handle(item: item, result: result, mode: .dictation, now: now)
+        let detail = item.reviewTransitionDetail(
+            result: result,
+            oldStage: output.record.oldStage,
+            oldTrack: oldTrack,
+            oldFollowUpStep: oldFollowUpStep
+        )
+        output.record.note = ReviewRecord.storedDetailText(detail)
+        modelContext.insert(output.record)
     }
 }
 

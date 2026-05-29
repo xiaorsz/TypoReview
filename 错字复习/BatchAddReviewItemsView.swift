@@ -343,7 +343,7 @@ struct BatchAddReviewItemsView: View {
             modelContext.insert(
                 ReviewItem(
                     type: selectedType,
-                    content: entry.content,
+                    content: ReviewContentIdentity.displayContent(entry.content),
                     prompt: entry.prompt,
                     note: "",
                     source: entry.source.isEmpty ? sourceFallback : entry.source,
@@ -395,7 +395,7 @@ private struct BatchImportKey: Hashable {
 
     init(type: ReviewItemType, content: String) {
         self.type = type
-        self.content = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.content = ReviewContentIdentity.normalizedContent(content, type: type)
     }
 }
 
