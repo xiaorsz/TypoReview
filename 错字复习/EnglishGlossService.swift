@@ -81,11 +81,13 @@ final class EnglishGlossService {
         guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
         let resolvedWord = columnText(statement, index: 0)
         let phonetic = columnText(statement, index: 1)
-        let translation = normalizedTranslation(from: columnText(statement, index: 2))
+        let matchedWord = resolvedWord.isEmpty ? word : resolvedWord
+        let translation = learningTranslationOverride(for: matchedWord)
+            ?? normalizedTranslation(from: columnText(statement, index: 2))
         guard !translation.isEmpty else { return nil }
 
         return EnglishGloss(
-            word: resolvedWord.isEmpty ? word : resolvedWord,
+            word: matchedWord,
             phonetic: phonetic,
             translation: translation,
             source: .ecdict
@@ -95,6 +97,16 @@ final class EnglishGlossService {
     private func columnText(_ statement: OpaquePointer?, index: Int32) -> String {
         guard let rawValue = sqlite3_column_text(statement, index) else { return "" }
         return String(cString: rawValue).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func learningTranslationOverride(for word: String) -> String? {
+        let overrides = [
+            "hello": "你好；喂",
+            "hi": "你好；嗨",
+            "bye": "再见",
+            "goodbye": "再见"
+        ]
+        return overrides[word.lowercased()]
     }
 
     private func normalizedTranslation(from rawTranslation: String) -> String {
