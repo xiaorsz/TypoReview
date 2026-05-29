@@ -1,7 +1,5 @@
 import SwiftUI
 import SwiftData
-import Translation
-import NaturalLanguage
 
 struct DeferredAddReviewItemView: View {
     @Environment(\.scenePhase) private var scenePhase
@@ -86,7 +84,6 @@ struct AddReviewItemView: View {
     @State private var isTypeManuallyChosen: Bool
     @State private var isSaving = false
     @State private var saveErrorMessage: String?
-    @State private var pendingSaveContext: PendingReviewItemSaveContext?
 
     init(item: ReviewItem? = nil) {
         self.existingItem = item
@@ -189,11 +186,6 @@ struct AddReviewItemView: View {
                             .controlSize(.large)
                         Text(existingItem == nil ? "正在保存错题..." : "正在保存修改...")
                             .font(.headline)
-                        if type == .englishWord {
-                            Text("正在使用 Apple 翻译补全更完整的单词释义")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
                     }
                     .padding(24)
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
@@ -203,13 +195,7 @@ struct AddReviewItemView: View {
     }
 
     var body: some View {
-        if #available(iOS 18.0, *) {
-            contentView.translationTask(activeTranslationConfiguration) { @Sendable session in
-                await handlePendingTranslation(using: session)
-            }
-        } else {
-            contentView
-        }
+        contentView
     }
 
     private var introCard: some View {
@@ -510,20 +496,23 @@ struct AddReviewItemView: View {
         isSaving = true
         saveErrorMessage = nil
 
+        let enteredPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedPrompt: String
+        if selectedType == .englishWord, enteredPrompt.isEmpty,
+           let gloss = EnglishGlossService.shared.lookup(text: trimmedContent) {
+            resolvedPrompt = gloss.translation
+        } else {
+            resolvedPrompt = enteredPrompt
+        }
+
         let context = PendingReviewItemSaveContext(
             type: selectedType,
             content: trimmedContent,
-            prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines),
+            prompt: resolvedPrompt,
             note: note.trimmingCharacters(in: .whitespacesAndNewlines),
             source: source.trimmingCharacters(in: .whitespacesAndNewlines),
             keepOpen: keepOpen
         )
-
-        let needsTranslation = selectedType == .englishWord && context.prompt.isEmpty
-        if needsTranslation, #available(iOS 18.0, *) {
-            pendingSaveContext = context
-            return
-        }
 
         persist(context: context)
     }
@@ -540,76 +529,6 @@ struct AddReviewItemView: View {
                 }
             }
         }
-    }
-
-    @available(iOS 18.0, *)
-    private var activeTranslationConfiguration: TranslationSession.Configuration? {
-        guard pendingSaveContext != nil else { return nil }
-        return TranslationSession.Configuration(
-            source: Locale.Language(identifier: "en"),
-            target: Locale.Language(identifier: "zh-Hans")
-        )
-    }
-
-    @available(iOS 18.0, *)
-    private func handlePendingTranslation(using session: TranslationSession) async {
-        guard let context = pendingSaveContext else { return }
-
-        let pendingRequests = translationCandidates(for: context.content).map { candidate in
-            TranslationSession.Request(
-                sourceText: candidate.sourceText,
-                clientIdentifier: candidate.identifier
-            )
-        }
-
-        guard !pendingRequests.isEmpty else {
-            pendingSaveContext = nil
-            persist(context: context)
-            return
-        }
-
-        do {
-            try await session.prepareTranslation()
-            let responses = try await session.translations(from: pendingRequests)
-            applyTranslationResponses(responses, to: context)
-        } catch {
-            pendingSaveContext = nil
-            isSaving = false
-            saveErrorMessage = "Apple 翻译暂时不可用。请确认设备已安装需要的翻译语言，或先手动填写中文释义后再保存。"
-        }
-    }
-
-    @available(iOS 18.0, *)
-    private func applyTranslationResponses(
-        _ responses: [TranslationSession.Response],
-        to context: PendingReviewItemSaveContext
-    ) {
-        let mergedPrompt = mergeTranslatedGlosses(
-            responses
-                .compactMap { response -> RankedReviewItemTranslation? in
-                    guard let identifier = response.clientIdentifier,
-                          let metadata = ReviewItemTranslationRequestIdentifier(identifier: identifier) else {
-                        return nil
-                    }
-                    let translated = response.targetText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !translated.isEmpty else { return nil }
-                    return RankedReviewItemTranslation(priority: metadata.priority, text: translated)
-                }
-                .sorted { $0.priority < $1.priority }
-                .map(\.text)
-        )
-
-        pendingSaveContext = nil
-        persist(
-            context: PendingReviewItemSaveContext(
-                type: context.type,
-                content: context.content,
-                prompt: mergedPrompt.isEmpty ? context.prompt : mergedPrompt,
-                note: context.note,
-                source: context.source,
-                keepOpen: context.keepOpen
-            )
-        )
     }
 
     private func persist(context: PendingReviewItemSaveContext) {
@@ -666,186 +585,6 @@ struct AddReviewItemView: View {
         }
     }
 
-    private func translationCandidates(for text: String) -> [ReviewItemTranslationCandidate] {
-        translationSeedTerms(for: text).enumerated().map { offset, seedTerm in
-            ReviewItemTranslationCandidate(
-                sourceText: seedTerm,
-                identifier: ReviewItemTranslationRequestIdentifier(priority: offset).rawValue
-            )
-        }
-    }
-
-    private func mergeTranslatedGlosses(_ translatedTexts: [String]) -> String {
-        var mergedGlosses: [String] = []
-
-        func appendGloss(_ gloss: String) {
-            let normalized = gloss.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalized.isEmpty else { return }
-            guard !mergedGlosses.contains(normalized) else { return }
-            mergedGlosses.append(normalized)
-        }
-
-        for text in translatedTexts {
-            let components = text
-                .replacingOccurrences(of: "（", with: "；")
-                .replacingOccurrences(of: "）", with: "")
-                .split(whereSeparator: { "；;、,，/".contains($0) })
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-
-            if components.isEmpty {
-                appendGloss(text)
-            } else {
-                for component in components {
-                    appendGloss(component)
-                }
-            }
-        }
-
-        return mergedGlosses.prefix(4).joined(separator: "；")
-    }
-
-    private func translationSeedTerms(for text: String) -> [String] {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
-
-        var seedTerms: [String] = []
-
-        func appendSeed(_ candidate: String?) {
-            guard let candidate else { return }
-            let normalized = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalized.isEmpty else { return }
-            guard !seedTerms.contains(where: { $0.caseInsensitiveCompare(normalized) == .orderedSame }) else { return }
-            seedTerms.append(normalized)
-        }
-
-        if isLikelySingleEnglishWord(trimmed) {
-            appendSeed(englishLemma(for: trimmed))
-            for candidate in englishBaseFormCandidates(for: trimmed) {
-                appendSeed(candidate)
-            }
-        }
-
-        appendSeed(trimmed)
-
-        if seedTerms.count <= 3 {
-            return seedTerms
-        }
-
-        var prioritizedSeeds = Array(seedTerms.prefix(2))
-        if !prioritizedSeeds.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
-            prioritizedSeeds.append(trimmed)
-        }
-        return prioritizedSeeds
-    }
-
-    private func isLikelySingleEnglishWord(_ text: String) -> Bool {
-        let pattern = "^[A-Za-z]+(?:['-][A-Za-z]+)*$"
-        return text.range(of: pattern, options: .regularExpression) != nil
-    }
-
-    private func englishLemma(for word: String) -> String? {
-        let lowercased = word.lowercased()
-        let tagger = NLTagger(tagSchemes: [.lemma])
-        tagger.string = lowercased
-        let range = lowercased.startIndex..<lowercased.endIndex
-        let options: NLTagger.Options = [.omitWhitespace, .omitPunctuation, .joinNames]
-        var resolvedLemma: String?
-
-        tagger.enumerateTags(in: range, unit: .word, scheme: .lemma, options: options) { tag, tokenRange in
-            guard tokenRange == range, let rawValue = tag?.rawValue else { return true }
-            resolvedLemma = rawValue
-            return false
-        }
-
-        guard let rawValue = resolvedLemma else { return nil }
-        let lemma = rawValue.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        guard !lemma.isEmpty,
-              lemma.caseInsensitiveCompare(lowercased) != ComparisonResult.orderedSame else { return nil }
-        return lemma
-    }
-
-    private func englishBaseFormCandidates(for word: String) -> [String] {
-        let lowercased = word.lowercased()
-        guard lowercased.count >= 4 else { return [] }
-
-        var candidates: [String] = []
-
-        func appendCandidate(_ candidate: String?) {
-            guard let candidate else { return }
-            guard candidate.count >= 3 else { return }
-            guard candidate.range(of: "^[a-z]+(?:['-][a-z]+)*$", options: .regularExpression) != nil else { return }
-            guard !candidates.contains(candidate), candidate != lowercased else { return }
-            candidates.append(candidate)
-        }
-
-        if lowercased.hasSuffix("ies"), lowercased.count > 4 {
-            appendCandidate(String(lowercased.dropLast(3)) + "y")
-        }
-
-        if lowercased.hasSuffix("ves"), lowercased.count > 4 {
-            let stem = String(lowercased.dropLast(3))
-            appendCandidate(stem + "f")
-            appendCandidate(stem + "fe")
-        }
-
-        if ["ses", "xes", "zes", "ches", "shes", "oes"].contains(where: { lowercased.hasSuffix($0) }) {
-            appendCandidate(String(lowercased.dropLast(2)))
-        } else if lowercased.hasSuffix("s"), !lowercased.hasSuffix("ss"), lowercased.count > 4 {
-            appendCandidate(String(lowercased.dropLast()))
-        }
-
-        if lowercased.hasSuffix("ied"), lowercased.count > 4 {
-            appendCandidate(String(lowercased.dropLast(3)) + "y")
-        } else if lowercased.hasSuffix("ed"), lowercased.count > 4 {
-            let stem = String(lowercased.dropLast(2))
-            appendCandidate(stem)
-            appendCandidate(stem + "e")
-            if let dedoubled = droppingTrailingDoubleConsonant(from: stem) {
-                appendCandidate(dedoubled)
-            }
-        }
-
-        if lowercased.hasSuffix("ing"), lowercased.count > 5 {
-            let stem = String(lowercased.dropLast(3))
-            appendCandidate(stem)
-            appendCandidate(stem + "e")
-            if let dedoubled = droppingTrailingDoubleConsonant(from: stem) {
-                appendCandidate(dedoubled)
-            }
-        }
-
-        if lowercased.hasSuffix("er"), lowercased.count > 4 {
-            let stem = String(lowercased.dropLast(2))
-            appendCandidate(stem)
-            appendCandidate(stem + "e")
-            if let dedoubled = droppingTrailingDoubleConsonant(from: stem) {
-                appendCandidate(dedoubled)
-            }
-        }
-
-        if lowercased.hasSuffix("est"), lowercased.count > 5 {
-            let stem = String(lowercased.dropLast(3))
-            appendCandidate(stem)
-            appendCandidate(stem + "e")
-            if let dedoubled = droppingTrailingDoubleConsonant(from: stem) {
-                appendCandidate(dedoubled)
-            }
-        }
-
-        return Array(candidates.prefix(2))
-    }
-
-    private func droppingTrailingDoubleConsonant(from text: String) -> String? {
-        guard text.count >= 4 else { return nil }
-        let characters = Array(text)
-        guard characters.count >= 2,
-              characters[characters.count - 1] == characters[characters.count - 2],
-              !"aeiou".contains(characters[characters.count - 1]) else {
-            return nil
-        }
-        return String(characters.dropLast())
-    }
 }
 
 private struct PendingReviewItemSaveContext {
@@ -855,33 +594,6 @@ private struct PendingReviewItemSaveContext {
     let note: String
     let source: String
     let keepOpen: Bool
-}
-
-private struct ReviewItemTranslationCandidate {
-    let sourceText: String
-    let identifier: String
-}
-
-private struct RankedReviewItemTranslation {
-    let priority: Int
-    let text: String
-}
-
-private struct ReviewItemTranslationRequestIdentifier {
-    let priority: Int
-
-    init(priority: Int) {
-        self.priority = priority
-    }
-
-    init?(identifier: String) {
-        guard let priority = Int(identifier) else { return nil }
-        self.priority = priority
-    }
-
-    var rawValue: String {
-        "\(priority)"
-    }
 }
 
 private struct ReviewRecordDisplaySnapshot: Identifiable {

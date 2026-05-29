@@ -2547,6 +2547,12 @@ private struct HomeDictationPreviewView: View {
                                                 .font(.headline.weight(.medium))
                                                 .foregroundStyle(.blue)
                                         }
+
+                                        if let phonetic = phoneticText(for: entry) {
+                                            Text(phonetic)
+                                                .font(.subheadline.weight(.semibold))
+                                                .foregroundStyle(.secondary)
+                                        }
                                     }
                                 }
 
@@ -2601,6 +2607,15 @@ private struct HomeDictationPreviewView: View {
             }
         }
     }
+
+    private func phoneticText(for entry: HomeDictationEntryProjection) -> String? {
+        guard entry.type == .englishWord,
+              let gloss = EnglishGlossService.shared.lookup(text: entry.content),
+              !gloss.displayPhonetic.isEmpty else {
+            return nil
+        }
+        return gloss.displayPhonetic
+    }
 }
 
 // MARK: - Review Preview View
@@ -2653,6 +2668,12 @@ private struct ReviewPreviewView: View {
                                             Text(item.prompt)
                                                 .font(.headline.weight(.medium))
                                                 .foregroundStyle(.orange)
+                                        }
+
+                                        if let phonetic = phoneticText(for: item) {
+                                            Text(phonetic)
+                                                .font(.subheadline.weight(.semibold))
+                                                .foregroundStyle(.secondary)
                                         }
                                     }
                                 }
@@ -2707,6 +2728,15 @@ private struct ReviewPreviewView: View {
                 .background(.bar)
             }
         }
+    }
+
+    private func phoneticText(for item: HomeReviewItemProjection) -> String? {
+        guard item.type == .englishWord,
+              let gloss = EnglishGlossService.shared.lookup(text: item.content),
+              !gloss.displayPhonetic.isEmpty else {
+            return nil
+        }
+        return gloss.displayPhonetic
     }
 }
 

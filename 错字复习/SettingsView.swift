@@ -16,6 +16,8 @@ struct SettingsView: View {
     @State private var pendingImportFilename = ""
     @State private var infoAlert: InfoAlert?
     @State private var isRestoringBackup = false
+    @State private var isUpdatingEnglishGlosses = false
+    @State private var isConfirmingEnglishGlossUpdate = false
 
     private var reviewStyle: Binding<ReviewInteractionStyle> {
         Binding(
@@ -275,6 +277,30 @@ struct SettingsView: View {
 
             Section {
                 Button {
+                    isConfirmingEnglishGlossUpdate = true
+                } label: {
+                    HStack {
+                        SettingsIcon(name: "text.book.closed.fill", color: .purple)
+                        Text("更新已有英语释义")
+                        Spacer()
+                        if isUpdatingEnglishGlosses {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                    }
+                }
+                .disabled(isUpdatingEnglishGlosses || isRestoringBackup)
+            } header: {
+                Text("词典维护")
+            } footer: {
+                SettingsNoteRow(
+                    icon: "text.magnifyingglass",
+                    text: "会用本地 ECDICT 重新覆盖已有英语错题和听写条目的中文释义；词典未命中的内容会保持原样。"
+                )
+            }
+
+            Section {
+                Button {
                     exportBackup()
                 } label: {
                     HStack {
@@ -322,6 +348,15 @@ struct SettingsView: View {
                     Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0")
                         .foregroundStyle(.secondary)
                 }
+
+                NavigationLink {
+                    OpenSourceLicensesView()
+                } label: {
+                    HStack {
+                        SettingsIcon(name: "doc.text.fill", color: .blue)
+                        Text("开源许可")
+                    }
+                }
             } header: {
                 Text("关于听写复习本")
             } footer: {
@@ -344,6 +379,18 @@ struct SettingsView: View {
             allowsMultipleSelection: false
         ) { result in
             handleBackupImport(result)
+        }
+        .confirmationDialog(
+            "更新已有英语释义",
+            isPresented: $isConfirmingEnglishGlossUpdate,
+            titleVisibility: .visible
+        ) {
+            Button("用 ECDICT 覆盖更新") {
+                updateExistingEnglishGlosses()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("这会把已有英语错题和听写条目的中文提示改为本地词典释义。手动改过的英语释义也会被覆盖；词典未命中的内容保持不变。")
         }
         .confirmationDialog(
             "恢复备份",
@@ -530,6 +577,58 @@ struct SettingsView: View {
         }
     }
 
+    private func updateExistingEnglishGlosses() {
+        guard !isUpdatingEnglishGlosses else { return }
+        isUpdatingEnglishGlosses = true
+        defer { isUpdatingEnglishGlosses = false }
+
+        do {
+            let now = Date()
+            let reviewItems = try modelContext.fetch(FetchDescriptor<ReviewItem>())
+            let dictationEntries = try modelContext.fetch(FetchDescriptor<DictationEntry>())
+            var updatedReviewCount = 0
+            var updatedDictationCount = 0
+            var unmatchedCount = 0
+
+            for item in reviewItems where item.type == .englishWord {
+                guard let gloss = EnglishGlossService.shared.lookup(text: item.content) else {
+                    unmatchedCount += 1
+                    continue
+                }
+                guard item.prompt != gloss.translation else { continue }
+                item.prompt = gloss.translation
+                item.updatedAt = now
+                updatedReviewCount += 1
+            }
+
+            for entry in dictationEntries where entry.type == .englishWord {
+                guard let gloss = EnglishGlossService.shared.lookup(text: entry.content) else {
+                    unmatchedCount += 1
+                    continue
+                }
+                guard entry.prompt != gloss.translation else { continue }
+                entry.prompt = gloss.translation
+                entry.updatedAt = now
+                updatedDictationCount += 1
+            }
+
+            if modelContext.hasChanges {
+                try modelContext.save()
+                NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
+            }
+
+            showInfoAlert(
+                title: "更新完成",
+                message: "已更新错题 \(updatedReviewCount) 条、听写 \(updatedDictationCount) 条。\n\n词典未命中 \(unmatchedCount) 条，已保持原样。"
+            )
+        } catch {
+            showInfoAlert(
+                title: "更新失败",
+                message: error.localizedDescription
+            )
+        }
+    }
+
     private func clearPendingImport() {
         pendingImportPayload = nil
         pendingImportFilename = ""
@@ -586,6 +685,44 @@ private struct SettingsNoteRow: View {
         }
         .font(.footnote)
         .foregroundStyle(.secondary)
+    }
+}
+
+private struct OpenSourceLicensesView: View {
+    private var ecdictLicenseText: String {
+        guard let url = Bundle.main.url(forResource: "ECDICT_LICENSE", withExtension: "txt"),
+              let text = try? String(contentsOf: url, encoding: .utf8) else {
+            return "ECDICT 使用 MIT License。许可文件未能加载，请检查应用资源。"
+        }
+        return text
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("ECDICT")
+                        .font(.headline)
+                    Text("英汉词典数据用于本地释义和音标显示。")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Link("GitHub: skywind3000/ECDICT", destination: URL(string: "https://github.com/skywind3000/ECDICT")!)
+                }
+                .padding(.vertical, 4)
+            } header: {
+                Text("词典数据")
+            }
+
+            Section {
+                Text(ecdictLicenseText)
+                    .font(.footnote.monospaced())
+                    .textSelection(.enabled)
+            } header: {
+                Text("MIT License")
+            }
+        }
+        .navigationTitle("开源许可")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

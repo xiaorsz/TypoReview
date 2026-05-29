@@ -639,6 +639,12 @@ struct DictationPreviewView: View {
                                                 .font(.headline.weight(.medium))
                                                 .foregroundStyle(.blue)
                                         }
+
+                                        if let phonetic = phoneticText(for: entry) {
+                                            Text(phonetic)
+                                                .font(.subheadline.weight(.semibold))
+                                                .foregroundStyle(.secondary)
+                                        }
                                     }
                                 }
                                 
@@ -708,6 +714,15 @@ struct DictationPreviewView: View {
             }
         }
     }
+
+    private func phoneticText(for entry: DictationEntry) -> String? {
+        guard entry.type == .englishWord,
+              let gloss = EnglishGlossService.shared.lookup(text: entry.content),
+              !gloss.displayPhonetic.isEmpty else {
+            return nil
+        }
+        return gloss.displayPhonetic
+    }
 }
 
 private struct DictationProjectionPreviewView: View {
@@ -760,6 +775,12 @@ private struct DictationProjectionPreviewView: View {
                                             Text(entry.prompt)
                                                 .font(.headline.weight(.medium))
                                                 .foregroundStyle(.blue)
+                                        }
+
+                                        if let phonetic = phoneticText(for: entry) {
+                                            Text(phonetic)
+                                                .font(.subheadline.weight(.semibold))
+                                                .foregroundStyle(.secondary)
                                         }
                                     }
                                 }
@@ -829,6 +850,15 @@ private struct DictationProjectionPreviewView: View {
                 .background(.bar)
             }
         }
+    }
+
+    private func phoneticText(for entry: DictationEntryProjection) -> String? {
+        guard entry.type == .englishWord,
+              let gloss = EnglishGlossService.shared.lookup(text: entry.content),
+              !gloss.displayPhonetic.isEmpty else {
+            return nil
+        }
+        return gloss.displayPhonetic
     }
 }
 

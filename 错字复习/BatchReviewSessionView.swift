@@ -146,6 +146,11 @@ struct BatchReviewSessionView: View {
                         Text(item.content)
                             .font(.system(isWide ? .title : .title2, design: .rounded, weight: .bold))
                             .foregroundStyle(.blue)
+                        if let phonetic = phoneticText(for: item) {
+                            Text(phonetic)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
@@ -206,6 +211,13 @@ struct BatchReviewSessionView: View {
                             .foregroundStyle(.primary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+
+                    if let phonetic = phoneticText(for: item) {
+                        Text(phonetic)
+                            .font(.system(.title3, design: .rounded, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
 
@@ -233,6 +245,15 @@ struct BatchReviewSessionView: View {
             .frame(minHeight: 64)
         }
         .buttonStyle(ResultButtonStyle(color: speaker.isSpeaking ? .teal : .blue))
+    }
+
+    private func phoneticText(for item: ReviewItem) -> String? {
+        guard item.type == .englishWord,
+              let gloss = EnglishGlossService.shared.lookup(text: item.content),
+              !gloss.displayPhonetic.isEmpty else {
+            return nil
+        }
+        return gloss.displayPhonetic
     }
 
     private func helperFooter(for item: ReviewItem) -> some View {

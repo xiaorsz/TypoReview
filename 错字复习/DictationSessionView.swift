@@ -145,6 +145,11 @@ struct DictationSessionView: View {
                         Text(entry.content)
                             .font(.system(isWide ? .title : .title2, design: .rounded, weight: .bold))
                             .foregroundStyle(.blue)
+                        if let phonetic = phoneticText(for: entry) {
+                            Text(phonetic)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
@@ -184,6 +189,13 @@ struct DictationSessionView: View {
                         .foregroundStyle(.primary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                if let phonetic = phoneticText(for: entry) {
+                    Text(phonetic)
+                        .font(.system(.title3, design: .rounded, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Spacer(minLength: 12)
@@ -210,6 +222,15 @@ struct DictationSessionView: View {
             .frame(minHeight: 64)
         }
         .buttonStyle(ResultButtonStyle(color: speaker.isSpeaking ? .teal : .blue))
+    }
+
+    private func phoneticText(for entry: DictationEntry) -> String? {
+        guard entry.type == .englishWord,
+              let gloss = EnglishGlossService.shared.lookup(text: entry.content),
+              !gloss.displayPhonetic.isEmpty else {
+            return nil
+        }
+        return gloss.displayPhonetic
     }
 
     private var helperFooter: some View {

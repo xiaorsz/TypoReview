@@ -1,7 +1,5 @@
 import SwiftUI
 import SwiftData
-import Translation
-import NaturalLanguage
 
 struct AddDictationSessionView: View {
     @Environment(\.dismiss) private var dismiss
@@ -14,7 +12,6 @@ struct AddDictationSessionView: View {
     @State private var rawText = ""
     @State private var isSaving = false
     @State private var saveErrorMessage: String?
-    @State private var pendingSaveContext: PendingDictationSaveContext?
     @State private var showTypePickerAttention = false
     @State private var isTypeManuallyChosen: Bool
 
@@ -113,11 +110,6 @@ struct AddDictationSessionView: View {
                             .controlSize(.large)
                         Text("正在生成听写计划...")
                             .font(.headline)
-                        if type == .englishWord {
-                            Text("正在使用 Apple 翻译补全更完整的单词释义")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
                     }
                     .padding(24)
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
@@ -127,13 +119,7 @@ struct AddDictationSessionView: View {
     }
 
     var body: some View {
-        if #available(iOS 18.0, *) {
-            content.translationTask(activeTranslationConfiguration) { @Sendable session in
-                await handlePendingTranslation(using: session)
-            }
-        } else {
-            content
-        }
+        content
     }
 
     private var introCard: some View {
@@ -300,7 +286,14 @@ struct AddDictationSessionView: View {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let sessionTitle = trimmedTitle.isEmpty ? "\(scheduledDate.formatted(date: .abbreviated, time: .omitted))听写" : trimmedTitle
         let sourceFallback = defaultSource.trimmingCharacters(in: .whitespacesAndNewlines)
-        let currentEntries = entries
+        let currentEntries = entries.map { entry in
+            guard selectedType == .englishWord,
+                  entry.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let gloss = EnglishGlossService.shared.lookup(text: entry.content) else {
+                return entry
+            }
+            return entry.settingPrompt(to: gloss.translation)
+        }
 
         let context = PendingDictationSaveContext(
             title: sessionTitle,
@@ -311,104 +304,7 @@ struct AddDictationSessionView: View {
             createdAt: now
         )
 
-        let needsTranslation = selectedType == .englishWord && currentEntries.contains { $0.prompt.isEmpty }
-        if needsTranslation, #available(iOS 18.0, *) {
-            pendingSaveContext = context
-            return
-        }
-
         await persist(context: context)
-    }
-
-    @available(iOS 18.0, *)
-    private var activeTranslationConfiguration: TranslationSession.Configuration? {
-        guard pendingSaveContext != nil else { return nil }
-        return TranslationSession.Configuration(
-            source: Locale.Language(identifier: "en"),
-            target: Locale.Language(identifier: "zh-Hans")
-        )
-    }
-
-    @available(iOS 18.0, *)
-    private func handlePendingTranslation(using session: TranslationSession) async {
-        guard let context = pendingSaveContext else { return }
-
-        let pendingRequests = context.entries.enumerated().reduce(into: [TranslationSession.Request]()) { result, pair in
-            let (index, entry) = pair
-            guard entry.prompt.isEmpty else { return }
-            result.append(contentsOf: translationCandidates(for: entry.content, at: index).map { candidate in
-                TranslationSession.Request(
-                    sourceText: candidate.sourceText,
-                    clientIdentifier: candidate.identifier
-                )
-            })
-        }
-
-        guard !pendingRequests.isEmpty else {
-            pendingSaveContext = nil
-            await persist(context: context)
-            return
-        }
-
-        do {
-            try await session.prepareTranslation()
-            let responses = try await session.translations(from: pendingRequests)
-            await applyTranslationResponses(responses, to: context)
-        } catch {
-            pendingSaveContext = nil
-            isSaving = false
-            saveErrorMessage = "Apple 翻译暂时不可用。请确认设备已安装需要的翻译语言，或先手动填写中文释义后再保存。"
-        }
-    }
-
-    @available(iOS 18.0, *)
-    private func applyTranslationResponses(
-        _ responses: [TranslationSession.Response],
-        to context: PendingDictationSaveContext
-    ) async {
-        var resolvedEntries = context.entries
-        var translationsByEntryIndex: [Int: [RankedTranslation]] = [:]
-
-        for response in responses {
-            guard let identifier = response.clientIdentifier,
-                  let metadata = TranslationRequestIdentifier(identifier: identifier),
-                  resolvedEntries.indices.contains(metadata.entryIndex) else {
-                continue
-            }
-
-            let translated = response.targetText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !translated.isEmpty else { continue }
-            translationsByEntryIndex[metadata.entryIndex, default: []].append(
-                RankedTranslation(priority: metadata.priority, text: translated)
-            )
-        }
-
-        for (index, translations) in translationsByEntryIndex {
-            let mergedPrompt = mergeTranslatedGlosses(
-                translations
-                    .sorted { $0.priority < $1.priority }
-                    .map(\.text)
-            )
-            guard !mergedPrompt.isEmpty else { continue }
-            resolvedEntries[index] = resolvedEntries[index].settingPrompt(to: mergedPrompt)
-        }
-
-        pendingSaveContext = nil
-
-        if resolvedEntries.contains(where: { $0.prompt.isEmpty }) {
-            rawText = resolvedEntries.map(\.serializedLine).joined(separator: "\n")
-        }
-
-        await persist(
-            context: PendingDictationSaveContext(
-                title: context.title,
-                scheduledDate: context.scheduledDate,
-                type: context.type,
-                sourceFallback: context.sourceFallback,
-                entries: resolvedEntries,
-                createdAt: context.createdAt
-            )
-        )
     }
 
     private func persist(context: PendingDictationSaveContext) async {
@@ -478,222 +374,6 @@ struct AddDictationSessionView: View {
         }
     }
 
-    private func translationCandidates(for text: String, at index: Int) -> [TranslationCandidate] {
-        let seedTerms = translationSeedTerms(for: text)
-        return seedTerms.enumerated().map { offset, seedTerm in
-            TranslationCandidate(
-                sourceText: seedTerm,
-                identifier: TranslationRequestIdentifier(entryIndex: index, priority: offset).rawValue
-            )
-        }
-    }
-
-    private func mergeTranslatedGlosses(_ translatedTexts: [String]) -> String {
-        var mergedGlosses: [String] = []
-
-        func appendGloss(_ gloss: String) {
-            let normalized = gloss.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalized.isEmpty else { return }
-            guard !mergedGlosses.contains(normalized) else { return }
-            mergedGlosses.append(normalized)
-        }
-
-        for text in translatedTexts {
-            let components = text
-                .replacingOccurrences(of: "（", with: "；")
-                .replacingOccurrences(of: "）", with: "")
-                .split(whereSeparator: { "；;、,，/".contains($0) })
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-
-            if components.isEmpty {
-                appendGloss(text)
-            } else {
-                for component in components {
-                    appendGloss(component)
-                }
-            }
-        }
-
-        return mergedGlosses.prefix(4).joined(separator: "；")
-    }
-
-    private func translationSeedTerms(for text: String) -> [String] {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
-
-        var seedTerms: [String] = []
-
-        func appendSeed(_ candidate: String?) {
-            guard let candidate else { return }
-            let normalized = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalized.isEmpty else { return }
-            guard !seedTerms.contains(where: { $0.caseInsensitiveCompare(normalized) == .orderedSame }) else { return }
-            seedTerms.append(normalized)
-        }
-
-        if isLikelySingleEnglishWord(trimmed) {
-            appendSeed(englishLemma(for: trimmed))
-            for candidate in englishBaseFormCandidates(for: trimmed) {
-                appendSeed(candidate)
-            }
-        }
-
-        appendSeed(trimmed)
-
-        if seedTerms.count <= 3 {
-            return seedTerms
-        }
-
-        var prioritizedSeeds = Array(seedTerms.prefix(2))
-        if !prioritizedSeeds.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
-            prioritizedSeeds.append(trimmed)
-        }
-        return prioritizedSeeds
-    }
-
-    private func isLikelySingleEnglishWord(_ text: String) -> Bool {
-        let pattern = "^[A-Za-z]+(?:['-][A-Za-z]+)*$"
-        return text.range(of: pattern, options: .regularExpression) != nil
-    }
-
-    private func englishLemma(for word: String) -> String? {
-        let lowercased = word.lowercased()
-        let tagger = NLTagger(tagSchemes: [.lemma])
-        tagger.string = lowercased
-        let range = lowercased.startIndex..<lowercased.endIndex
-        let options: NLTagger.Options = [.omitWhitespace, .omitPunctuation, .joinNames]
-        var resolvedLemma: String?
-
-        tagger.enumerateTags(in: range, unit: .word, scheme: .lemma, options: options) { tag, tokenRange in
-            guard tokenRange == range, let rawValue = tag?.rawValue else { return true }
-            resolvedLemma = rawValue
-            return false
-        }
-
-        guard let rawValue = resolvedLemma else { return nil }
-        let lemma = rawValue.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        guard !lemma.isEmpty,
-              lemma.caseInsensitiveCompare(lowercased) != ComparisonResult.orderedSame else { return nil }
-        return lemma
-    }
-
-    private func englishBaseFormCandidates(for word: String) -> [String] {
-        let lowercased = word.lowercased()
-        guard lowercased.count >= 4 else { return [] }
-
-        var candidates: [String] = []
-
-        func appendCandidate(_ candidate: String?) {
-            guard let candidate else { return }
-            guard candidate.count >= 3 else { return }
-            guard candidate.range(of: "^[a-z]+(?:['-][a-z]+)*$", options: .regularExpression) != nil else { return }
-            guard !candidates.contains(candidate), candidate != lowercased else { return }
-            candidates.append(candidate)
-        }
-
-        if lowercased.hasSuffix("ies"), lowercased.count > 4 {
-            appendCandidate(String(lowercased.dropLast(3)) + "y")
-        }
-
-        if lowercased.hasSuffix("ves"), lowercased.count > 4 {
-            let stem = String(lowercased.dropLast(3))
-            appendCandidate(stem + "f")
-            appendCandidate(stem + "fe")
-        }
-
-        if ["ses", "xes", "zes", "ches", "shes", "oes"].contains(where: { lowercased.hasSuffix($0) }) {
-            appendCandidate(String(lowercased.dropLast(2)))
-        } else if lowercased.hasSuffix("s"), !lowercased.hasSuffix("ss"), lowercased.count > 4 {
-            appendCandidate(String(lowercased.dropLast()))
-        }
-
-        if lowercased.hasSuffix("ied"), lowercased.count > 4 {
-            appendCandidate(String(lowercased.dropLast(3)) + "y")
-        } else if lowercased.hasSuffix("ed"), lowercased.count > 4 {
-            let stem = String(lowercased.dropLast(2))
-            appendCandidate(stem)
-            appendCandidate(stem + "e")
-            if let dedoubled = droppingTrailingDoubleConsonant(from: stem) {
-                appendCandidate(dedoubled)
-            }
-        }
-
-        if lowercased.hasSuffix("ing"), lowercased.count > 5 {
-            let stem = String(lowercased.dropLast(3))
-            appendCandidate(stem)
-            appendCandidate(stem + "e")
-            if let dedoubled = droppingTrailingDoubleConsonant(from: stem) {
-                appendCandidate(dedoubled)
-            }
-        }
-
-        if lowercased.hasSuffix("er"), lowercased.count > 4 {
-            let stem = String(lowercased.dropLast(2))
-            appendCandidate(stem)
-            appendCandidate(stem + "e")
-            if let dedoubled = droppingTrailingDoubleConsonant(from: stem) {
-                appendCandidate(dedoubled)
-            }
-        }
-
-        if lowercased.hasSuffix("est"), lowercased.count > 5 {
-            let stem = String(lowercased.dropLast(3))
-            appendCandidate(stem)
-            appendCandidate(stem + "e")
-            if let dedoubled = droppingTrailingDoubleConsonant(from: stem) {
-                appendCandidate(dedoubled)
-            }
-        }
-
-        return Array(candidates.prefix(2))
-    }
-
-    private func droppingTrailingDoubleConsonant(from text: String) -> String? {
-        guard text.count >= 4 else { return nil }
-        let characters = Array(text)
-        guard characters.count >= 2,
-              characters[characters.count - 1] == characters[characters.count - 2],
-              !"aeiou".contains(characters[characters.count - 1]) else {
-            return nil
-        }
-        return String(characters.dropLast())
-    }
-}
-
-private struct TranslationCandidate {
-    let sourceText: String
-    let identifier: String
-}
-
-private struct RankedTranslation {
-    let priority: Int
-    let text: String
-}
-
-private struct TranslationRequestIdentifier {
-    let entryIndex: Int
-    let priority: Int
-
-    init(entryIndex: Int, priority: Int) {
-        self.entryIndex = entryIndex
-        self.priority = priority
-    }
-
-    init?(identifier: String) {
-        let parts = identifier.split(separator: "#", omittingEmptySubsequences: false)
-        guard parts.count == 2,
-              let entryIndex = Int(parts[0]),
-              let priority = Int(parts[1]) else {
-            return nil
-        }
-        self.entryIndex = entryIndex
-        self.priority = priority
-    }
-
-    var rawValue: String {
-        "\(entryIndex)#\(priority)"
-    }
 }
 
 private struct ParsedDictationEntry {
