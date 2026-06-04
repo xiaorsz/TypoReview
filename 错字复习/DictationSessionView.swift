@@ -9,6 +9,7 @@ struct DictationSessionView: View {
     @State private var currentIndex = 0
     @State private var navigateToReview = false
     @State private var isContentRevealed = false
+    @State private var hasAutoSpokenInitialEntry = false
     @StateObject private var speaker = DictationSpeaker()
 
     let session: DictationSession
@@ -62,7 +63,12 @@ struct DictationSessionView: View {
         }
         .onAppear {
             if let currentEntry {
-                speaker.prepare(content: currentEntry.content, type: currentEntry.type, prompt: currentEntry.prompt)
+                if hasAutoSpokenInitialEntry {
+                    speaker.prepare(content: currentEntry.content, type: currentEntry.type, prompt: currentEntry.prompt)
+                } else {
+                    hasAutoSpokenInitialEntry = true
+                    speaker.speak(content: currentEntry.content, type: currentEntry.type, prompt: currentEntry.prompt)
+                }
             }
         }
         .onChange(of: currentIndex) {
