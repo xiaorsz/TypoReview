@@ -96,6 +96,8 @@ final class AppSettings {
     static let defaultBoardManualPlaybackOption = BoardManualPlaybackOption.untilPlaylistEnds.rawValue
     static let defaultBoardAutoplaySkipWeekends = true
     static let defaultBoardAutoplaySkipChinaHolidays = true
+    static let defaultAISummaryEnabled = false
+    static let defaultAISummaryModelRawValue = "deepseek-v4-flash"
     static let supportedChinaHolidayYearsSummary = ChinaHolidayCalendar.supportedYearsSummary
     static let legacyReviewInteractionStyleKey = "reviewInteractionStyle"
 
@@ -115,6 +117,8 @@ final class AppSettings {
     var boardManualPlaybackOptionRawValue: String = AppSettings.defaultBoardManualPlaybackOption
     var boardAutoplaySkipWeekends: Bool = AppSettings.defaultBoardAutoplaySkipWeekends
     var boardAutoplaySkipChinaHolidays: Bool = AppSettings.defaultBoardAutoplaySkipChinaHolidays
+    var aiSummaryEnabled: Bool = AppSettings.defaultAISummaryEnabled
+    var aiSummaryModelRawValue: String = AppSettings.defaultAISummaryModelRawValue
 
     init(
         id: UUID = UUID(),
@@ -132,7 +136,9 @@ final class AppSettings {
         boardAutoplaySlots: [BoardAutoplaySlot]? = nil,
         boardManualPlaybackOption: BoardManualPlaybackOption = .untilPlaylistEnds,
         boardAutoplaySkipWeekends: Bool = AppSettings.defaultBoardAutoplaySkipWeekends,
-        boardAutoplaySkipChinaHolidays: Bool = AppSettings.defaultBoardAutoplaySkipChinaHolidays
+        boardAutoplaySkipChinaHolidays: Bool = AppSettings.defaultBoardAutoplaySkipChinaHolidays,
+        aiSummaryEnabled: Bool = AppSettings.defaultAISummaryEnabled,
+        aiSummaryModelRawValue: String = AppSettings.defaultAISummaryModelRawValue
     ) {
         self.id = id
         self.childName = childName
@@ -150,6 +156,8 @@ final class AppSettings {
         self.boardManualPlaybackOptionRawValue = boardManualPlaybackOption.rawValue
         self.boardAutoplaySkipWeekends = boardAutoplaySkipWeekends
         self.boardAutoplaySkipChinaHolidays = boardAutoplaySkipChinaHolidays
+        self.aiSummaryEnabled = aiSummaryEnabled
+        self.aiSummaryModelRawValue = aiSummaryModelRawValue
     }
 
     static func ensureSingleton(in modelContext: ModelContext) throws -> AppSettings {
@@ -224,6 +232,11 @@ final class AppSettings {
 
         if boardAutoplaySkipWeekends != AppSettings.defaultBoardAutoplaySkipWeekends
             || boardAutoplaySkipChinaHolidays != AppSettings.defaultBoardAutoplaySkipChinaHolidays {
+            score += 1
+        }
+
+        if aiSummaryEnabled != AppSettings.defaultAISummaryEnabled
+            || aiSummaryModelRawValue != AppSettings.defaultAISummaryModelRawValue {
             score += 1
         }
 

@@ -2,6 +2,14 @@ name: 听写复习本
 options:
   minimumXcodeGenVersion: 2.38.0
   developmentLanguage: zh-Hans
+settings:
+  configs:
+    Debug:
+      SWIFT_OPTIMIZATION_LEVEL: -Onone
+      GCC_OPTIMIZATION_LEVEL: "0"
+    Release:
+      SWIFT_OPTIMIZATION_LEVEL: -O
+      GCC_OPTIMIZATION_LEVEL: s
 schemes:
   听写复习本:
     build:

@@ -1,5 +1,4 @@
 import CloudKit
-import CoreData
 import Foundation
 import SwiftData
 import Observation
@@ -409,22 +408,32 @@ final class SyncStatusStore {
 
         // Main error info
         parts.append("\(prefix)[\(error.domain) \(error.code)] \(error.localizedDescription)")
+        guard depth < 5 else {
+            parts.append("\(prefix)  ...错误链过深，已停止展开")
+            return parts.joined(separator: "\n")
+        }
 
         // CKError specific info
         if error.domain == "CKErrorDomain" || error.domain == CKError.errorDomain {
+            if error.code == CKError.Code.partialFailure.rawValue {
+                parts.append("\(prefix)  说明: 这是一批记录的部分失败，请继续查看下方子错误。")
+            }
+
             // Retry after hint
             if let retryAfter = error.userInfo[CKErrorRetryAfterKey] as? TimeInterval {
                 parts.append("\(prefix)  重试等待: \(Int(retryAfter))秒")
             }
 
             // Partial errors (CKError.partialFailure contains per-item errors)
-            if let partialErrors = error.userInfo[CKPartialErrorsByItemIDKey] as? [AnyHashable: NSError] {
-                let sample = partialErrors.prefix(3)
+            let partialErrors = cloudKitPartialErrors(from: error)
+            if !partialErrors.isEmpty {
+                let sample = partialErrors.prefix(8)
                 for (key, subError) in sample {
-                    parts.append("\(prefix)  子错误[\(key)]: [\(subError.domain) \(subError.code)] \(subError.localizedDescription)")
+                    parts.append("\(prefix)  子错误[\(key)]:")
+                    parts.append(deepErrorDescription(subError, depth: depth + 1))
                 }
-                if partialErrors.count > 3 {
-                    parts.append("\(prefix)  ...还有 \(partialErrors.count - 3) 个子错误")
+                if partialErrors.count > 8 {
+                    parts.append("\(prefix)  ...还有 \(partialErrors.count - 8) 个子错误")
                 }
             }
         }
@@ -435,6 +444,30 @@ final class SyncStatusStore {
         }
 
         return parts.joined(separator: "\n")
+    }
+
+    private static func cloudKitPartialErrors(from error: NSError) -> [(String, NSError)] {
+        guard let rawPartialErrors = error.userInfo[CKPartialErrorsByItemIDKey] else {
+            return []
+        }
+
+        let entries: [(AnyHashable, NSError)]
+        if let partialErrors = rawPartialErrors as? [AnyHashable: NSError] {
+            entries = Array(partialErrors)
+        } else if let partialErrors = rawPartialErrors as? NSDictionary {
+            entries = partialErrors.compactMap { key, value in
+                guard let key = key as? AnyHashable, let error = value as? NSError else {
+                    return nil
+                }
+                return (key, error)
+            }
+        } else {
+            return []
+        }
+
+        return entries
+            .map { (String(describing: $0.0), $0.1) }
+            .sorted { $0.0 < $1.0 }
     }
 
     // MARK: - CloudKit Direct Test
@@ -485,12 +518,18 @@ final class SyncStatusStore {
                     database: database,
                     zoneID: cdZone.zoneID
                 )
+                let pointsResults = await Self.runCloudKitWriteProbes(
+                    Self.pointsCloudKitWriteProbes(),
+                    database: database,
+                    zoneID: cdZone.zoneID
+                )
 
                 lines.insert(
                     Self.cloudKitDirectTestSummary(
                         accountStatus: accountStatus,
                         baseResults: baseResults,
-                        taskResults: taskResults
+                        taskResults: taskResults,
+                        pointsResults: pointsResults
                     ),
                     at: 0
                 )
@@ -500,6 +539,9 @@ final class SyncStatusStore {
                 lines.append("")
                 lines.append("任务系统新模型检查")
                 lines.append(contentsOf: Self.formattedProbeLines(for: taskResults))
+                lines.append("")
+                lines.append("积分系统新模型检查")
+                lines.append(contentsOf: Self.formattedProbeLines(for: pointsResults))
             } else {
                 let zoneNames = zones.map(\.zoneID.zoneName).joined(separator: ", ")
                 lines.insert("❌ 找不到 CoreData 同步区域，当前无法判断具体是哪类模型上传失败。", at: 0)
@@ -509,7 +551,7 @@ final class SyncStatusStore {
             cloudKitDirectTestResult = lines.joined(separator: "\n")
         } catch {
             let nsError = error as NSError
-            cloudKitDirectTestResult = "❌ 连接失败: [\(nsError.domain) \(nsError.code)] \(nsError.localizedDescription)"
+            cloudKitDirectTestResult = "❌ 连接失败:\n\(Self.deepErrorDescription(nsError))"
         }
     }
 
@@ -529,33 +571,6 @@ final class SyncStatusStore {
         try? modelContext.save()
         modelContext.delete(dummyRecord)
         try? modelContext.save()
-    }
-
-    func purgePersistentHistoryAndReset(using modelContext: ModelContext) -> String {
-        let container = modelContext.container
-        let purgeRequest = NSPersistentHistoryChangeRequest.deleteHistory(before: Date())
-
-        do {
-            let bgContext = NSManagedObjectContext(concurrencyType: .privateQueueConcurrencyType)
-            // Access the underlying CoreData coordinator through the container
-            let mirror = Mirror(reflecting: container)
-            for child in mirror.children {
-                if let coordinator = child.value as? NSPersistentStoreCoordinator {
-                    bgContext.persistentStoreCoordinator = coordinator
-                    try bgContext.execute(purgeRequest)
-                    return "✅ 同步历史已清除。请完全退出 App（从后台滑掉），然后重新打开。"
-                }
-            }
-
-            // Fallback: try to find a .sqlite file and use its store
-            let storeURL = container.configurations.first?.url
-            if let url = storeURL {
-                return "⚠️ 无法直接访问 coordinator。请手动删除 App 重装来重置同步状态。\n存储路径: \(url.lastPathComponent)"
-            }
-            return "⚠️ 无法获取 store coordinator。请手动删除 App 并从 TestFlight 重装。"
-        } catch {
-            return "❌ 清除失败: \(error.localizedDescription)"
-        }
     }
 
     // MARK: - Build Diagnostics
@@ -632,6 +647,28 @@ final class SyncStatusStore {
         ]
     }
 
+    private static func pointsCloudKitWriteProbes() -> [CloudKitWriteProbe] {
+        [
+            CloudKitWriteProbe(label: "积分记录", recordType: "CD_PointLedgerEntry") { record, testID in
+                record["CD_id"] = testID.uuidString as CKRecordValue
+                record["CD_createdAt"] = Date() as CKRecordValue
+                record["CD_amount"] = NSNumber(value: 0)
+                record["CD_kindRawValue"] = PointLedgerKind.reward.rawValue as CKRecordValue
+                record["CD_sourceTypeRawValue"] = PointLedgerSourceType.reviewRecord.rawValue as CKRecordValue
+                record["CD_sourceIDRawValue"] = testID.uuidString as CKRecordValue
+                record["CD_idempotencyKey"] = "__cloudkit_probe__.\(testID.uuidString)" as CKRecordValue
+                record["CD_note"] = "__cloudkit_probe__" as CKRecordValue
+                record["CD_isReversal"] = NSNumber(value: false)
+            },
+            CloudKitWriteProbe(label: "积分状态", recordType: "CD_PointRewardState") { record, testID in
+                record["CD_id"] = testID.uuidString as CKRecordValue
+                record["CD_currentStreak"] = NSNumber(value: 0)
+                record["CD_longestStreak"] = NSNumber(value: 0)
+                record["CD_updatedAt"] = Date() as CKRecordValue
+            }
+        ]
+    }
+
     private static func runCloudKitWriteProbes(
         _ probes: [CloudKitWriteProbe],
         database: CKDatabase,
@@ -673,7 +710,7 @@ final class SyncStatusStore {
                     label: probe.label,
                     recordType: probe.recordType,
                     succeeded: true,
-                    detail: "写入成功，但清理测试记录失败：\((error as NSError).localizedDescription)"
+                    detail: "写入成功，但清理测试记录失败：\n\(deepErrorDescription(error as NSError))"
                 )
             }
         } catch {
@@ -690,11 +727,13 @@ final class SyncStatusStore {
     private static func cloudKitDirectTestSummary(
         accountStatus: CKAccountStatus,
         baseResults: [CloudKitWriteProbeResult],
-        taskResults: [CloudKitWriteProbeResult]
+        taskResults: [CloudKitWriteProbeResult],
+        pointsResults: [CloudKitWriteProbeResult]
     ) -> String {
         let accountAvailable = accountStatus == .available
         let baseFailures = baseResults.filter { !$0.succeeded }
         let taskFailures = taskResults.filter { !$0.succeeded }
+        let pointsFailures = pointsResults.filter { !$0.succeeded }
 
         guard accountAvailable else {
             return "❌ iCloud 账户当前不可用，先解决账号或系统层限制。"
@@ -708,7 +747,11 @@ final class SyncStatusStore {
             return "⚠️ 基础模型可写，但任务系统新模型检查失败，优先检查 CloudKit Production Schema 是否已部署完整。"
         }
 
-        return "✅ 基础模型和任务系统新模型都可写。"
+        if !pointsFailures.isEmpty {
+            return "⚠️ 基础模型和任务系统可写，但积分系统新模型检查失败，优先检查 CloudKit Production Schema 是否已部署完整。"
+        }
+
+        return "✅ 已覆盖的基础模型、任务系统和积分系统模型都可写。"
     }
 
     private static func formattedProbeLines(for results: [CloudKitWriteProbeResult]) -> [String] {

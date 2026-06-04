@@ -487,7 +487,9 @@
 		03A679B8130D5DA06C4DF198 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				GCC_OPTIMIZATION_LEVEL = 0;
 				SDKROOT = iphoneos;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
 			name = Debug;
 		};
@@ -594,7 +596,9 @@
 		AC210FFA5E717367DA656C39 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				GCC_OPTIMIZATION_LEVEL = s;
 				SDKROOT = iphoneos;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
 			};
 			name = Release;
 		};

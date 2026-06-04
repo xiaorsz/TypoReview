@@ -6,8 +6,6 @@ struct AdvancedSyncDiagnosticView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Environment(SyncStatusStore.self) private var syncStatusStore
-    @State private var purgeResultMessage = ""
-    @State private var showPurgeConfirm = false
 
     var body: some View {
         Form {
@@ -122,7 +120,7 @@ struct AdvancedSyncDiagnosticView: View {
             } header: {
                 Text("CloudKit 直连测试")
             } footer: {
-                Text("会按记录类型分别写入并删除测试记录，帮助区分是整体 CloudKit 不可写，还是最近新增的任务系统模型还没有部署到生产环境。")
+                Text("会按记录类型分别写入并删除测试记录，帮助区分是整体 CloudKit 不可写，还是最近新增的任务或积分系统模型还没有部署到生产环境。")
             }
 
             // MARK: - Actions
@@ -161,32 +159,6 @@ struct AdvancedSyncDiagnosticView: View {
                 Text("\"强制触发同步\"会临时写入并删除一条记录，迫使 CloudKit 发起一次上传和下载周期。")
             }
 
-            Section {
-                Button(role: .destructive) {
-                    showPurgeConfirm = true
-                } label: {
-                    Text("重置同步状态")
-                }
-                .confirmationDialog("确定要重置同步状态吗？", isPresented: $showPurgeConfirm, titleVisibility: .visible) {
-                    Button("重置", role: .destructive) {
-                        purgeResultMessage = syncStatusStore.purgePersistentHistoryAndReset(using: modelContext)
-                    }
-                    Button("取消", role: .cancel) {}
-                } message: {
-                    Text("这会清除本地的同步历史队列，解除卡住的上传。操作后需要完全退出并重新打开 App。数据不会丢失。")
-                }
-
-                if !purgeResultMessage.isEmpty {
-                    Text(purgeResultMessage)
-                        .font(.caption)
-                        .foregroundStyle(purgeResultMessage.hasPrefix("✅") ? Color.green : Color.orange)
-                        .textSelection(.enabled)
-                }
-            } header: {
-                Text("高级操作")
-            } footer: {
-                Text("如果上传持续失败，「重置同步状态」可以清除积压的同步队列。操作后请完全退出 App 再打开，CloudKit 会重新评估需要同步的数据。")
-            }
         }
         .navigationTitle("同步诊断信息")
         .navigationBarTitleDisplayMode(.inline)

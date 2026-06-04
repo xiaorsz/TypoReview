@@ -357,8 +357,6 @@ struct HomeView: View {
     @State private var needsDashboardRefreshAfterCurrent = false
     @State private var dailySummaryPresentation: DailySummaryPresentation?
     @State private var dailySummaryTask: Task<Void, Never>?
-    @AppStorage(DailySummaryAISettings.isEnabledKey) private var aiSummaryEnabled = false
-    @AppStorage(DailySummaryAISettings.modelKey) private var aiSummaryModelRawValue = DailySummaryAISettings.defaultModel
 
     private let isPad = UIDevice.current.userInterfaceIdiom == .pad
 
@@ -436,8 +434,6 @@ struct HomeView: View {
         let pointsEarnedToday: Int
         let currentPointStreak: Int
         let wrongReviewSamples: [String]
-        let heroIconName: String
-        let heroMessage: String
         let heroSubtitle: String
         let heroGradientColors: [Color]
 
@@ -594,25 +590,6 @@ struct HomeView: View {
             let tasksDone = totPendingTaskCount == 0 && (tCompletedTaskCount > 0 || activeTaskCount == 0)
             let reviewDone = cappedDueContent.isEmpty
             let dictationDone = latestDS?.isReviewed ?? true
-            let scheduleDone = tSchedules.isEmpty
-
-            let hIcon: String = {
-                if tasksDone && reviewDone && dictationDone && scheduleDone { return "checkmark.seal.fill" }
-                if reviewDone && dictationDone { return "sparkles" }
-                if totPendingTaskCount == 0 { return "book.fill" }
-                return "figure.run"
-            }()
-
-            let hMessage: String = {
-                if tasksDone && reviewDone && dictationDone { return "今天的任务、复习和听写全部完成了！" }
-                var parts: [String] = []
-                if totPendingTaskCount > 0 { parts.append("\(totPendingTaskCount) 项任务") }
-                if !tSchedules.isEmpty { parts.append("\(tSchedules.count) 项日程") }
-                if !cappedDueContent.isEmpty { parts.append("\(cappedDueContent.count) 项复习") }
-                if pendingDictationEntryCount > 0 { parts.append("\(pendingDictationEntryCount) 条听写") }
-                if parts.isEmpty { return "\(name)，今天没有待办事项" }
-                return "\(name) 今天还有 \(parts.joined(separator: "、"))"
-            }()
 
             let hSubtitle: String = {
                 if tasksDone && reviewDone && dictationDone { return "表现太棒了！录入新错题或休息一下吧。明天见！" }
@@ -637,7 +614,7 @@ struct HomeView: View {
             let hGradient: [Color] = {
                 if tasksDone && reviewDone && dictationDone { return [.green.opacity(0.85), .mint.opacity(0.65)] }
                 if totPendingTaskCount > 0 || !cappedDueContent.isEmpty || !(latestDS?.isReviewed ?? true) {
-                    if totPendingTaskCount > 0 && !cappedDueContent.isEmpty { return [.orange.opacity(0.9), .yellow.opacity(0.65)] }
+                    if totPendingTaskCount > 0 && !cappedDueContent.isEmpty { return [.orange.opacity(0.95), .pink.opacity(0.78)] }
                     return [.blue.opacity(0.8), .cyan.opacity(0.6)]
                 }
                 return [.blue.opacity(0.8), .cyan.opacity(0.6)]
@@ -671,8 +648,6 @@ struct HomeView: View {
                 pointsEarnedToday: pointsEarnedToday,
                 currentPointStreak: currentPointStreak,
                 wrongReviewSamples: wrongSamples,
-                heroIconName: hIcon,
-                heroMessage: hMessage,
                 heroSubtitle: hSubtitle,
                 heroGradientColors: hGradient
             )
@@ -930,10 +905,10 @@ struct HomeView: View {
     private func refreshDailySummary(for snapshot: DashboardSnapshot, force: Bool) {
         let input = makeDailySummaryInput(from: snapshot)
         let inputHash = input.stableHash()
-        let model = DeepSeekSummaryModel(rawValue: aiSummaryModelRawValue) ?? .flash
+        let model = DeepSeekSummaryModel(rawValue: appSettingsStore.aiSummaryModelRawValue) ?? .flash
         let fallbackResult = input.localFallbackResult()
 
-        guard aiSummaryEnabled else {
+        guard appSettingsStore.aiSummaryEnabled else {
             dailySummaryTask?.cancel()
             dailySummaryPresentation = DailySummaryPresentation(
                 inputHash: inputHash,
@@ -1020,61 +995,40 @@ struct HomeView: View {
             ? dailySummaryPresentation?.isLoading == true
             : false
 
-        return HStack(alignment: .center, spacing: 16) {
-            Image(systemName: snapshot.heroIconName)
-                .font(.system(size: 32))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(.white)
-                .contentTransition(.symbolEffect(.replace))
-                .frame(width: 44, height: 44)
-                .background(.white.opacity(0.15), in: Circle())
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(snapshot.heroMessage)
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                Text(heroSummaryText(snapshot, result: summaryResult))
                     .font(.system(.title3, design: .rounded, weight: .bold))
                     .foregroundStyle(.white)
-                    .lineLimit(1)
+                    .lineLimit(3)
+                    .minimumScaleFactor(0.82)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "sparkles")
-                            .font(.caption2.weight(.semibold))
-                        Text("今日小结")
-                            .font(.caption2.weight(.semibold))
+                Spacer(minLength: 8)
 
-                        if isSummaryLoading {
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(.white)
-                        }
-
-                        if aiSummaryEnabled {
-                            Button {
-                                refreshDailySummary(for: snapshot, force: true)
-                            } label: {
-                                Image(systemName: "arrow.clockwise")
-                                    .font(.caption2.weight(.semibold))
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(isSummaryLoading)
-                            .accessibilityLabel("重新生成今日小结")
-                        }
+                if isSummaryLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white)
+                } else if appSettingsStore.aiSummaryEnabled {
+                    Button {
+                        refreshDailySummary(for: snapshot, force: true)
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .frame(width: 28, height: 28)
+                            .background(.white.opacity(0.14), in: Circle())
                     }
-                    .foregroundStyle(.white.opacity(0.9))
-
-                    Text(summaryResult?.displayText ?? snapshot.heroSubtitle)
-                        .font(.subheadline)
-                        .lineSpacing(2)
-                        .foregroundStyle(.white.opacity(0.85))
-                        .lineLimit(3)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("重新生成今日小结")
                 }
-                
-                syncStatusBadge
-                    .padding(.top, 2)
             }
+
+            heroMetricStrip(snapshot)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
+        .padding(16)
         .background(
             RoundedRectangle(cornerRadius: 24)
                 .fill(
@@ -1087,17 +1041,98 @@ struct HomeView: View {
         )
     }
 
-    private var syncStatusBadge: some View {
+    private func heroMetricStrip(_ snapshot: DashboardSnapshot) -> some View {
         HStack(spacing: 8) {
-            SyncStatusIconView(isRefreshing: syncStatusStore.isRefreshing)
-            Text(syncStatusStore.statusText)
-                .lineLimit(1)
+            heroMetricTile(
+                icon: "checklist",
+                title: "任务",
+                value: "\(snapshot.totalPendingTaskCount)",
+                caption: snapshot.historicalPendingTaskCount > 0
+                    ? "含历史 \(snapshot.historicalPendingTaskCount)"
+                    : "待完成",
+                tint: .orange
+            )
+
+            heroMetricTile(
+                icon: "book.closed",
+                title: "复习",
+                value: "\(snapshot.dueItems.count)",
+                caption: snapshot.allDueCount > snapshot.dueItems.count
+                    ? "到期 \(snapshot.allDueCount)"
+                    : "待复习",
+                tint: .purple
+            )
+
+            heroMetricTile(
+                icon: "text.book.closed",
+                title: "听写",
+                value: "\(snapshot.pendingDictationCount)",
+                caption: "待听写",
+                tint: .teal
+            )
         }
-        .font(.system(size: 10, weight: .medium))
-        .foregroundStyle(.white.opacity(0.9))
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background(.white.opacity(0.15), in: Capsule())
+    }
+
+    private func heroMetricTile(
+        icon: String,
+        title: String,
+        value: String,
+        caption: String,
+        tint: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(tint)
+                    .frame(width: 18, height: 18)
+                    .background(.white.opacity(0.9), in: Circle())
+
+                Text(title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.88))
+                    .lineLimit(1)
+            }
+
+            Text(value)
+                .font(.system(.title2, design: .rounded, weight: .bold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .contentTransition(.numericText())
+
+            Text(caption)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.white.opacity(0.78))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(.white.opacity(0.14), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(.white.opacity(0.12), lineWidth: 1)
+        )
+    }
+
+    private func heroSummaryText(_ snapshot: DashboardSnapshot, result: DailySummaryResult?) -> String {
+        let summary = (result?.displayText ?? snapshot.heroSubtitle)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = snapshot.childName.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !name.isEmpty else { return summary }
+        guard !summary.isEmpty else { return name }
+
+        if summary.hasPrefix(name) {
+            let remainder = summary
+                .dropFirst(name.count)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "，,。 ").union(.whitespacesAndNewlines))
+            return remainder.isEmpty ? name : "\(name)，\(remainder)"
+        }
+
+        return "\(name)，\(summary)"
     }
 
     private func pointsSummaryCard(_ snapshot: DashboardSnapshot) -> some View {
@@ -1376,12 +1411,12 @@ struct HomeView: View {
                 }
             }
         ))
-        .onChange(of: aiSummaryEnabled) { _, _ in
+        .onChange(of: appSettingsStore.aiSummaryEnabled) { _, _ in
             if let dashboardSnapshot {
                 refreshDailySummary(for: dashboardSnapshot, force: true)
             }
         }
-        .onChange(of: aiSummaryModelRawValue) { _, _ in
+        .onChange(of: appSettingsStore.aiSummaryModelRawValue) { _, _ in
             if let dashboardSnapshot {
                 refreshDailySummary(for: dashboardSnapshot, force: true)
             }
@@ -2486,8 +2521,6 @@ struct HomeView: View {
                 pointsEarnedToday: snapshot.pointsEarnedToday + PointLedgerService.taskRewardAmount,
                 currentPointStreak: snapshot.currentPointStreak,
                 wrongReviewSamples: snapshot.wrongReviewSamples,
-                heroIconName: snapshot.heroIconName,
-                heroMessage: snapshot.heroMessage,
                 heroSubtitle: snapshot.heroSubtitle,
                 heroGradientColors: snapshot.heroGradientColors
             )

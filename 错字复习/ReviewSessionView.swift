@@ -22,8 +22,6 @@ struct ReviewSessionView: View {
     @State private var learningSessionSummaryInputHash = ""
     @State private var isLoadingLearningSessionSummary = false
     @State private var learningSessionSummaryTask: Task<Void, Never>?
-    @AppStorage(DailySummaryAISettings.isEnabledKey) private var aiSummaryEnabled = false
-    @AppStorage(DailySummaryAISettings.modelKey) private var aiSummaryModelRawValue = DailySummaryAISettings.defaultModel
     @StateObject private var speaker = ReviewSpeaker()
 
     private let scheduler = ReviewScheduler()
@@ -563,7 +561,7 @@ struct ReviewSessionView: View {
                         .controlSize(.small)
                 }
 
-                if aiSummaryEnabled {
+                if settings.aiSummaryEnabled {
                     Button {
                         refreshLearningSessionSummary(force: true)
                     } label: {
@@ -621,10 +619,10 @@ struct ReviewSessionView: View {
     private func refreshLearningSessionSummary(force: Bool) {
         let input = makeLearningSessionSummaryInput()
         let inputHash = input.stableHash()
-        let model = DeepSeekSummaryModel(rawValue: aiSummaryModelRawValue) ?? .flash
+        let model = DeepSeekSummaryModel(rawValue: settings.aiSummaryModelRawValue) ?? .flash
         let fallback = input.localFallbackResult()
 
-        guard aiSummaryEnabled else {
+        guard settings.aiSummaryEnabled else {
             learningSessionSummaryTask?.cancel()
             learningSessionSummaryInputHash = inputHash
             learningSessionSummary = fallback

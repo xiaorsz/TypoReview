@@ -20,8 +20,6 @@ struct SettingsView: View {
     @State private var isConfirmingEnglishGlossUpdate = false
     @State private var deepSeekAPIKey = ""
     @State private var isTestingDeepSeekConnection = false
-    @AppStorage(DailySummaryAISettings.isEnabledKey) private var aiSummaryEnabled = false
-    @AppStorage(DailySummaryAISettings.modelKey) private var aiSummaryModelRawValue = DailySummaryAISettings.defaultModel
 
     private var reviewStyle: Binding<ReviewInteractionStyle> {
         Binding(
@@ -136,15 +134,15 @@ struct SettingsView: View {
             }
 
             Section {
-                Toggle(isOn: $aiSummaryEnabled) {
+                Toggle(isOn: bind(\.aiSummaryEnabled)) {
                     HStack {
                         SettingsIcon(name: "sparkles", color: .purple)
                         Text("启用 AI 今日小结")
                     }
                 }
 
-                if aiSummaryEnabled {
-                    Picker(selection: $aiSummaryModelRawValue) {
+                if settings.aiSummaryEnabled {
+                    Picker(selection: bind(\.aiSummaryModelRawValue)) {
                         ForEach(DeepSeekSummaryModel.allCases) { model in
                             Text(model.title).tag(model.rawValue)
                         }
@@ -202,7 +200,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     SettingsNoteRow(
                         icon: "lock.shield.fill",
-                        text: "DeepSeek API Key 只保存在本机 Keychain，不进入 iCloud 同步、SwiftData 或备份导出。"
+                        text: "DeepSeek API Key 通过系统 iCloud Keychain 安全同步，不进入 SwiftData 或备份导出。需要各设备登录同一 Apple ID 并开启 iCloud 密码与钥匙串。"
                     )
                     SettingsNoteRow(
                         icon: "arrow.up.doc.fill",
@@ -730,7 +728,7 @@ struct SettingsView: View {
         do {
             try DeepSeekAPIKeyStore.saveAPIKey(trimmedKey)
             deepSeekAPIKey = try DeepSeekAPIKeyStore.loadAPIKey()
-            showInfoAlert(title: "保存成功", message: "DeepSeek API Key 已保存在本机 Keychain。")
+            showInfoAlert(title: "保存成功", message: "DeepSeek API Key 已保存到系统 Keychain，并会通过 iCloud 钥匙串同步到其他设备。")
         } catch {
             showInfoAlert(title: "保存失败", message: error.localizedDescription)
         }
@@ -739,7 +737,7 @@ struct SettingsView: View {
     private func clearDeepSeekAPIKey() {
         DeepSeekAPIKeyStore.deleteAPIKey()
         deepSeekAPIKey = ""
-        showInfoAlert(title: "已清空", message: "DeepSeek API Key 已从本机 Keychain 移除。")
+        showInfoAlert(title: "已清空", message: "DeepSeek API Key 已从系统 Keychain 移除。")
     }
 
     private func testDeepSeekConnection() {
@@ -753,7 +751,7 @@ struct SettingsView: View {
         Task {
             do {
                 try DeepSeekAPIKeyStore.saveAPIKey(trimmedKey)
-                let model = DeepSeekSummaryModel(rawValue: aiSummaryModelRawValue) ?? .flash
+                let model = DeepSeekSummaryModel(rawValue: settings.aiSummaryModelRawValue) ?? .flash
                 let input = DailySummaryInput(
                     date: DailySummaryInput.dateKey(),
                     locale: "zh-Hans",

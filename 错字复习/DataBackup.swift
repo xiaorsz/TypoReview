@@ -371,6 +371,8 @@ struct AppSettingsSnapshot: Codable, Equatable {
     let boardManualPlaybackOptionRawValue: String
     let boardAutoplaySkipWeekends: Bool
     let boardAutoplaySkipChinaHolidays: Bool
+    let aiSummaryEnabled: Bool
+    let aiSummaryModelRawValue: String
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -389,6 +391,8 @@ struct AppSettingsSnapshot: Codable, Equatable {
         case boardManualPlaybackOptionRawValue
         case boardAutoplaySkipWeekends
         case boardAutoplaySkipChinaHolidays
+        case aiSummaryEnabled
+        case aiSummaryModelRawValue
     }
 
     init(_ settings: AppSettings) {
@@ -408,6 +412,8 @@ struct AppSettingsSnapshot: Codable, Equatable {
         boardManualPlaybackOptionRawValue = settings.boardManualPlaybackOptionRawValue
         boardAutoplaySkipWeekends = settings.boardAutoplaySkipWeekends
         boardAutoplaySkipChinaHolidays = settings.boardAutoplaySkipChinaHolidays
+        aiSummaryEnabled = settings.aiSummaryEnabled
+        aiSummaryModelRawValue = settings.aiSummaryModelRawValue
     }
 
     // 内部用：不依赖 AppSettings 实例直接构造快照（避免 @Model 实例化问题）
@@ -427,7 +433,9 @@ struct AppSettingsSnapshot: Codable, Equatable {
         boardAutoplaySlotsRawValue: String,
         boardManualPlaybackOptionRawValue: String,
         boardAutoplaySkipWeekends: Bool,
-        boardAutoplaySkipChinaHolidays: Bool
+        boardAutoplaySkipChinaHolidays: Bool,
+        aiSummaryEnabled: Bool,
+        aiSummaryModelRawValue: String
     ) {
         self.id = id
         self.childName = childName
@@ -445,6 +453,8 @@ struct AppSettingsSnapshot: Codable, Equatable {
         self.boardManualPlaybackOptionRawValue = boardManualPlaybackOptionRawValue
         self.boardAutoplaySkipWeekends = boardAutoplaySkipWeekends
         self.boardAutoplaySkipChinaHolidays = boardAutoplaySkipChinaHolidays
+        self.aiSummaryEnabled = aiSummaryEnabled
+        self.aiSummaryModelRawValue = aiSummaryModelRawValue
     }
 
     init(from decoder: any Decoder) throws {
@@ -479,6 +489,10 @@ struct AppSettingsSnapshot: Codable, Equatable {
             ?? AppSettings.defaultBoardAutoplaySkipWeekends
         boardAutoplaySkipChinaHolidays = try container.decodeIfPresent(Bool.self, forKey: .boardAutoplaySkipChinaHolidays)
             ?? AppSettings.defaultBoardAutoplaySkipChinaHolidays
+        aiSummaryEnabled = try container.decodeIfPresent(Bool.self, forKey: .aiSummaryEnabled)
+            ?? AppSettings.defaultAISummaryEnabled
+        aiSummaryModelRawValue = try container.decodeIfPresent(String.self, forKey: .aiSummaryModelRawValue)
+            ?? AppSettings.defaultAISummaryModelRawValue
     }
 
     func makeModel() -> AppSettings {
@@ -498,7 +512,9 @@ struct AppSettingsSnapshot: Codable, Equatable {
             boardAutoplaySlots: nil,
             boardManualPlaybackOption: BoardManualPlaybackOption(rawValue: boardManualPlaybackOptionRawValue) ?? .untilPlaylistEnds,
             boardAutoplaySkipWeekends: boardAutoplaySkipWeekends,
-            boardAutoplaySkipChinaHolidays: boardAutoplaySkipChinaHolidays
+            boardAutoplaySkipChinaHolidays: boardAutoplaySkipChinaHolidays,
+            aiSummaryEnabled: aiSummaryEnabled,
+            aiSummaryModelRawValue: aiSummaryModelRawValue
         )
         settings.reviewInteractionStyleRawValue = reviewInteractionStyleRawValue
         settings.boardAutoplaySlotsRawValue = boardAutoplaySlotsRawValue

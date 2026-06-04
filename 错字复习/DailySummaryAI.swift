@@ -306,27 +306,18 @@ enum DeepSeekAPIKeyStore {
     private static let account = "deepseek-api-key"
 
     static func loadAPIKey() throws -> String {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
+        if let synchronizedKey = try loadAPIKey(synchronizable: true) {
+            return synchronizedKey
+        }
 
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecItemNotFound {
+        guard let legacyLocalKey = try loadAPIKey(synchronizable: false) else {
             return ""
         }
-        guard status == errSecSuccess else {
-            throw StoreError.readFailed(status)
-        }
-        guard let data = item as? Data,
-              let key = String(data: data, encoding: .utf8) else {
-            throw StoreError.readFailed(status)
-        }
-        return key
+
+        // Best effort: preserve the readable local key if iCloud Keychain is
+        // temporarily unavailable while upgrading from an older app version.
+        try? saveAPIKey(legacyLocalKey)
+        return legacyLocalKey
     }
 
     static func saveAPIKey(_ key: String) throws {
@@ -339,27 +330,30 @@ enum DeepSeekAPIKeyStore {
             throw StoreError.encodingFailed
         }
 
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
+        let synchronizedQuery = query(synchronizable: true)
         let attributes: [String: Any] = [
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
         ]
 
-        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        let updateStatus = SecItemUpdate(synchronizedQuery as CFDictionary, attributes as CFDictionary)
         if updateStatus == errSecSuccess {
+            deleteLegacyLocalAPIKey()
             return
         }
         guard updateStatus == errSecItemNotFound else {
             throw StoreError.writeFailed(updateStatus)
         }
 
-        var addQuery = query
+        let deletedLegacyLocalKey = try loadAPIKey(synchronizable: false)
+        deleteLegacyLocalAPIKey()
+
+        var addQuery = synchronizedQuery
         attributes.forEach { addQuery[$0.key] = $0.value }
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        if addStatus != errSecSuccess, let deletedLegacyLocalKey {
+            restoreLegacyLocalAPIKey(deletedLegacyLocalKey)
+        }
         guard addStatus == errSecSuccess else {
             throw StoreError.writeFailed(addStatus)
         }
@@ -369,9 +363,51 @@ enum DeepSeekAPIKeyStore {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account
+            kSecAttrAccount as String: account,
+            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny
         ]
         SecItemDelete(query as CFDictionary)
+    }
+
+    private static func query(synchronizable: Bool) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecAttrSynchronizable as String: synchronizable ? kCFBooleanTrue! : kCFBooleanFalse!
+        ]
+    }
+
+    private static func loadAPIKey(synchronizable: Bool) throws -> String? {
+        var query = query(synchronizable: synchronizable)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound {
+            return nil
+        }
+        guard status == errSecSuccess else {
+            throw StoreError.readFailed(status)
+        }
+        guard let data = item as? Data,
+              let key = String(data: data, encoding: .utf8) else {
+            throw StoreError.readFailed(status)
+        }
+        return key
+    }
+
+    private static func deleteLegacyLocalAPIKey() {
+        SecItemDelete(query(synchronizable: false) as CFDictionary)
+    }
+
+    private static func restoreLegacyLocalAPIKey(_ key: String) {
+        guard let data = key.data(using: .utf8) else { return }
+        var addQuery = query(synchronizable: false)
+        addQuery[kSecValueData as String] = data
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        SecItemAdd(addQuery as CFDictionary, nil)
     }
 }
 

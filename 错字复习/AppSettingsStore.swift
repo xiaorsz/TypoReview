@@ -8,6 +8,7 @@ final class AppSettingsStore {
     private enum StorageKeys {
         static let snapshot = "app_settings_snapshot_v1"
         static let legacyReviewInteractionStyle = "reviewInteractionStyle"
+        static let legacyAISummarySettingsMigrated = "daily_summary_ai_settings_migrated_to_app_settings_v1"
     }
 
     private let userDefaults: UserDefaults
@@ -30,8 +31,13 @@ final class AppSettingsStore {
     var boardManualPlaybackOptionRawValue: String
     var boardAutoplaySkipWeekends: Bool
     var boardAutoplaySkipChinaHolidays: Bool
+    var aiSummaryEnabled: Bool
+    var aiSummaryModelRawValue: String
 
     private var hasBootstrapped = false
+    private var pendingLegacyAISummaryEnabled: Bool?
+    private var pendingLegacyAISummaryModelRawValue: String?
+    private var shouldMigrateLegacyAISummarySettings = false
 
     init(appGroupIdentifier: String? = nil) {
         if let appGroupIdentifier,
@@ -61,10 +67,13 @@ final class AppSettingsStore {
         boardManualPlaybackOptionRawValue = AppSettings.defaultBoardManualPlaybackOption
         boardAutoplaySkipWeekends = AppSettings.defaultBoardAutoplaySkipWeekends
         boardAutoplaySkipChinaHolidays = AppSettings.defaultBoardAutoplaySkipChinaHolidays
+        aiSummaryEnabled = AppSettings.defaultAISummaryEnabled
+        aiSummaryModelRawValue = AppSettings.defaultAISummaryModelRawValue
 
         if let snapshot = loadSnapshotFromDefaults() {
             apply(snapshot: snapshot, incrementRevision: false)
         }
+        prepareLegacyAISummarySettingsMigrationIfNeeded()
     }
 
     var boardManualPlaybackOption: BoardManualPlaybackOption {
@@ -127,7 +136,9 @@ final class AppSettingsStore {
             boardAutoplaySlots: [],
             boardManualPlaybackOption: .untilPlaylistEnds, // 固定传常量，rawValue 在下方立即被覆盖；不能传 self.boardManualPlaybackOption（循环）
             boardAutoplaySkipWeekends: boardAutoplaySkipWeekends,
-            boardAutoplaySkipChinaHolidays: boardAutoplaySkipChinaHolidays
+            boardAutoplaySkipChinaHolidays: boardAutoplaySkipChinaHolidays,
+            aiSummaryEnabled: aiSummaryEnabled,
+            aiSummaryModelRawValue: aiSummaryModelRawValue
         )
         settings.reviewInteractionStyleRawValue = reviewInteractionStyle.rawValue
         settings.boardAutoplaySlotsRawValue = boardAutoplaySlotsRawValue
@@ -140,6 +151,7 @@ final class AppSettingsStore {
         hasBootstrapped = true
 
         if loadSnapshotFromDefaults() != nil {
+            persistLegacyAISummarySettingsMigrationIfNeeded(using: modelContext)
             return
         }
 
@@ -148,8 +160,10 @@ final class AppSettingsStore {
         if let migratedSnapshot = loadSnapshotFromSwiftData(using: modelContext) {
             apply(snapshot: migratedSnapshot, incrementRevision: false)
         }
+        applyPendingLegacyAISummarySettings()
 
         persistToDefaults()
+        completeLegacyAISummarySettingsMigrationIfNeeded(using: modelContext)
         if snapshot != previousSnapshot {
             markChanged()
         }
@@ -199,7 +213,9 @@ final class AppSettingsStore {
             boardAutoplaySlotsRawValue: AppSettings.defaultBoardAutoplaySlotsRawValue,
             boardManualPlaybackOptionRawValue: AppSettings.defaultBoardManualPlaybackOption,
             boardAutoplaySkipWeekends: AppSettings.defaultBoardAutoplaySkipWeekends,
-            boardAutoplaySkipChinaHolidays: AppSettings.defaultBoardAutoplaySkipChinaHolidays
+            boardAutoplaySkipChinaHolidays: AppSettings.defaultBoardAutoplaySkipChinaHolidays,
+            aiSummaryEnabled: AppSettings.defaultAISummaryEnabled,
+            aiSummaryModelRawValue: AppSettings.defaultAISummaryModelRawValue
         )
     }
 
@@ -259,6 +275,8 @@ final class AppSettingsStore {
         boardManualPlaybackOptionRawValue = snapshot.boardManualPlaybackOptionRawValue
         boardAutoplaySkipWeekends = snapshot.boardAutoplaySkipWeekends
         boardAutoplaySkipChinaHolidays = snapshot.boardAutoplaySkipChinaHolidays
+        aiSummaryEnabled = snapshot.aiSummaryEnabled
+        aiSummaryModelRawValue = snapshot.aiSummaryModelRawValue
 
         if incrementRevision {
             markChanged()
@@ -275,6 +293,8 @@ final class AppSettingsStore {
             userDefaults.set(data, forKey: StorageKeys.snapshot)
         }
         UserDefaults.standard.set(reviewInteractionStyle.rawValue, forKey: StorageKeys.legacyReviewInteractionStyle)
+        UserDefaults.standard.set(aiSummaryEnabled, forKey: DailySummaryAISettings.isEnabledKey)
+        UserDefaults.standard.set(aiSummaryModelRawValue, forKey: DailySummaryAISettings.modelKey)
     }
 
     private func loadSnapshotFromDefaults() -> AppSettingsSnapshot? {
@@ -296,7 +316,8 @@ final class AppSettingsStore {
         }
     }
 
-    private func syncToSwiftDataIfPossible(using modelContext: ModelContext) {
+    @discardableResult
+    private func syncToSwiftDataIfPossible(using modelContext: ModelContext) -> Bool {
         do {
             try safelyAccessSwiftData {
                 let existing = try modelContext.fetch(FetchDescriptor<AppSettings>())
@@ -324,6 +345,8 @@ final class AppSettingsStore {
                 target.boardManualPlaybackOptionRawValue = boardManualPlaybackOptionRawValue
                 target.boardAutoplaySkipWeekends = boardAutoplaySkipWeekends
                 target.boardAutoplaySkipChinaHolidays = boardAutoplaySkipChinaHolidays
+                target.aiSummaryEnabled = aiSummaryEnabled
+                target.aiSummaryModelRawValue = aiSummaryModelRawValue
 
                 for duplicate in existing.dropFirst() {
                     modelContext.delete(duplicate)
@@ -334,14 +357,50 @@ final class AppSettingsStore {
                 }
             }
             lastSwiftDataError = ""
+            return true
         } catch {
             lastSwiftDataError = error.localizedDescription
             print("AppSettings sync to SwiftData skipped: \(error)")
+            return false
         }
     }
 
     private func markChanged() {
         revision &+= 1
+    }
+
+    private func prepareLegacyAISummarySettingsMigrationIfNeeded() {
+        guard !userDefaults.bool(forKey: StorageKeys.legacyAISummarySettingsMigrated) else { return }
+
+        pendingLegacyAISummaryEnabled = UserDefaults.standard.object(forKey: DailySummaryAISettings.isEnabledKey) as? Bool
+        pendingLegacyAISummaryModelRawValue = UserDefaults.standard.string(forKey: DailySummaryAISettings.modelKey)
+        shouldMigrateLegacyAISummarySettings =
+            pendingLegacyAISummaryEnabled != nil || pendingLegacyAISummaryModelRawValue != nil
+        applyPendingLegacyAISummarySettings()
+    }
+
+    private func applyPendingLegacyAISummarySettings() {
+        if let pendingLegacyAISummaryEnabled {
+            aiSummaryEnabled = pendingLegacyAISummaryEnabled
+        }
+        if let pendingLegacyAISummaryModelRawValue {
+            aiSummaryModelRawValue = pendingLegacyAISummaryModelRawValue
+        }
+    }
+
+    private func persistLegacyAISummarySettingsMigrationIfNeeded(using modelContext: ModelContext) {
+        guard shouldMigrateLegacyAISummarySettings else { return }
+        applyPendingLegacyAISummarySettings()
+        persistToDefaults()
+        completeLegacyAISummarySettingsMigrationIfNeeded(using: modelContext)
+        markChanged()
+    }
+
+    private func completeLegacyAISummarySettingsMigrationIfNeeded(using modelContext: ModelContext) {
+        guard shouldMigrateLegacyAISummarySettings else { return }
+        guard syncToSwiftDataIfPossible(using: modelContext) else { return }
+        userDefaults.set(true, forKey: StorageKeys.legacyAISummarySettingsMigrated)
+        shouldMigrateLegacyAISummarySettings = false
     }
 
     private func safelyAccessSwiftData<T>(_ work: () throws -> T) throws -> T {
