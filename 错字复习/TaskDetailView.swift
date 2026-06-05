@@ -32,6 +32,7 @@ struct TaskDetailView: View {
     @State private var isDetailDataActive = false
     @State private var isRefreshInFlight = false
     @State private var needsRefreshAfterCurrent = false
+    @State private var completionMutationVersion = 0
     @State private var isSyncingSelectedOccurrenceDate = false
     @State private var isTaskUnavailable = false
     @State private var pendingSubtaskCompletionMutations: [UUID: PendingSubtaskCompletionMutation] = [:]
@@ -1074,6 +1075,7 @@ struct TaskDetailView: View {
         let container = modelContext.container
         let requestedSelectedDate = selectedOccurrenceDate
         let visibleGridEndDate = gridDates.last ?? TaskExecutionSupport.day(for: .now)
+        let mutationVersionAtRequest = completionMutationVersion
         let refreshID = String(UUID().uuidString.prefix(6))
         let startedAt = CACurrentMediaTime()
 
@@ -1198,6 +1200,24 @@ struct TaskDetailView: View {
             await MainActor.run {
                 let applyStartedAt = CACurrentMediaTime()
                 Self.perfMark("refresh main apply begin id=\(refreshID)")
+                guard mutationVersionAtRequest == completionMutationVersion else {
+                    Self.perfMark("refresh main apply skipped stale id=\(refreshID) requestedVersion=\(mutationVersionAtRequest) currentVersion=\(completionMutationVersion)")
+                    isRefreshInFlight = false
+                    needsRefreshAfterCurrent = false
+                    requestDetailRefresh(reason: "stale completion refresh")
+                    return
+                }
+
+                guard pendingSubtaskCompletionMutations.isEmpty,
+                      pendingOccurrenceCompletionMutations.isEmpty,
+                      !isCompletionPersistenceInFlight else {
+                    Self.perfMark("refresh main apply deferred id=\(refreshID) pendingSubtasks=\(pendingSubtaskCompletionMutations.count) pendingOccurrences=\(pendingOccurrenceCompletionMutations.count) inFlight=\(isCompletionPersistenceInFlight)")
+                    isRefreshInFlight = false
+                    needsRefreshAfterCurrent = false
+                    scheduleDeferredDetailRefresh(after: 0.2, reason: "pending completion refresh")
+                    return
+                }
+
                 if let projection = res.0 {
                     taskUnavailableApplyReset(using: projection, result: res)
                 } else {
@@ -1376,6 +1396,7 @@ struct TaskDetailView: View {
         let targetCompletedAt: Date? = (targetStatus == .completed) ? .now : nil
         Self.perfMark("subtask toggle tap id=\(actionID) subtask=\(subtask.title) to=\(targetStatus.rawValue) date=\(Self.perfDateLabel(date))")
         Self.perfWatchMainThread("subtask toggle \(actionID)", threshold: 0.35)
+        completionMutationVersion += 1
         
         // 1. UI 立即响应投影数据变化（Optimistic UI）
         if let idx = currentOccurrenceSubtasks.firstIndex(where: { $0.id == targetSID }) {
@@ -1386,7 +1407,9 @@ struct TaskDetailView: View {
         applyOptimisticSubtaskProjectionUpdate(subtaskID: targetSID, status: targetStatus)
         applyOptimisticOccurrenceSnapshotUpdate(for: date)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        queueSubtaskCompletionPersistence(
+        Self.perfMark("subtask toggle optimistic id=\(actionID) elapsed=\(Self.perfMillis(since: startedAt))")
+
+        persistSubtaskCompletionImmediately(
             subtaskID: targetSID,
             occurrenceDate: date,
             status: targetStatus,
@@ -1394,7 +1417,54 @@ struct TaskDetailView: View {
             actionID: actionID,
             startedAt: startedAt
         )
-        Self.perfMark("subtask toggle optimistic id=\(actionID) elapsed=\(Self.perfMillis(since: startedAt))")
+    }
+
+    private func persistSubtaskCompletionImmediately(
+        subtaskID: UUID,
+        occurrenceDate: Date,
+        status: TaskExecutionStatus,
+        completedAt: Date?,
+        actionID: String,
+        startedAt: CFTimeInterval
+    ) {
+        let tid = taskID
+        do {
+            guard let task = try modelContext.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })).first else {
+                requestDetailRefresh(reason: "subtask completion missing task")
+                return
+            }
+            guard let subtask = try modelContext.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.id == subtaskID })).first else {
+                requestDetailRefresh(reason: "subtask completion missing subtask")
+                return
+            }
+
+            let existingExecutions = try modelContext.fetch(FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.taskID == tid }))
+            let record = TaskExecutionSupport.ensureExecutionRecord(
+                for: task,
+                occurrenceDate: occurrenceDate,
+                existingExecutions: existingExecutions,
+                modelContext: modelContext
+            )
+
+            if subtask.taskExecutionID == nil {
+                subtask.taskExecutionID = record.id
+            }
+            subtask.status = status
+            subtask.completedAt = completedAt
+            subtask.updatedAt = .now
+
+            let allSubtasks = try modelContext.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))
+            TaskExecutionSupport.syncExecutionStatus(record: record, task: task, subtasks: allSubtasks, modelContext: modelContext)
+
+            try modelContext.save()
+            WidgetCenter.shared.reloadAllTimelinesInBackground()
+            NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
+            scheduleDeferredDetailRefresh(after: 0.2, reason: "subtask completion persisted")
+            Self.perfMark("subtask toggle persisted id=\(actionID) total=\(Self.perfMillis(since: startedAt))")
+        } catch {
+            persistenceErrorMessage = error.localizedDescription
+            requestDetailRefresh(reason: "subtask completion error")
+        }
     }
 
     private func startQuickSubtaskCreation() {
@@ -1687,6 +1757,7 @@ struct TaskDetailView: View {
         let occurrenceDate = snapshot.occurrenceDate
         Self.perfMark("occurrence toggle tap id=\(actionID) date=\(Self.perfDateLabel(occurrenceDate)) reopening=\(isReopening)")
         Self.perfWatchMainThread("occurrence toggle \(actionID)", threshold: 0.35)
+        completionMutationVersion += 1
         
         var nextPending = occurrenceSnapshotState.pending
         var nextCompleted = occurrenceSnapshotState.completed
@@ -1713,13 +1784,55 @@ struct TaskDetailView: View {
             upcoming: occurrenceSnapshotState.upcoming
         )
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        queueOccurrenceCompletionPersistence(
+        Self.perfMark("occurrence toggle optimistic id=\(actionID) elapsed=\(Self.perfMillis(since: startedAt))")
+
+        persistOccurrenceCompletionImmediately(
             occurrenceDate: occurrenceDate,
             isReopening: isReopening,
             actionID: actionID,
             startedAt: startedAt
         )
-        Self.perfMark("occurrence toggle optimistic id=\(actionID) elapsed=\(Self.perfMillis(since: startedAt))")
+    }
+
+    private func persistOccurrenceCompletionImmediately(
+        occurrenceDate: Date,
+        isReopening: Bool,
+        actionID: String,
+        startedAt: CFTimeInterval
+    ) {
+        let tid = taskID
+        do {
+            guard let task = try modelContext.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })).first else {
+                requestDetailRefresh(reason: "occurrence completion missing task")
+                return
+            }
+
+            let existingExecutions = try modelContext.fetch(FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.taskID == tid }))
+            if isReopening {
+                TaskExecutionSupport.reopenTaskCompletion(
+                    task: task,
+                    occurrenceDate: occurrenceDate,
+                    existingExecutions: existingExecutions,
+                    modelContext: modelContext
+                )
+            } else {
+                TaskExecutionSupport.markTaskCompleted(
+                    task: task,
+                    occurrenceDate: occurrenceDate,
+                    existingExecutions: existingExecutions,
+                    modelContext: modelContext
+                )
+            }
+
+            try modelContext.save()
+            WidgetCenter.shared.reloadAllTimelinesInBackground()
+            NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
+            scheduleDeferredDetailRefresh(after: 0.2, reason: "occurrence completion persisted")
+            Self.perfMark("occurrence toggle persisted id=\(actionID) total=\(Self.perfMillis(since: startedAt))")
+        } catch {
+            persistenceErrorMessage = error.localizedDescription
+            requestDetailRefresh(reason: "occurrence completion error")
+        }
     }
 
 }
