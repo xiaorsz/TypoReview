@@ -14,6 +14,8 @@ enum PointLedgerKind: String, Codable, CaseIterable, Identifiable {
 enum PointLedgerSourceType: String, Codable, CaseIterable, Identifiable {
     case reviewRecord = "复习"
     case dictationEntry = "听写"
+    case reviewAccuracyBonus = "复习正确率"
+    case dictationAccuracyBonus = "听写正确率"
     case taskExecution = "待办"
     case dailyStreak = "连续学习"
     case manualRedemption = "手动兑换"
@@ -102,10 +104,79 @@ struct PointBalanceSnapshot {
     let longestStreak: Int
 }
 
+struct AccuracyBonusReward {
+    let amount: Int
+}
+
 enum PointLedgerService {
     static let reviewRewardAmount = 1
     static let dictationRewardAmount = 1
     static let taskRewardAmount = 5
+
+    static func accuracyBonusReward(correctCount: Int, totalCount: Int) -> AccuracyBonusReward? {
+        guard totalCount > 0, correctCount >= 0, correctCount <= totalCount else { return nil }
+
+        if correctCount == totalCount {
+            return AccuracyBonusReward(amount: 80)
+        }
+
+        let accuracy = Double(correctCount) / Double(totalCount)
+        if accuracy >= 0.9 {
+            return AccuracyBonusReward(amount: 50)
+        } else if accuracy >= 0.8 {
+            return AccuracyBonusReward(amount: 30)
+        } else if accuracy >= 0.7 {
+            return AccuracyBonusReward(amount: 20)
+        } else if accuracy >= 0.6 {
+            return AccuracyBonusReward(amount: 5)
+        }
+
+        return nil
+    }
+
+    static func accuracyBonusAmount(correctCount: Int, totalCount: Int) -> Int {
+        accuracyBonusReward(correctCount: correctCount, totalCount: totalCount)?.amount ?? 0
+    }
+
+    @discardableResult
+    static func awardReviewAccuracyBonus(
+        sessionID: UUID,
+        correctCount: Int,
+        totalCount: Int,
+        createdAt: Date = .now,
+        in modelContext: ModelContext
+    ) -> PointLedgerEntry? {
+        awardAccuracyBonus(
+            sourceType: .reviewAccuracyBonus,
+            sourceIDRawValue: sessionID.uuidString,
+            idempotencyKey: "review-accuracy-bonus-\(sessionID.uuidString)",
+            title: "复习",
+            correctCount: correctCount,
+            totalCount: totalCount,
+            createdAt: createdAt,
+            in: modelContext
+        )
+    }
+
+    @discardableResult
+    static func awardDictationAccuracyBonus(
+        sessionID: UUID,
+        correctCount: Int,
+        totalCount: Int,
+        createdAt: Date = .now,
+        in modelContext: ModelContext
+    ) -> PointLedgerEntry? {
+        awardAccuracyBonus(
+            sourceType: .dictationAccuracyBonus,
+            sourceIDRawValue: sessionID.uuidString,
+            idempotencyKey: "dictation-accuracy-bonus-\(sessionID.uuidString)",
+            title: "听写",
+            correctCount: correctCount,
+            totalCount: totalCount,
+            createdAt: createdAt,
+            in: modelContext
+        )
+    }
 
     static func currentSnapshot(in modelContext: ModelContext) -> PointBalanceSnapshot {
         let entries = (try? modelContext.fetch(FetchDescriptor<PointLedgerEntry>())) ?? []
@@ -115,6 +186,41 @@ enum PointLedgerService {
             currentStreak: state?.currentStreak ?? 0,
             longestStreak: state?.longestStreak ?? 0
         )
+    }
+
+    @discardableResult
+    private static func awardAccuracyBonus(
+        sourceType: PointLedgerSourceType,
+        sourceIDRawValue: String,
+        idempotencyKey: String,
+        title: String,
+        correctCount: Int,
+        totalCount: Int,
+        createdAt: Date,
+        in modelContext: ModelContext
+    ) -> PointLedgerEntry? {
+        guard let reward = accuracyBonusReward(correctCount: correctCount, totalCount: totalCount) else {
+            return nil
+        }
+
+        let accuracyText = formattedAccuracyText(correctCount: correctCount, totalCount: totalCount)
+        return awardIfNeeded(
+            amount: reward.amount,
+            kind: .reward,
+            sourceType: sourceType,
+            sourceIDRawValue: sourceIDRawValue,
+            idempotencyKey: idempotencyKey,
+            note: "\(title)正确率 \(accuracyText)，额外奖励 \(reward.amount) 分",
+            createdAt: createdAt,
+            countsAsActiveDay: false,
+            in: modelContext
+        )
+    }
+
+    private static func formattedAccuracyText(correctCount: Int, totalCount: Int) -> String {
+        guard totalCount > 0 else { return "--" }
+        let accuracy = Int((Double(correctCount) / Double(totalCount) * 100).rounded())
+        return "\(accuracy)%"
     }
 
     static func currentBalance(in modelContext: ModelContext) -> Int {
@@ -370,6 +476,47 @@ enum PointLedgerService {
             }
         )
         return ((try? modelContext.fetchCount(descriptor)) ?? 0) > 0
+    }
+}
+
+struct AccuracyBonusCard: View {
+    let title: String
+    let amount: Int
+    let accuracyText: String
+    var tint: Color = .orange
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: amount > 0 ? "star.circle.fill" : "star.circle")
+                .font(.title2)
+                .foregroundStyle(tint)
+                .frame(width: 42, height: 42)
+                .background(tint.opacity(0.12), in: Circle())
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline)
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Text("+\(amount)")
+                .font(.title3.weight(.bold))
+                .foregroundStyle(amount > 0 ? .green : .secondary)
+        }
+        .padding(20)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private var message: String {
+        if amount > 0 {
+            return "正确率 \(accuracyText)，已额外奖励 \(amount) 分"
+        }
+
+        return "正确率达到 60% 后可获得额外积分"
     }
 }
 

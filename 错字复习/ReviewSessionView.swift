@@ -17,6 +17,8 @@ struct ReviewSessionView: View {
     @State private var showFeedback = false
     @State private var lastResultCorrect = true
     @State private var undoStack: [UndoEntry] = []
+    @State private var reviewSessionID = UUID()
+    @State private var accuracyBonusAmount = 0
     @State private var saveErrorMessage: String?
     @State private var learningSessionSummary: LearningSessionSummaryResult?
     @State private var learningSessionSummaryInputHash = ""
@@ -272,6 +274,13 @@ struct ReviewSessionView: View {
                         StatGridCard(icon: "percent", title: "正确率", value: accuracyText, tint: .orange)
                     }
 
+                    AccuracyBonusCard(
+                        title: "复习正确率奖励",
+                        amount: accuracyBonusAmount,
+                        accuracyText: accuracyText,
+                        tint: .orange
+                    )
+
                     learningSessionSummaryCard
 
                     if !reviewedSummaries.isEmpty {
@@ -349,6 +358,24 @@ struct ReviewSessionView: View {
         modelContext.insert(output.record)
         PointLedgerService.awardReviewRecord(output.record, in: modelContext)
 
+        let finalCompletedCount = completedCount + 1
+        let finalWrongCount = wrongCount + (result == .wrong ? 1 : 0)
+        let finalCorrectCount = finalCompletedCount - finalWrongCount
+        let willCompleteSession = finalCompletedCount == sessionItems.count
+        let earnedAccuracyBonusAmount = willCompleteSession
+            ? PointLedgerService.accuracyBonusAmount(correctCount: finalCorrectCount, totalCount: finalCompletedCount)
+            : 0
+
+        if willCompleteSession {
+            PointLedgerService.awardReviewAccuracyBonus(
+                sessionID: reviewSessionID,
+                correctCount: finalCorrectCount,
+                totalCount: finalCompletedCount,
+                createdAt: output.record.reviewedAt,
+                in: modelContext
+            )
+        }
+
         guard persistChanges(
             message: "这题的复习结果没有保存成功，请稍后再试一次。"
         ) else {
@@ -369,6 +396,9 @@ struct ReviewSessionView: View {
         completedCount += 1
         if result == .wrong {
             wrongCount += 1
+        }
+        if willCompleteSession {
+            accuracyBonusAmount = earnedAccuracyBonusAmount
         }
 
         // Show feedback overlay

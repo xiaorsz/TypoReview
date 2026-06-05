@@ -9,6 +9,7 @@ struct DictationReviewView: View {
 
     @State private var saveErrorMessage: String?
     @State private var submittedSummaries: [DictationEntrySummary] = []
+    @State private var submittedAccuracyBonusAmount = 0
     @State private var navigateToSummary = false
 
     let session: DictationSession
@@ -166,6 +167,7 @@ struct DictationReviewView: View {
             DictationSummaryView(
                 title: session.title,
                 summaries: submittedSummaries,
+                accuracyBonusAmount: submittedAccuracyBonusAmount,
                 onReturnToList: {
                     dismiss()
                     onReturnToList?()
@@ -286,6 +288,19 @@ struct DictationReviewView: View {
             }
         }
 
+        let correctCount = entries.filter { $0.result == .correct }.count
+        let accuracyBonusAmount = PointLedgerService.accuracyBonusAmount(
+            correctCount: correctCount,
+            totalCount: entries.count
+        )
+        PointLedgerService.awardDictationAccuracyBonus(
+            sessionID: session.id,
+            correctCount: correctCount,
+            totalCount: entries.count,
+            createdAt: now,
+            in: modelContext
+        )
+
         session.reviewedAt = now
         session.updatedAt = now
 
@@ -293,6 +308,7 @@ struct DictationReviewView: View {
             try modelContext.save()
             NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
             submittedSummaries = summaries
+            submittedAccuracyBonusAmount = accuracyBonusAmount
             navigateToSummary = true
         } catch {
             saveErrorMessage = "这次判定没有保存成功，请再试一次。\(error.localizedDescription)"
@@ -357,6 +373,7 @@ private struct DictationSummaryView: View {
 
     let title: String
     let summaries: [DictationEntrySummary]
+    let accuracyBonusAmount: Int
     let onReturnToList: () -> Void
 
     private var totalCount: Int {
@@ -417,6 +434,13 @@ private struct DictationSummaryView: View {
                         StatGridCard(icon: "hand.thumbsdown", title: "答错", value: "\(wrongCount)", tint: .red)
                         StatGridCard(icon: "percent", title: "正确率", value: accuracyText, tint: .orange)
                     }
+
+                    AccuracyBonusCard(
+                        title: "听写正确率奖励",
+                        amount: accuracyBonusAmount,
+                        accuracyText: accuracyText,
+                        tint: .teal
+                    )
 
                     learningSessionSummaryCard
 

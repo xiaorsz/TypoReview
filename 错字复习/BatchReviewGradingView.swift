@@ -24,6 +24,8 @@ struct BatchReviewGradingView: View {
     @State private var entryStates: [BatchReviewEntryState] = []
     @State private var isSubmitted = false
     @State private var reviewedSummaries: [SessionReviewSummary] = []
+    @State private var reviewSessionID = UUID()
+    @State private var accuracyBonusAmount = 0
     
     private let scheduler = ReviewScheduler()
 
@@ -278,6 +280,13 @@ struct BatchReviewGradingView: View {
                         StatGridCard(icon: "percent", title: "正确率", value: accuracyText, tint: .orange)
                     }
 
+                    AccuracyBonusCard(
+                        title: "复习正确率奖励",
+                        amount: accuracyBonusAmount,
+                        accuracyText: accuracyText,
+                        tint: .orange
+                    )
+
                     if !reviewedSummaries.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("判定详情")
@@ -329,6 +338,13 @@ struct BatchReviewGradingView: View {
 
     private func submitResults() {
         var summaries: [SessionReviewSummary] = []
+        let submittedStates = entryStates.filter { $0.result != .pending }
+        let totalCount = submittedStates.count
+        let correctCount = submittedStates.filter { $0.result == .correct }.count
+        let earnedAccuracyBonusAmount = PointLedgerService.accuracyBonusAmount(
+            correctCount: correctCount,
+            totalCount: totalCount
+        )
         
         for state in entryStates {
             guard state.result != .pending else { continue }
@@ -355,6 +371,13 @@ struct BatchReviewGradingView: View {
                 )
             )
         }
+
+        PointLedgerService.awardReviewAccuracyBonus(
+            sessionID: reviewSessionID,
+            correctCount: correctCount,
+            totalCount: totalCount,
+            in: modelContext
+        )
         
         // Ensure data is saved
         if (try? modelContext.save()) != nil {
@@ -362,6 +385,7 @@ struct BatchReviewGradingView: View {
         }
         
         self.reviewedSummaries = summaries
+        self.accuracyBonusAmount = earnedAccuracyBonusAmount
         
         withAnimation {
             isSubmitted = true
