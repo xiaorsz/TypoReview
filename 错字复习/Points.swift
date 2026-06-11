@@ -120,14 +120,14 @@ enum PointLedgerService {
             return AccuracyBonusReward(amount: 80)
         }
 
-        let accuracy = Double(correctCount) / Double(totalCount)
-        if accuracy >= 0.9 {
+        let accuracy = roundedAccuracyPercent(correctCount: correctCount, totalCount: totalCount)
+        if accuracy >= 90 {
             return AccuracyBonusReward(amount: 50)
-        } else if accuracy >= 0.8 {
+        } else if accuracy >= 80 {
             return AccuracyBonusReward(amount: 30)
-        } else if accuracy >= 0.7 {
+        } else if accuracy >= 70 {
             return AccuracyBonusReward(amount: 20)
-        } else if accuracy >= 0.6 {
+        } else if accuracy >= 60 {
             return AccuracyBonusReward(amount: 5)
         }
 
@@ -219,8 +219,12 @@ enum PointLedgerService {
 
     private static func formattedAccuracyText(correctCount: Int, totalCount: Int) -> String {
         guard totalCount > 0 else { return "--" }
-        let accuracy = Int((Double(correctCount) / Double(totalCount) * 100).rounded())
+        let accuracy = roundedAccuracyPercent(correctCount: correctCount, totalCount: totalCount)
         return "\(accuracy)%"
+    }
+
+    private static func roundedAccuracyPercent(correctCount: Int, totalCount: Int) -> Int {
+        Int((Double(correctCount) / Double(totalCount) * 100).rounded())
     }
 
     static func currentBalance(in modelContext: ModelContext) -> Int {
@@ -486,37 +490,123 @@ struct AccuracyBonusCard: View {
     var tint: Color = .orange
 
     var body: some View {
-        HStack(spacing: 14) {
-            Image(systemName: amount > 0 ? "star.circle.fill" : "star.circle")
-                .font(.title2)
-                .foregroundStyle(tint)
-                .frame(width: 42, height: 42)
-                .background(tint.opacity(0.12), in: Circle())
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: amount > 0 ? "trophy.fill" : "trophy")
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundStyle(iconColor)
+                    .frame(width: 52, height: 52)
+                    .background(iconColor.opacity(amount > 0 ? 0.18 : 0.10), in: Circle())
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.headline)
-                Text(message)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text(title)
+                            .font(.headline)
+
+                        if amount > 0 {
+                            Text("已到账")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.green, in: Capsule())
+                        }
+                    }
+
+                    Text(message)
+                        .font(.subheadline)
+                        .foregroundStyle(messageColor)
+                }
+
+                Spacer(minLength: 8)
+
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("+\(amount)")
+                        .font(.system(size: amount > 0 ? 36 : 28, weight: .black, design: .rounded))
+                        .foregroundStyle(amount > 0 ? Color.green : .secondary)
+                    Text("积分")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                }
             }
 
-            Spacer()
+            HStack(spacing: 8) {
+                Label(accuracyText, systemImage: "percent")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(tint.opacity(0.12), in: Capsule())
 
-            Text("+\(amount)")
-                .font(.title3.weight(.bold))
-                .foregroundStyle(amount > 0 ? .green : .secondary)
+                Text(nextTierText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
         }
-        .padding(20)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+        .padding(22)
+        .background(cardBackground, in: RoundedRectangle(cornerRadius: 24))
+        .overlay(
+            RoundedRectangle(cornerRadius: 24)
+                .strokeBorder(borderColor, lineWidth: amount > 0 ? 1.5 : 1)
+        )
     }
 
     private var message: String {
         if amount > 0 {
-            return "正确率 \(accuracyText)，已额外奖励 \(amount) 分"
+            return "正确率 \(accuracyText)，本次额外奖励 \(amount) 分"
         }
 
-        return "正确率达到 60% 后可获得额外积分"
+        return "本次未获得额外奖励，正确率达到 60% 后可获得 +5 分"
+    }
+
+    private var iconColor: Color {
+        amount > 0 ? .yellow : tint
+    }
+
+    private var messageColor: Color {
+        amount > 0 ? Color.primary.opacity(0.78) : Color.secondary
+    }
+
+    private var cardBackground: some ShapeStyle {
+        amount > 0
+            ? AnyShapeStyle(
+                LinearGradient(
+                    colors: [
+                        Color.yellow.opacity(0.26),
+                        tint.opacity(0.16),
+                        Color(uiColor: .secondarySystemBackground)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            : AnyShapeStyle(.thinMaterial)
+    }
+
+    private var borderColor: Color {
+        amount > 0 ? .yellow.opacity(0.55) : .secondary.opacity(0.12)
+    }
+
+    private var nextTierText: String {
+        guard let accuracyValue = Int(accuracyText.trimmingCharacters(in: CharacterSet(charactersIn: "%"))) else {
+            return "奖励档位：60% +5，70% +20，80% +30，90% +50，100% +80"
+        }
+
+        if accuracyValue >= 100 {
+            return "已获得最高正确率奖励"
+        } else if accuracyValue >= 90 {
+            return "全对可升级到 +80"
+        } else if accuracyValue >= 80 {
+            return "达到 90% 可升级到 +50"
+        } else if accuracyValue >= 70 {
+            return "达到 80% 可升级到 +30"
+        } else if accuracyValue >= 60 {
+            return "达到 70% 可升级到 +20"
+        }
+
+        return "达到 60% 可获得 +5"
     }
 }
 

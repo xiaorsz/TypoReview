@@ -517,7 +517,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				"INFOPLIST_KEY_UISupportedInterfaceOrientations~ipad" = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.4.1;
+				MARKETING_VERSION = 1.5.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "cc.xiaorsz.typo-review";
 				PRODUCT_NAME = TypoReview;
 				SWIFT_OBJC_BRIDGING_HEADER = "错字复习/TypoReview-Bridging-Header.h";
@@ -535,7 +535,7 @@
 				DEVELOPMENT_TEAM = FCAW792CJD;
 				INFOPLIST_FILE = TypoWidget/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.4.1;
+				MARKETING_VERSION = 1.5.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "cc.xiaorsz.typo-review.TypoWidget";
 				PRODUCT_NAME = TypoWidget;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
@@ -552,7 +552,7 @@
 				DEVELOPMENT_TEAM = FCAW792CJD;
 				INFOPLIST_FILE = TypoWidget/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.4.1;
+				MARKETING_VERSION = 1.5.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "cc.xiaorsz.typo-review.TypoWidget";
 				PRODUCT_NAME = TypoWidget;
 				SWIFT_VERSION = 5.0;
@@ -583,7 +583,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				"INFOPLIST_KEY_UISupportedInterfaceOrientations~ipad" = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.4.1;
+				MARKETING_VERSION = 1.5.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "cc.xiaorsz.typo-review";
 				PRODUCT_NAME = TypoReview;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;

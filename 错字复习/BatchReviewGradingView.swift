@@ -26,6 +26,7 @@ struct BatchReviewGradingView: View {
     @State private var reviewedSummaries: [SessionReviewSummary] = []
     @State private var reviewSessionID = UUID()
     @State private var accuracyBonusAmount = 0
+    @State private var saveErrorMessage: String?
     
     private let scheduler = ReviewScheduler()
 
@@ -62,6 +63,16 @@ struct BatchReviewGradingView: View {
             if entryStates.isEmpty {
                 entryStates = items.map { BatchReviewEntryState(item: $0, result: .pending) }
             }
+        }
+        .alert("提交失败", isPresented: Binding(
+            get: { saveErrorMessage != nil },
+            set: { if !$0 { saveErrorMessage = nil } }
+        )) {
+            Button("知道了", role: .cancel) {
+                saveErrorMessage = nil
+            }
+        } message: {
+            Text(saveErrorMessage ?? "")
         }
     }
 
@@ -379,9 +390,12 @@ struct BatchReviewGradingView: View {
             in: modelContext
         )
         
-        // Ensure data is saved
-        if (try? modelContext.save()) != nil {
+        do {
+            try modelContext.save()
             NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
+        } catch {
+            saveErrorMessage = "这次复习结果没有保存成功，请再试一次。\(error.localizedDescription)"
+            return
         }
         
         self.reviewedSummaries = summaries
