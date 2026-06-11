@@ -3,6 +3,25 @@ import SwiftData
 import CoreData
 import UIKit
 
+@MainActor
+private final class AppBackgroundTask {
+    private var taskID: UIBackgroundTaskIdentifier = .invalid
+
+    init(name: String) {
+        taskID = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            Task { @MainActor in
+                self?.end()
+            }
+        }
+    }
+
+    func end() {
+        guard taskID != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(taskID)
+        taskID = .invalid
+    }
+}
+
 struct RootTabView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
@@ -14,6 +33,8 @@ struct RootTabView: View {
     @State private var ios17ShieldStartTask: Task<Void, Never>?
     @State private var remoteChangeDebounceTask: Task<Void, Never>?
     @State private var startupMaintenanceTask: Task<Void, Never>?
+    @State private var cloudKitSettleBackgroundTask: AppBackgroundTask?
+    @State private var cloudKitSettleEndTask: Task<Void, Never>?
     @State private var hasStartedIOS17BackgroundShield = false
     @State private var selectedLegacyTab: LegacyTab = .home
     @State private var visitedLegacyTabs: Set<LegacyTab> = [.home]
@@ -60,6 +81,7 @@ struct RootTabView: View {
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
+                endCloudKitSettleBackgroundTask()
                 mediaLibraryStore.reload()
                 scheduleIOS17BackgroundShieldStartIfNeeded()
                 scheduleStartupMaintenanceIfNeeded()
@@ -67,7 +89,9 @@ struct RootTabView: View {
             } else {
                 refreshAppStateTask?.cancel()
                 ios17ShieldStartTask?.cancel()
+                remoteChangeDebounceTask?.cancel()
                 startupMaintenanceTask?.cancel()
+                beginCloudKitSettleBackgroundTask()
             }
         }
         .onDisappear {
@@ -75,6 +99,7 @@ struct RootTabView: View {
             ios17ShieldStartTask?.cancel()
             remoteChangeDebounceTask?.cancel()
             startupMaintenanceTask?.cancel()
+            endCloudKitSettleBackgroundTask()
         }
         .onReceive(NotificationCenter.default.publisher(for: .NSPersistentStoreRemoteChange)) { _ in
             #if DEBUG
@@ -247,11 +272,35 @@ struct RootTabView: View {
     }
 
     private func refreshAppState(trigger: SyncStatusStore.Trigger) async {
+        let backgroundTask = AppBackgroundTask(name: "TypoReviewAppStateRefresh")
+        defer {
+            backgroundTask.end()
+        }
+
         mediaLibraryStore.reload()
         appSettingsStore.bootstrap(using: modelContext)
         appSettingsStore.refreshFromSwiftDataIfPossible(using: modelContext)
         appSettingsStore.refreshFromUbiquitousStoreIfPossible(using: modelContext)
         await syncStatusStore.refresh(using: modelContext, trigger: trigger)
+    }
+
+    private func beginCloudKitSettleBackgroundTask() {
+        guard cloudKitSettleBackgroundTask == nil else { return }
+
+        cloudKitSettleBackgroundTask = AppBackgroundTask(name: "TypoReviewCloudKitSettle")
+        cloudKitSettleEndTask?.cancel()
+        cloudKitSettleEndTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 25_000_000_000)
+            guard !Task.isCancelled else { return }
+            endCloudKitSettleBackgroundTask()
+        }
+    }
+
+    private func endCloudKitSettleBackgroundTask() {
+        cloudKitSettleEndTask?.cancel()
+        cloudKitSettleEndTask = nil
+        cloudKitSettleBackgroundTask?.end()
+        cloudKitSettleBackgroundTask = nil
     }
 
     private func scheduleStartupMaintenanceIfNeeded() {
