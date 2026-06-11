@@ -499,10 +499,13 @@ struct AccuracyBonusCard: View {
                     .background(iconColor.opacity(amount > 0 ? 0.18 : 0.10), in: Circle())
 
                 VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
-                        Text(title)
-                            .font(.headline)
+                    Text(title)
+                        .font(.headline)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .layoutPriority(1)
 
+                    HStack(spacing: 8) {
                         if amount > 0 {
                             Text("已到账")
                                 .font(.caption.weight(.bold))
@@ -511,12 +514,16 @@ struct AccuracyBonusCard: View {
                                 .padding(.vertical, 4)
                                 .background(Color.green, in: Capsule())
                         }
+
+                        Spacer(minLength: 0)
                     }
 
                     Text(message)
                         .font(.subheadline)
                         .foregroundStyle(messageColor)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                .layoutPriority(1)
 
                 Spacer(minLength: 8)
 
@@ -524,10 +531,14 @@ struct AccuracyBonusCard: View {
                     Text("+\(amount)")
                         .font(.system(size: amount > 0 ? 36 : 28, weight: .black, design: .rounded))
                         .foregroundStyle(amount > 0 ? Color.green : .secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .fixedSize(horizontal: true, vertical: false)
                     Text("积分")
                         .font(.caption.weight(.bold))
                         .foregroundStyle(.secondary)
                 }
+                .frame(minWidth: 92, alignment: .trailing)
             }
 
             HStack(spacing: 8) {
