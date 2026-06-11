@@ -564,12 +564,32 @@ struct DashboardBoardView: View {
 
                 Spacer()
 
-                Text(mediaAutoplayStatusText(for: snapshot))
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(.white.opacity(0.15), in: Capsule())
+                HStack(spacing: 10) {
+                    if playbackCoordinator.isPlaying {
+                        Button {
+                            recordBoardInteraction()
+                            withAnimation(.easeInOut(duration: 0.24)) {
+                                playbackCoordinator.stopBoardPlaybackByUser()
+                            }
+                        } label: {
+                            Label("停止", systemImage: "stop.fill")
+                                .font(.system(size: 14, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(.red.opacity(0.55), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("停止晨读资源播放")
+                    }
+
+                    Text(mediaAutoplayStatusText(for: snapshot))
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.white.opacity(0.15), in: Capsule())
+                }
             }
 
             if snapshot.enabledMediaAssets.isEmpty {

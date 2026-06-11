@@ -87,18 +87,17 @@ final class MediaPlaybackCoordinator {
             return
         }
 
+        if isManuallyPaused {
+            return
+        }
+
         let needsRestart = normalizedPlaylistIDs != previousPlaylistIDs
             || currentAsset == nil
             || !normalizedPlaylist.contains(where: { $0.id == currentAsset?.id })
 
         if needsRestart {
-            isManuallyPaused = false
             clearBoardManualSession()
             startPlayback(at: 0, allowsWrap: true)
-            return
-        }
-
-        if isManuallyPaused {
             return
         }
 
@@ -220,6 +219,24 @@ final class MediaPlaybackCoordinator {
         currentAsset = nil
         isPlaying = false
         isManuallyPaused = false
+        isWaitingForDownload = false
+        pendingAssetTitle = nil
+        clearBoardManualSession()
+
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+            self.endObserver = nil
+        }
+
+        MediaAudioSession.deactivate()
+    }
+
+    func stopBoardPlaybackByUser() {
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        currentAsset = nil
+        isPlaying = false
+        isManuallyPaused = true
         isWaitingForDownload = false
         pendingAssetTitle = nil
         clearBoardManualSession()
