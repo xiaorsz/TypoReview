@@ -200,7 +200,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     SettingsNoteRow(
                         icon: "lock.shield.fill",
-                        text: "DeepSeek API Key 通过系统 iCloud Keychain 安全同步，不进入 SwiftData 或备份导出。需要各设备登录同一 Apple ID 并开启 iCloud 密码与钥匙串。"
+                        text: "DeepSeek API Key 通过系统 iCloud Keychain 安全同步；AI 开关和模型会通过 iCloud 设置同步。需要各设备登录同一 Apple ID，并开启 iCloud 密码与钥匙串。"
                     )
                     SettingsNoteRow(
                         icon: "arrow.up.doc.fill",
@@ -752,34 +752,13 @@ struct SettingsView: View {
             do {
                 try DeepSeekAPIKeyStore.saveAPIKey(trimmedKey)
                 let model = DeepSeekSummaryModel(rawValue: settings.aiSummaryModelRawValue) ?? .flash
-                let input = DailySummaryInput(
-                    date: DailySummaryInput.dateKey(),
-                    locale: "zh-Hans",
-                    tone: "parent_encouraging",
-                    childName: settings.childName.isEmpty ? "小朋友" : settings.childName,
-                    metrics: DailySummaryInput.Metrics(
-                        reviewCompleted: 1,
-                        reviewCorrect: 1,
-                        reviewWrong: 0,
-                        reviewAccuracyText: "100%",
-                        dictationReviewedEntries: 0,
-                        tasksCompleted: 1,
-                        tasksPending: 0,
-                        pointsEarnedToday: 6,
-                        currentStreak: 1
-                    ),
-                    highlights: DailySummaryInput.Highlights(
-                        completedTaskTitles: ["测试连接"],
-                        wrongReviewSamples: []
-                    )
-                )
-                let result = try await DeepSeekSummaryClient(apiKey: trimmedKey, model: model.rawValue)
-                    .generateSummary(for: input)
+                let response = try await DeepSeekSummaryClient(apiKey: trimmedKey, model: model.rawValue)
+                    .testConnection()
 
                 await MainActor.run {
                     isTestingDeepSeekConnection = false
                     deepSeekAPIKey = trimmedKey
-                    showInfoAlert(title: "连接成功", message: result.displayText)
+                    showInfoAlert(title: "连接成功", message: "\(model.title)：\(response)")
                 }
             } catch {
                 await MainActor.run {

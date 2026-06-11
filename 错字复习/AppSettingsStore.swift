@@ -9,9 +9,17 @@ final class AppSettingsStore {
         static let snapshot = "app_settings_snapshot_v1"
         static let legacyReviewInteractionStyle = "reviewInteractionStyle"
         static let legacyAISummarySettingsMigrated = "daily_summary_ai_settings_migrated_to_app_settings_v1"
+        static let ubiquitousAISummaryUpdatedAt = "daily_summary_ai_ubiquitous_updated_at_v1"
+    }
+
+    private enum UbiquitousKeys {
+        static let aiSummaryEnabled = "daily_summary_ai_enabled_v1"
+        static let aiSummaryModelRawValue = "daily_summary_ai_model_v1"
+        static let aiSummaryUpdatedAt = "daily_summary_ai_updated_at_v1"
     }
 
     private let userDefaults: UserDefaults
+    private let ubiquitousStore = NSUbiquitousKeyValueStore.default
     private(set) var revision: Int = 0
     private(set) var lastSwiftDataError = ""
 
@@ -38,6 +46,8 @@ final class AppSettingsStore {
     private var pendingLegacyAISummaryEnabled: Bool?
     private var pendingLegacyAISummaryModelRawValue: String?
     private var shouldMigrateLegacyAISummarySettings = false
+    private var lastSyncedAISummaryEnabled: Bool
+    private var lastSyncedAISummaryModelRawValue: String
 
     init(appGroupIdentifier: String? = nil) {
         if let appGroupIdentifier,
@@ -69,11 +79,20 @@ final class AppSettingsStore {
         boardAutoplaySkipChinaHolidays = AppSettings.defaultBoardAutoplaySkipChinaHolidays
         aiSummaryEnabled = AppSettings.defaultAISummaryEnabled
         aiSummaryModelRawValue = AppSettings.defaultAISummaryModelRawValue
+        lastSyncedAISummaryEnabled = AppSettings.defaultAISummaryEnabled
+        lastSyncedAISummaryModelRawValue = AppSettings.defaultAISummaryModelRawValue
 
         if let snapshot = loadSnapshotFromDefaults() {
             apply(snapshot: snapshot, incrementRevision: false)
         }
         prepareLegacyAISummarySettingsMigrationIfNeeded()
+        applyAISummarySettingsFromUbiquitousStoreIfNewer(incrementRevision: false)
+        if shouldSeedAISummarySettingsToUbiquitousStore {
+            syncAISummarySettingsToUbiquitousStoreIfNeeded()
+        } else {
+            lastSyncedAISummaryEnabled = aiSummaryEnabled
+            lastSyncedAISummaryModelRawValue = aiSummaryModelRawValue
+        }
     }
 
     var boardManualPlaybackOption: BoardManualPlaybackOption {
@@ -177,11 +196,24 @@ final class AppSettingsStore {
         guard remoteSnapshot != snapshot else { return }
         apply(snapshot: remoteSnapshot, incrementRevision: false)
         persistToDefaults()
+        syncAISummarySettingsToUbiquitousStoreIfNeeded()
+        markChanged()
+    }
+
+    func refreshFromUbiquitousStoreIfPossible(using modelContext: ModelContext) {
+        guard applyAISummarySettingsFromUbiquitousStoreIfNewer(incrementRevision: false) else {
+            return
+        }
+        persistToDefaults()
+        syncToSwiftDataIfPossible(using: modelContext)
+        lastSyncedAISummaryEnabled = aiSummaryEnabled
+        lastSyncedAISummaryModelRawValue = aiSummaryModelRawValue
         markChanged()
     }
 
     func persist(using modelContext: ModelContext) {
         persistToDefaults()
+        syncAISummarySettingsToUbiquitousStoreIfNeeded()
         markChanged()
         syncToSwiftDataIfPossible(using: modelContext)
     }
@@ -295,6 +327,66 @@ final class AppSettingsStore {
         UserDefaults.standard.set(reviewInteractionStyle.rawValue, forKey: StorageKeys.legacyReviewInteractionStyle)
         UserDefaults.standard.set(aiSummaryEnabled, forKey: DailySummaryAISettings.isEnabledKey)
         UserDefaults.standard.set(aiSummaryModelRawValue, forKey: DailySummaryAISettings.modelKey)
+    }
+
+    private func syncAISummarySettingsToUbiquitousStoreIfNeeded() {
+        guard aiSummaryEnabled != lastSyncedAISummaryEnabled ||
+              aiSummaryModelRawValue != lastSyncedAISummaryModelRawValue else {
+            return
+        }
+
+        let updatedAt = Date().timeIntervalSince1970
+        ubiquitousStore.set(aiSummaryEnabled, forKey: UbiquitousKeys.aiSummaryEnabled)
+        ubiquitousStore.set(aiSummaryModelRawValue, forKey: UbiquitousKeys.aiSummaryModelRawValue)
+        ubiquitousStore.set(updatedAt, forKey: UbiquitousKeys.aiSummaryUpdatedAt)
+        ubiquitousStore.synchronize()
+
+        userDefaults.set(updatedAt, forKey: StorageKeys.ubiquitousAISummaryUpdatedAt)
+        lastSyncedAISummaryEnabled = aiSummaryEnabled
+        lastSyncedAISummaryModelRawValue = aiSummaryModelRawValue
+    }
+
+    private var shouldSeedAISummarySettingsToUbiquitousStore: Bool {
+        let hasRemoteTimestamp = ubiquitousStore.double(forKey: UbiquitousKeys.aiSummaryUpdatedAt) > 0
+        let hasLocalTimestamp = userDefaults.double(forKey: StorageKeys.ubiquitousAISummaryUpdatedAt) > 0
+        guard !hasRemoteTimestamp, !hasLocalTimestamp else { return false }
+
+        return aiSummaryEnabled != AppSettings.defaultAISummaryEnabled ||
+            aiSummaryModelRawValue != AppSettings.defaultAISummaryModelRawValue
+    }
+
+    @discardableResult
+    private func applyAISummarySettingsFromUbiquitousStoreIfNewer(incrementRevision: Bool) -> Bool {
+        ubiquitousStore.synchronize()
+
+        let remoteUpdatedAt = ubiquitousStore.double(forKey: UbiquitousKeys.aiSummaryUpdatedAt)
+        guard remoteUpdatedAt > 0 else { return false }
+
+        let localUpdatedAt = userDefaults.double(forKey: StorageKeys.ubiquitousAISummaryUpdatedAt)
+        guard remoteUpdatedAt > localUpdatedAt else { return false }
+
+        let remoteEnabled = ubiquitousStore.object(forKey: UbiquitousKeys.aiSummaryEnabled) as? Bool
+            ?? AppSettings.defaultAISummaryEnabled
+        let remoteModel = ubiquitousStore.string(forKey: UbiquitousKeys.aiSummaryModelRawValue)
+            ?? AppSettings.defaultAISummaryModelRawValue
+
+        guard aiSummaryEnabled != remoteEnabled || aiSummaryModelRawValue != remoteModel else {
+            userDefaults.set(remoteUpdatedAt, forKey: StorageKeys.ubiquitousAISummaryUpdatedAt)
+            lastSyncedAISummaryEnabled = aiSummaryEnabled
+            lastSyncedAISummaryModelRawValue = aiSummaryModelRawValue
+            return false
+        }
+
+        aiSummaryEnabled = remoteEnabled
+        aiSummaryModelRawValue = remoteModel
+        userDefaults.set(remoteUpdatedAt, forKey: StorageKeys.ubiquitousAISummaryUpdatedAt)
+        lastSyncedAISummaryEnabled = remoteEnabled
+        lastSyncedAISummaryModelRawValue = remoteModel
+
+        if incrementRevision {
+            markChanged()
+        }
+        return true
     }
 
     private func loadSnapshotFromDefaults() -> AppSettingsSnapshot? {

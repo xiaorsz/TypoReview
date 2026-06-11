@@ -46,6 +46,7 @@ struct RootTabView: View {
                 AppStorePreviewData.seedIfNeeded(in: modelContext)
                 appSettingsStore.bootstrap(using: modelContext)
                 appSettingsStore.refreshFromSwiftDataIfPossible(using: modelContext)
+                appSettingsStore.refreshFromUbiquitousStoreIfPossible(using: modelContext)
             }
             #endif
             #if DEBUG
@@ -85,11 +86,17 @@ struct RootTabView: View {
                 guard !Task.isCancelled else { return }
                 guard canRefreshLiveAppState else { return }
                 appSettingsStore.refreshFromSwiftDataIfPossible(using: modelContext)
+                appSettingsStore.refreshFromUbiquitousStoreIfPossible(using: modelContext)
                 #if DEBUG
                 DebugPerf.mark("RootTabView posting appDataDidMutate from remote change")
                 #endif
                 NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSUbiquitousKeyValueStore.didChangeExternallyNotification)) { _ in
+            guard canRefreshLiveAppState else { return }
+            appSettingsStore.refreshFromUbiquitousStoreIfPossible(using: modelContext)
+            NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
         }
     }
 
@@ -243,6 +250,7 @@ struct RootTabView: View {
         mediaLibraryStore.reload()
         appSettingsStore.bootstrap(using: modelContext)
         appSettingsStore.refreshFromSwiftDataIfPossible(using: modelContext)
+        appSettingsStore.refreshFromUbiquitousStoreIfPossible(using: modelContext)
         await syncStatusStore.refresh(using: modelContext, trigger: trigger)
     }
 
@@ -261,6 +269,7 @@ struct RootTabView: View {
             guard didRun else { return }
 
             appSettingsStore.refreshFromSwiftDataIfPossible(using: modelContext)
+            appSettingsStore.refreshFromUbiquitousStoreIfPossible(using: modelContext)
             NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
         }
     }

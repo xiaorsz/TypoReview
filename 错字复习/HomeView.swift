@@ -404,6 +404,7 @@ struct HomeView: View {
         let result: DailySummaryResult
         let isAIResult: Bool
         let isLoading: Bool
+        let aiErrorMessage: String?
     }
 
     private struct DashboardSnapshot {
@@ -915,7 +916,8 @@ struct HomeView: View {
                 modelRawValue: model.rawValue,
                 result: fallbackResult,
                 isAIResult: false,
-                isLoading: false
+                isLoading: false,
+                aiErrorMessage: nil
             )
             return
         }
@@ -928,7 +930,8 @@ struct HomeView: View {
                 modelRawValue: model.rawValue,
                 result: fallbackResult,
                 isAIResult: false,
-                isLoading: false
+                isLoading: false,
+                aiErrorMessage: "未填写 DeepSeek API Key"
             )
             return
         }
@@ -941,7 +944,8 @@ struct HomeView: View {
                 modelRawValue: model.rawValue,
                 result: cachedResult,
                 isAIResult: true,
-                isLoading: false
+                isLoading: false,
+                aiErrorMessage: nil
             )
             return
         }
@@ -952,7 +956,8 @@ struct HomeView: View {
             modelRawValue: model.rawValue,
             result: fallbackResult,
             isAIResult: false,
-            isLoading: true
+            isLoading: true,
+            aiErrorMessage: nil
         )
 
         dailySummaryTask = Task {
@@ -967,7 +972,8 @@ struct HomeView: View {
                         modelRawValue: model.rawValue,
                         result: result,
                         isAIResult: true,
-                        isLoading: false
+                        isLoading: false,
+                        aiErrorMessage: nil
                     )
                 }
             } catch {
@@ -978,7 +984,8 @@ struct HomeView: View {
                         modelRawValue: model.rawValue,
                         result: fallbackResult,
                         isAIResult: false,
-                        isLoading: false
+                        isLoading: false,
+                        aiErrorMessage: error.localizedDescription
                     )
                 }
             }
@@ -994,15 +1001,38 @@ struct HomeView: View {
         let isSummaryLoading = dailySummaryPresentation?.inputHash == summaryHash
             ? dailySummaryPresentation?.isLoading == true
             : false
+        let isSummaryAIResult = dailySummaryPresentation?.inputHash == summaryHash
+            ? dailySummaryPresentation?.isAIResult == true
+            : false
+        let summaryAIErrorMessage = dailySummaryPresentation?.inputHash == summaryHash
+            ? dailySummaryPresentation?.aiErrorMessage
+            : nil
+        let summaryAIErrorText = summaryAIErrorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
-                Text(heroSummaryText(snapshot, result: summaryResult))
-                    .font(.system(.title3, design: .rounded, weight: .bold))
-                    .foregroundStyle(.white)
-                    .lineLimit(3)
-                    .minimumScaleFactor(0.82)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(heroSummaryText(snapshot, result: summaryResult))
+                        .font(.system(.title3, design: .rounded, weight: .bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(3)
+                        .minimumScaleFactor(0.82)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    dailySummarySourceBadge(
+                        isAIResult: isSummaryAIResult,
+                        isLoading: isSummaryLoading,
+                        errorMessage: summaryAIErrorMessage
+                    )
+
+                    if let summaryAIErrorText, !summaryAIErrorText.isEmpty {
+                        Text(summaryAIErrorText)
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.78))
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
 
                 Spacer(minLength: 8)
 
@@ -1039,6 +1069,23 @@ struct HomeView: View {
                     )
                 )
         )
+    }
+
+    private func dailySummarySourceBadge(isAIResult: Bool, isLoading: Bool, errorMessage: String?) -> some View {
+        let trimmedError = errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let hasError = !trimmedError.isEmpty
+        let title = isLoading ? "AI 生成中" : (hasError ? "AI 失败，已用本地小结" : (isAIResult ? "AI 小结" : "本地小结"))
+        let icon = isLoading ? "sparkles" : (hasError ? "exclamationmark.triangle.fill" : (isAIResult ? "checkmark.seal.fill" : "iphone"))
+
+        return Label(title, systemImage: icon)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.white.opacity(0.92))
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.white.opacity(0.16), in: Capsule())
+            .accessibilityLabel(hasError ? "\(title)：\(trimmedError)" : title)
     }
 
     private func heroMetricStrip(_ snapshot: DashboardSnapshot) -> some View {

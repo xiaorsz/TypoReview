@@ -418,6 +418,7 @@ struct DeepSeekSummaryClient {
         case apiError(String)
         case emptyContent
         case invalidSummary
+        case timedOut
 
         var errorDescription: String? {
             switch self {
@@ -431,12 +432,37 @@ struct DeepSeekSummaryClient {
                 return "DeepSeek 没有返回小结内容。"
             case .invalidSummary:
                 return "DeepSeek 返回的小结格式不正确。"
+            case .timedOut:
+                return "DeepSeek 连接超时，请稍后重试，或切换网络后再试。"
             }
         }
     }
 
+    private static let requestTimeout: TimeInterval = 30
+
     let apiKey: String
     let model: String
+
+    func testConnection() async throws -> String {
+        let chatResponse = try await performChatRequest(
+            DeepSeekChatRequest(
+                model: model,
+                messages: [
+                    DeepSeekMessage(role: "system", content: "你只用于检查 API 连接是否可用。"),
+                    DeepSeekMessage(role: "user", content: "请只回复：连接成功")
+                ],
+                responseFormat: nil,
+                temperature: 0,
+                maxTokens: 20,
+                stream: false
+            )
+        )
+        guard let content = chatResponse.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines),
+              !content.isEmpty else {
+            throw ClientError.emptyContent
+        }
+        return content
+    }
 
     func generateSummary(for input: DailySummaryInput) async throws -> DailySummaryResult {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -444,23 +470,7 @@ struct DeepSeekSummaryClient {
             throw ClientError.missingAPIKey
         }
 
-        var request = URLRequest(url: URL(string: "https://api.deepseek.com/chat/completions")!)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 10
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONEncoder().encode(makeRequestBody(input: input))
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw ClientError.invalidResponse
-        }
-        guard (200..<300).contains(httpResponse.statusCode) else {
-            let errorResponse = try? JSONDecoder().decode(DeepSeekErrorResponse.self, from: data)
-            throw ClientError.apiError(errorResponse?.error.message ?? "DeepSeek 请求失败：\(httpResponse.statusCode)")
-        }
-
-        let chatResponse = try JSONDecoder().decode(DeepSeekChatResponse.self, from: data)
+        let chatResponse = try await performChatRequest(makeRequestBody(input: input))
         guard let content = chatResponse.choices.first?.message.content,
               !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ClientError.emptyContent
@@ -480,23 +490,7 @@ struct DeepSeekSummaryClient {
             throw ClientError.missingAPIKey
         }
 
-        var request = URLRequest(url: URL(string: "https://api.deepseek.com/chat/completions")!)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 10
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONEncoder().encode(makeLearningSessionRequestBody(input: input))
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw ClientError.invalidResponse
-        }
-        guard (200..<300).contains(httpResponse.statusCode) else {
-            let errorResponse = try? JSONDecoder().decode(DeepSeekErrorResponse.self, from: data)
-            throw ClientError.apiError(errorResponse?.error.message ?? "DeepSeek 请求失败：\(httpResponse.statusCode)")
-        }
-
-        let chatResponse = try JSONDecoder().decode(DeepSeekChatResponse.self, from: data)
+        let chatResponse = try await performChatRequest(makeLearningSessionRequestBody(input: input))
         guard let content = chatResponse.choices.first?.message.content,
               !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ClientError.emptyContent
@@ -508,6 +502,37 @@ struct DeepSeekSummaryClient {
             throw ClientError.invalidSummary
         }
         return result
+    }
+
+    private func performChatRequest(_ body: DeepSeekChatRequest) async throws -> DeepSeekChatResponse {
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKey.isEmpty else {
+            throw ClientError.missingAPIKey
+        }
+
+        var request = URLRequest(url: URL(string: "https://api.deepseek.com/chat/completions")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = Self.requestTimeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONEncoder().encode(body)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch let error as URLError where error.code == .timedOut {
+            throw ClientError.timedOut
+        }
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ClientError.invalidResponse
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let errorResponse = try? JSONDecoder().decode(DeepSeekErrorResponse.self, from: data)
+            throw ClientError.apiError(errorResponse?.error.message ?? "DeepSeek 请求失败：\(httpResponse.statusCode)")
+        }
+
+        return try JSONDecoder().decode(DeepSeekChatResponse.self, from: data)
     }
 
     private func makeRequestBody(input: DailySummaryInput) throws -> DeepSeekChatRequest {
@@ -576,7 +601,7 @@ struct DeepSeekSummaryClient {
 private struct DeepSeekChatRequest: Encodable {
     let model: String
     let messages: [DeepSeekMessage]
-    let responseFormat: DeepSeekResponseFormat
+    let responseFormat: DeepSeekResponseFormat?
     let temperature: Double
     let maxTokens: Int
     let stream: Bool

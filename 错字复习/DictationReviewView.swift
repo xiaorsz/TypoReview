@@ -368,6 +368,7 @@ private struct DictationSummaryView: View {
 
     @State private var learningSessionSummary: LearningSessionSummaryResult?
     @State private var learningSessionSummaryInputHash = ""
+    @State private var isLearningSessionSummaryAIResult = false
     @State private var isLoadingLearningSessionSummary = false
     @State private var learningSessionSummaryTask: Task<Void, Never>?
 
@@ -518,8 +519,9 @@ private struct DictationSummaryView: View {
             HStack(spacing: 8) {
                 Image(systemName: wrongCount == 0 ? "sparkles" : "lightbulb.max.fill")
                     .foregroundStyle(.purple)
-                Text(wrongCount == 0 ? "AI 本次小结" : "AI 错项建议")
+                Text(wrongCount == 0 ? "本次小结" : "错项建议")
                     .font(.headline)
+                learningSessionSummarySourceBadge
 
                 Spacer()
 
@@ -564,6 +566,24 @@ private struct DictationSummaryView: View {
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
     }
 
+    private var learningSessionSummarySourceBadge: some View {
+        let title = isLoadingLearningSessionSummary
+            ? "AI 生成中"
+            : (isLearningSessionSummaryAIResult ? "AI 小结" : "本地小结")
+        let icon = isLoadingLearningSessionSummary
+            ? "sparkles"
+            : (isLearningSessionSummaryAIResult ? "checkmark.seal.fill" : "iphone")
+
+        return Label(title, systemImage: icon)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(isLearningSessionSummaryAIResult || isLoadingLearningSessionSummary ? Color.purple : Color.secondary)
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.secondary.opacity(0.12), in: Capsule())
+            .accessibilityLabel(title)
+    }
+
     private func makeLearningSessionSummaryInput() -> LearningSessionSummaryInput {
         LearningSessionSummaryInput(
             kind: .dictation,
@@ -593,6 +613,7 @@ private struct DictationSummaryView: View {
             learningSessionSummaryTask?.cancel()
             learningSessionSummaryInputHash = inputHash
             learningSessionSummary = fallback
+            isLearningSessionSummaryAIResult = false
             isLoadingLearningSessionSummary = false
             return
         }
@@ -602,6 +623,7 @@ private struct DictationSummaryView: View {
             learningSessionSummaryTask?.cancel()
             learningSessionSummaryInputHash = inputHash
             learningSessionSummary = fallback
+            isLearningSessionSummaryAIResult = false
             isLoadingLearningSessionSummary = false
             return
         }
@@ -617,6 +639,7 @@ private struct DictationSummaryView: View {
             learningSessionSummaryTask?.cancel()
             learningSessionSummaryInputHash = inputHash
             learningSessionSummary = cached
+            isLearningSessionSummaryAIResult = true
             isLoadingLearningSessionSummary = false
             return
         }
@@ -624,6 +647,7 @@ private struct DictationSummaryView: View {
         learningSessionSummaryTask?.cancel()
         learningSessionSummaryInputHash = inputHash
         learningSessionSummary = fallback
+        isLearningSessionSummaryAIResult = false
         isLoadingLearningSessionSummary = true
 
         learningSessionSummaryTask = Task {
@@ -634,12 +658,14 @@ private struct DictationSummaryView: View {
                     LearningSessionSummaryCache.save(result, inputHash: inputHash, model: model.rawValue)
                     learningSessionSummary = result
                     learningSessionSummaryInputHash = inputHash
+                    isLearningSessionSummaryAIResult = true
                     isLoadingLearningSessionSummary = false
                 }
             } catch {
                 await MainActor.run {
                     learningSessionSummary = fallback
                     learningSessionSummaryInputHash = inputHash
+                    isLearningSessionSummaryAIResult = false
                     isLoadingLearningSessionSummary = false
                 }
             }
