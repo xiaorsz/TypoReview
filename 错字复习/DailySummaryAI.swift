@@ -417,7 +417,7 @@ struct DeepSeekSummaryClient {
         case invalidResponse
         case apiError(String)
         case emptyContent
-        case invalidSummary
+        case invalidSummary(String)
         case timedOut
 
         var errorDescription: String? {
@@ -430,15 +430,16 @@ struct DeepSeekSummaryClient {
                 return message
             case .emptyContent:
                 return "DeepSeek 没有返回小结内容。"
-            case .invalidSummary:
-                return "DeepSeek 返回的小结格式不正确。"
+            case .invalidSummary(let detail):
+                return "DeepSeek 返回的小结格式不正确：\(detail)"
             case .timedOut:
                 return "DeepSeek 连接超时，请稍后重试，或切换网络后再试。"
             }
         }
     }
 
-    private static let requestTimeout: TimeInterval = 30
+    private static let requestTimeout: TimeInterval = 45
+    private static let maxAttempts = 2
 
     let apiKey: String
     let model: String
@@ -452,12 +453,13 @@ struct DeepSeekSummaryClient {
                     DeepSeekMessage(role: "user", content: "请只回复：连接成功")
                 ],
                 responseFormat: nil,
+                thinking: DeepSeekThinking(type: "disabled"),
                 temperature: 0,
                 maxTokens: 20,
                 stream: false
             )
         )
-        guard let content = chatResponse.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines),
+        guard let content = chatResponse.choices.first?.message.content?.trimmingCharacters(in: .whitespacesAndNewlines),
               !content.isEmpty else {
             throw ClientError.emptyContent
         }
@@ -470,18 +472,28 @@ struct DeepSeekSummaryClient {
             throw ClientError.missingAPIKey
         }
 
-        let chatResponse = try await performChatRequest(makeRequestBody(input: input))
-        guard let content = chatResponse.choices.first?.message.content,
-              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw ClientError.emptyContent
+        for attempt in 1...Self.maxAttempts {
+            let chatResponse = try await performChatRequest(makeRequestBody(input: input))
+            let choice = chatResponse.choices.first
+            let content = choice?.message.content?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            if let result = decodeSummary(DailySummaryResult.self, from: content),
+               result.isUsable {
+                return result
+            }
+
+            if attempt < Self.maxAttempts {
+                try await Task.sleep(nanoseconds: 400_000_000)
+                continue
+            }
+
+            guard !content.isEmpty else {
+                throw ClientError.emptyContent
+            }
+            throw ClientError.invalidSummary(failureDetail(for: choice?.finishReason))
         }
 
-        guard let resultData = content.data(using: .utf8),
-              let result = try? JSONDecoder().decode(DailySummaryResult.self, from: resultData),
-              result.isUsable else {
-            throw ClientError.invalidSummary
-        }
-        return result
+        throw ClientError.emptyContent
     }
 
     func generateLearningSessionSummary(for input: LearningSessionSummaryInput) async throws -> LearningSessionSummaryResult {
@@ -490,18 +502,28 @@ struct DeepSeekSummaryClient {
             throw ClientError.missingAPIKey
         }
 
-        let chatResponse = try await performChatRequest(makeLearningSessionRequestBody(input: input))
-        guard let content = chatResponse.choices.first?.message.content,
-              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw ClientError.emptyContent
+        for attempt in 1...Self.maxAttempts {
+            let chatResponse = try await performChatRequest(makeLearningSessionRequestBody(input: input))
+            let choice = chatResponse.choices.first
+            let content = choice?.message.content?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            if let result = decodeSummary(LearningSessionSummaryResult.self, from: content),
+               result.isUsable {
+                return result
+            }
+
+            if attempt < Self.maxAttempts {
+                try await Task.sleep(nanoseconds: 400_000_000)
+                continue
+            }
+
+            guard !content.isEmpty else {
+                throw ClientError.emptyContent
+            }
+            throw ClientError.invalidSummary(failureDetail(for: choice?.finishReason))
         }
 
-        guard let resultData = content.data(using: .utf8),
-              let result = try? JSONDecoder().decode(LearningSessionSummaryResult.self, from: resultData),
-              result.isUsable else {
-            throw ClientError.invalidSummary
-        }
-        return result
+        throw ClientError.emptyContent
     }
 
     private func performChatRequest(_ body: DeepSeekChatRequest) async throws -> DeepSeekChatResponse {
@@ -532,7 +554,36 @@ struct DeepSeekSummaryClient {
             throw ClientError.apiError(errorResponse?.error.message ?? "DeepSeek 请求失败：\(httpResponse.statusCode)")
         }
 
-        return try JSONDecoder().decode(DeepSeekChatResponse.self, from: data)
+        do {
+            return try JSONDecoder().decode(DeepSeekChatResponse.self, from: data)
+        } catch {
+            throw ClientError.apiError("DeepSeek 响应解析失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func decodeSummary<Result: Decodable>(_ type: Result.Type, from content: String) -> Result? {
+        guard !content.isEmpty else { return nil }
+
+        let normalizedContent = content
+            .replacingOccurrences(of: #"^```(?:json)?\s*"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\s*```$"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard let data = normalizedContent.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
+    private func failureDetail(for finishReason: String?) -> String {
+        switch finishReason {
+        case "length":
+            return "输出被截断"
+        case "content_filter":
+            return "内容被过滤"
+        case "insufficient_system_resource":
+            return "DeepSeek 推理资源不足"
+        default:
+            return "JSON 字段缺失或类型不匹配"
+        }
     }
 
     private func makeRequestBody(input: DailySummaryInput) throws -> DeepSeekChatRequest {
@@ -542,6 +593,7 @@ struct DeepSeekSummaryClient {
         let systemPrompt = """
         你是一个给小学生家长看的学习助手。请只根据用户提供的 JSON 事实写今日小结，不要编造数字。
         输出必须是严格 JSON object，字段为 title、message、highlights、tomorrowFocus。
+        JSON 输出格式示例：{"title":"今日小结","message":"今天完成了计划中的学习内容。","highlights":["完成复习"],"tomorrowFocus":"下一次重点回看错项。"}
         message 只总结今天已经完成的内容和当前状态，不要写“明天”，不要说今天失败了，也不要承诺今天一定还能完成。
         如果 tasksCompleted 为 0 且 tasksPending 大于 0，可以温和表达“还有待办未完成”，不要写“今天没有完成任务”。
         tomorrowFocus 只写下一次可以关注什么，不要再出现“今天还能/今天可以/一起完成今天”这类表达。
@@ -560,6 +612,7 @@ struct DeepSeekSummaryClient {
                 DeepSeekMessage(role: "user", content: userPrompt)
             ],
             responseFormat: DeepSeekResponseFormat(type: "json_object"),
+            thinking: DeepSeekThinking(type: "disabled"),
             temperature: 0.4,
             maxTokens: 500,
             stream: false
@@ -573,6 +626,7 @@ struct DeepSeekSummaryClient {
         let systemPrompt = """
         你是一个给小学生家长看的学习助手。请只根据用户提供的 JSON 事实写本次练习结束小结，不要编造数字。
         输出必须是严格 JSON object，字段为 title、message、suggestions。
+        JSON 输出格式示例：{"title":"本次练习已完成","message":"这次共完成 10 条，正确率 90%。","suggestions":["重新辨认本次错项","遮住答案再写一次"]}
         message 只总结本次 \(input.kind.title) 的完成情况，不要提不存在的任务、日程或历史记录。
         suggestions 给 2 到 3 条具体可执行建议，必须优先针对 samples.wrongItems 里的本次错项；不要泛泛写“下次/明天/以后”。
         若 kind 是 dictation，建议围绕本次听错内容如何立刻纠正、辨析字形/拼写/发音或提示；若 kind 是 review，建议围绕本次错项如何重新理解和记忆。
@@ -591,6 +645,7 @@ struct DeepSeekSummaryClient {
                 DeepSeekMessage(role: "user", content: userPrompt)
             ],
             responseFormat: DeepSeekResponseFormat(type: "json_object"),
+            thinking: DeepSeekThinking(type: "disabled"),
             temperature: 0.35,
             maxTokens: 500,
             stream: false
@@ -602,6 +657,7 @@ private struct DeepSeekChatRequest: Encodable {
     let model: String
     let messages: [DeepSeekMessage]
     let responseFormat: DeepSeekResponseFormat?
+    let thinking: DeepSeekThinking?
     let temperature: Double
     let maxTokens: Int
     let stream: Bool
@@ -610,6 +666,7 @@ private struct DeepSeekChatRequest: Encodable {
         case model
         case messages
         case responseFormat = "response_format"
+        case thinking
         case temperature
         case maxTokens = "max_tokens"
         case stream
@@ -618,16 +675,26 @@ private struct DeepSeekChatRequest: Encodable {
 
 private struct DeepSeekMessage: Codable {
     let role: String
-    let content: String
+    let content: String?
 }
 
 private struct DeepSeekResponseFormat: Encodable {
     let type: String
 }
 
+private struct DeepSeekThinking: Encodable {
+    let type: String
+}
+
 private struct DeepSeekChatResponse: Decodable {
     struct Choice: Decodable {
         let message: DeepSeekMessage
+        let finishReason: String?
+
+        enum CodingKeys: String, CodingKey {
+            case message
+            case finishReason = "finish_reason"
+        }
     }
 
     let choices: [Choice]
