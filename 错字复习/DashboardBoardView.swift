@@ -657,17 +657,55 @@ struct DashboardBoardView: View {
                 }
                 .padding(.vertical, 12)
             } else {
-                HStack(alignment: .top, spacing: 18) {
-                    boardMediaPreviewCard
-                    boardMediaQueueCard(snapshot)
+                GeometryReader { proxy in
+                    let spacing: CGFloat = 18
+                    let panelContentHeight = boardMediaPanelContentHeight(for: snapshot)
+                    let previewHeight = boardMediaPreviewBodyHeight(for: panelContentHeight)
+                    let queueWidth = boardMediaQueueWidth(for: proxy.size.width)
+                    let previewWidth = max(proxy.size.width - queueWidth - spacing, 0)
+
+                    HStack(alignment: .top, spacing: spacing) {
+                        boardMediaPreviewCard(previewHeight: previewHeight)
+                            .frame(width: previewWidth, alignment: .topLeading)
+
+                        boardMediaQueueCard(snapshot)
+                            .frame(width: queueWidth, alignment: .topLeading)
+                    }
                 }
+                .frame(height: boardMediaPanelContentHeight(for: snapshot))
             }
         }
         .padding(22)
         .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 28))
     }
 
-    private var boardMediaPreviewCard: some View {
+    private func boardMediaQueueWidth(for panelWidth: CGFloat) -> CGFloat {
+        let preferredWidth = panelWidth * 0.36
+        let compactMaximum = max(panelWidth * 0.42, 0)
+        return min(max(preferredWidth, 460), min(620, compactMaximum))
+    }
+
+    private func boardMediaPanelContentHeight(for snapshot: BoardSnapshot) -> CGFloat {
+        let visibleRowCount = min(snapshot.enabledMediaAssets.count, 6)
+        let rowHeight: CGFloat = 54
+        let rowSpacing: CGFloat = 10
+        let headerHeight: CGFloat = 22
+        let sectionSpacing: CGFloat = 14
+        let footerHeight: CGFloat = snapshot.enabledMediaAssets.count > 6 ? 17 + sectionSpacing : 0
+        let queueListHeight = CGFloat(visibleRowCount) * rowHeight + CGFloat(max(visibleRowCount - 1, 0)) * rowSpacing
+        let queueHeight = headerHeight + sectionSpacing + queueListHeight + footerHeight
+        let previewHeight = headerHeight + sectionSpacing + boardMediaPreviewHeight
+
+        return max(queueHeight, previewHeight)
+    }
+
+    private func boardMediaPreviewBodyHeight(for panelContentHeight: CGFloat) -> CGFloat {
+        let headerHeight: CGFloat = 22
+        let sectionSpacing: CGFloat = 14
+        return max(panelContentHeight - headerHeight - sectionSpacing, boardMediaPreviewHeight)
+    }
+
+    private func boardMediaPreviewCard(previewHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("当前资源")
                 .font(.system(size: 18, weight: .semibold, design: .rounded))
@@ -676,7 +714,7 @@ struct DashboardBoardView: View {
             if let currentAsset = playbackCoordinator.currentAsset {
                 if currentAsset.mediaType == .video {
                     VideoPlayer(player: playbackCoordinator.player)
-                        .frame(height: boardMediaPreviewHeight)
+                        .frame(height: previewHeight)
                         .clipShape(RoundedRectangle(cornerRadius: 22))
                 } else {
                     VStack(spacing: 14) {
@@ -703,7 +741,7 @@ struct DashboardBoardView: View {
                         ),
                         in: RoundedRectangle(cornerRadius: 24)
                     )
-                    .frame(maxWidth: .infinity, minHeight: boardMediaPreviewHeight, maxHeight: boardMediaPreviewHeight)
+                    .frame(maxWidth: .infinity, minHeight: previewHeight, maxHeight: previewHeight)
                 }
             } else {
                 VStack(spacing: 14) {
@@ -718,7 +756,7 @@ struct DashboardBoardView: View {
                         .font(.system(size: 16, weight: .medium, design: .rounded))
                         .foregroundStyle(.white.opacity(0.75))
                 }
-                .frame(maxWidth: .infinity, minHeight: boardMediaPreviewHeight, maxHeight: boardMediaPreviewHeight)
+                .frame(maxWidth: .infinity, minHeight: previewHeight, maxHeight: previewHeight)
                 .padding(20)
                 .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 24))
             }
@@ -785,7 +823,7 @@ struct DashboardBoardView: View {
                     .foregroundStyle(.white.opacity(0.72))
             }
         }
-        .frame(width: 360, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private func boardTaskColumn(_ snapshot: BoardSnapshot) -> some View {
