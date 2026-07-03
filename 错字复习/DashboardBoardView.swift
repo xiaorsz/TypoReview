@@ -29,6 +29,7 @@ struct DashboardBoardView: View {
     @State private var remindedTaskReminderSlots: Set<String> = []
     @State private var remindedTaskReminderDay = Calendar.current.startOfDay(for: Date.now)
     @State private var shouldResumePlaybackAfterTaskReminder = false
+    @State private var minimizedFullscreenVideoAssetID: UUID?
 
     private struct BoardSnapshot {
         let childName: String
@@ -334,6 +335,9 @@ struct DashboardBoardView: View {
                 playbackCoordinator.stop()
             }
         }
+        .onChange(of: playbackCoordinator.currentAsset?.id) { _, _ in
+            minimizedFullscreenVideoAssetID = nil
+        }
     }
 
     private var boardLoadingView: some View {
@@ -408,8 +412,49 @@ struct DashboardBoardView: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                             .transition(.opacity.combined(with: .scale(scale: 0.92)))
                     }
+
+                    if shouldShowFullscreenBoardVideo {
+                        boardFullscreenVideoPlayer(proxy: proxy)
+                            .transition(.opacity)
+                            .zIndex(10)
+                    }
                 }
+                .animation(.easeInOut(duration: 0.2), value: shouldShowFullscreenBoardVideo)
             }
+        }
+    }
+
+    private var shouldShowFullscreenBoardVideo: Bool {
+        guard let currentAsset = playbackCoordinator.currentAsset,
+              currentAsset.mediaType == .video else {
+            return false
+        }
+        return minimizedFullscreenVideoAssetID != currentAsset.id
+    }
+
+    private func boardFullscreenVideoPlayer(proxy: GeometryProxy) -> some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black
+                .ignoresSafeArea()
+
+            VideoPlayer(player: playbackCoordinator.player)
+                .ignoresSafeArea()
+
+            Button {
+                recordBoardInteraction()
+                minimizedFullscreenVideoAssetID = playbackCoordinator.currentAsset?.id
+            } label: {
+                Label("返回看板", systemImage: "rectangle.compress.vertical")
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(.black.opacity(0.55), in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .padding(.top, topOverlayPadding(for: proxy))
+            .padding(.trailing, 24)
+            .accessibilityLabel("返回看板，视频继续播放")
         }
     }
 
