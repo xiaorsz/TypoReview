@@ -508,8 +508,8 @@ final class SyncStatusStore {
 
             if let cdZone = cdZone {
                 lines.append("✅ CoreData 同步区域存在")
-                let baseResults = await Self.runCloudKitWriteProbes(
-                    Self.baseCloudKitWriteProbes(),
+                let coreResults = await Self.runCloudKitWriteProbes(
+                    Self.coreCloudKitWriteProbes(),
                     database: database,
                     zoneID: cdZone.zoneID
                 )
@@ -527,20 +527,20 @@ final class SyncStatusStore {
                 lines.insert(
                     Self.cloudKitDirectTestSummary(
                         accountStatus: accountStatus,
-                        baseResults: baseResults,
+                        coreResults: coreResults,
                         taskResults: taskResults,
                         pointsResults: pointsResults
                     ),
                     at: 0
                 )
                 lines.append("")
-                lines.append("基础模型检查")
-                lines.append(contentsOf: Self.formattedProbeLines(for: baseResults))
+                lines.append("题库 / 听写 / 日程 / 设置 / 媒体模型检查")
+                lines.append(contentsOf: Self.formattedProbeLines(for: coreResults))
                 lines.append("")
-                lines.append("任务系统新模型检查")
+                lines.append("任务系统模型检查")
                 lines.append(contentsOf: Self.formattedProbeLines(for: taskResults))
                 lines.append("")
-                lines.append("积分系统新模型检查")
+                lines.append("积分系统模型检查")
                 lines.append(contentsOf: Self.formattedProbeLines(for: pointsResults))
             } else {
                 let zoneNames = zones.map(\.zoneID.zoneName).joined(separator: ", ")
@@ -596,8 +596,27 @@ final class SyncStatusStore {
 #endif
     }
 
-    private static func baseCloudKitWriteProbes() -> [CloudKitWriteProbe] {
+    private static func coreCloudKitWriteProbes() -> [CloudKitWriteProbe] {
         [
+            CloudKitWriteProbe(label: "题库条目", recordType: "CD_ReviewItem") { record, testID in
+                record["CD_id"] = testID.uuidString as CKRecordValue
+                record["CD_typeRawValue"] = ReviewItemType.chineseCharacter.rawValue as CKRecordValue
+                record["CD_content"] = "__cloudkit_probe__" as CKRecordValue
+                record["CD_prompt"] = "__cloudkit_probe__" as CKRecordValue
+                record["CD_note"] = "__cloudkit_probe__" as CKRecordValue
+                record["CD_source"] = "__cloudkit_probe__" as CKRecordValue
+                record["CD_stage"] = NSNumber(value: 0)
+                record["CD_nextReviewAt"] = Date() as CKRecordValue
+                record["CD_lastReviewedAt"] = Date() as CKRecordValue
+                record["CD_consecutiveCorrectCount"] = NSNumber(value: 0)
+                record["CD_consecutiveWrongCount"] = NSNumber(value: 0)
+                record["CD_isPriority"] = NSNumber(value: false)
+                record["CD_reviewTrackRawValue"] = ReviewTrack.standard.rawValue as CKRecordValue
+                record["CD_dictationFollowUpStep"] = NSNumber(value: 1)
+                record["CD_isDictationPassRaw"] = NSNumber(value: true)
+                record["CD_createdAt"] = Date() as CKRecordValue
+                record["CD_updatedAt"] = Date() as CKRecordValue
+            },
             CloudKitWriteProbe(label: "复习记录", recordType: "CD_ReviewRecord") { record, testID in
                 record["CD_id"] = testID.uuidString as CKRecordValue
                 record["CD_itemID"] = UUID().uuidString as CKRecordValue
@@ -607,18 +626,106 @@ final class SyncStatusStore {
                 record["CD_oldStage"] = NSNumber(value: 0)
                 record["CD_newStage"] = NSNumber(value: 0)
                 record["CD_note"] = "__cloudkit_probe__" as CKRecordValue
+            },
+            CloudKitWriteProbe(label: "听写组", recordType: "CD_DictationSession") { record, testID in
+                record["CD_id"] = testID.uuidString as CKRecordValue
+                record["CD_title"] = "__cloudkit_probe__" as CKRecordValue
+                record["CD_typeRawValue"] = ReviewItemType.chineseCharacter.rawValue as CKRecordValue
+                record["CD_createdAt"] = Date() as CKRecordValue
+                record["CD_updatedAt"] = Date() as CKRecordValue
+                record["CD_scheduledDate"] = Date() as CKRecordValue
+                record["CD_finishedAt"] = Date() as CKRecordValue
+                record["CD_reviewedAt"] = Date() as CKRecordValue
+            },
+            CloudKitWriteProbe(label: "听写条目", recordType: "CD_DictationEntry") { record, testID in
+                record["CD_id"] = testID.uuidString as CKRecordValue
+                record["CD_sessionID"] = UUID().uuidString as CKRecordValue
+                record["CD_sortOrder"] = NSNumber(value: 0)
+                record["CD_typeRawValue"] = ReviewItemType.chineseCharacter.rawValue as CKRecordValue
+                record["CD_content"] = "__cloudkit_probe__" as CKRecordValue
+                record["CD_prompt"] = "__cloudkit_probe__" as CKRecordValue
+                record["CD_note"] = "__cloudkit_probe__" as CKRecordValue
+                record["CD_source"] = "__cloudkit_probe__" as CKRecordValue
+                record["CD_resultRawValue"] = DictationResult.pending.rawValue as CKRecordValue
+                record["CD_createdAt"] = Date() as CKRecordValue
+                record["CD_updatedAt"] = Date() as CKRecordValue
+            },
+            CloudKitWriteProbe(label: "日程", recordType: "CD_ScheduleItem") { record, testID in
+                record["CD_id"] = testID.uuidString as CKRecordValue
+                record["CD_title"] = "__cloudkit_probe__" as CKRecordValue
+                record["CD_note"] = "__cloudkit_probe__" as CKRecordValue
+                record["CD_startTime"] = Date() as CKRecordValue
+                record["CD_endTime"] = Date() as CKRecordValue
+                record["CD_repeatRuleRawValue"] = ScheduleRepeatRule.once.rawValue as CKRecordValue
+                record["CD_weekdaysJSON"] = "[]" as CKRecordValue
+                record["CD_effectiveStartDate"] = Date() as CKRecordValue
+                record["CD_effectiveEndDate"] = Date() as CKRecordValue
+                record["CD_isArchived"] = NSNumber(value: false)
+                record["CD_createdAt"] = Date() as CKRecordValue
+                record["CD_updatedAt"] = Date() as CKRecordValue
+            },
+            CloudKitWriteProbe(label: "应用设置", recordType: "CD_AppSettings") { record, testID in
+                record["CD_id"] = testID.uuidString as CKRecordValue
+                record["CD_childName"] = "__cloudkit_probe__" as CKRecordValue
+                record["CD_dailyLimit"] = NSNumber(value: AppSettings.defaultDailyLimit)
+                record["CD_remindHour"] = NSNumber(value: AppSettings.defaultRemindHour)
+                record["CD_remindMinute"] = NSNumber(value: AppSettings.defaultRemindMinute)
+                record["CD_reviewInteractionStyleRawValue"] = AppSettings.defaultReviewInteractionStyle.rawValue as CKRecordValue
+                record["CD_boardAutoplayEnabled"] = NSNumber(value: AppSettings.defaultBoardAutoplayEnabled)
+                record["CD_boardAutoplayStartHour"] = NSNumber(value: AppSettings.defaultBoardAutoplayStartHour)
+                record["CD_boardAutoplayStartMinute"] = NSNumber(value: AppSettings.defaultBoardAutoplayStartMinute)
+                record["CD_boardAutoplayEndHour"] = NSNumber(value: AppSettings.defaultBoardAutoplayEndHour)
+                record["CD_boardAutoplayEndMinute"] = NSNumber(value: AppSettings.defaultBoardAutoplayEndMinute)
+                record["CD_boardAutoplayDurationMinutes"] = NSNumber(value: AppSettings.defaultBoardAutoplayDurationMinutes)
+                record["CD_boardAutoplaySlotsRawValue"] = AppSettings.defaultBoardAutoplaySlotsRawValue as CKRecordValue
+                record["CD_boardManualPlaybackOptionRawValue"] = AppSettings.defaultBoardManualPlaybackOption as CKRecordValue
+                record["CD_boardAutoplaySkipWeekends"] = NSNumber(value: AppSettings.defaultBoardAutoplaySkipWeekends)
+                record["CD_boardAutoplaySkipChinaHolidays"] = NSNumber(value: AppSettings.defaultBoardAutoplaySkipChinaHolidays)
+                record["CD_aiSummaryEnabled"] = NSNumber(value: AppSettings.defaultAISummaryEnabled)
+                record["CD_aiSummaryModelRawValue"] = AppSettings.defaultAISummaryModelRawValue as CKRecordValue
+            },
+            CloudKitWriteProbe(label: "媒体索引", recordType: "CD_MediaAsset") { record, testID in
+                record["CD_id"] = testID.uuidString as CKRecordValue
+                record["CD_title"] = "__cloudkit_probe__" as CKRecordValue
+                record["CD_originalFilename"] = "__cloudkit_probe__.mp3" as CKRecordValue
+                record["CD_storedFilename"] = "__cloudkit_probe__.\(testID.uuidString).mp3" as CKRecordValue
+                record["CD_mediaTypeRawValue"] = MediaAssetType.audio.rawValue as CKRecordValue
+                record["CD_storageScopeRawValue"] = MediaStorageScope.local.rawValue as CKRecordValue
+                record["CD_playlistOrder"] = NSNumber(value: 0)
+                record["CD_isIncludedInPlaylist"] = NSNumber(value: true)
+                record["CD_createdAt"] = Date() as CKRecordValue
+                record["CD_updatedAt"] = Date() as CKRecordValue
             }
         ]
     }
 
     private static func taskCloudKitWriteProbes() -> [CloudKitWriteProbe] {
         [
+            CloudKitWriteProbe(label: "任务", recordType: "CD_TaskItem") { record, testID in
+                record["CD_id"] = testID.uuidString as CKRecordValue
+                record["CD_title"] = "__cloudkit_probe__" as CKRecordValue
+                record["CD_note"] = "__cloudkit_probe__" as CKRecordValue
+                record["CD_recurrenceJSON"] = #"{"kind":"once","weekdays":[]}"# as CKRecordValue
+                record["CD_skipPolicyRawValue"] = TaskSkipPolicy.skippable.rawValue as CKRecordValue
+                record["CD_startDate"] = Date() as CKRecordValue
+                record["CD_endDate"] = Date() as CKRecordValue
+                record["CD_isArchived"] = NSNumber(value: false)
+                record["CD_createdAt"] = Date() as CKRecordValue
+                record["CD_updatedAt"] = Date() as CKRecordValue
+            },
+            CloudKitWriteProbe(label: "旧任务完成记录", recordType: "CD_TaskCompletion") { record, testID in
+                record["CD_id"] = testID.uuidString as CKRecordValue
+                record["CD_taskID"] = UUID().uuidString as CKRecordValue
+                record["CD_completedDate"] = Date() as CKRecordValue
+                record["CD_completedAt"] = Date() as CKRecordValue
+            },
             CloudKitWriteProbe(label: "任务执行记录", recordType: "CD_TaskExecutionRecord") { record, testID in
                 record["CD_id"] = testID.uuidString as CKRecordValue
                 record["CD_taskID"] = UUID().uuidString as CKRecordValue
                 record["CD_occurrenceDate"] = Date() as CKRecordValue
                 record["CD_detail"] = "__cloudkit_probe__" as CKRecordValue
                 record["CD_statusRawValue"] = TaskExecutionStatus.pending.rawValue as CKRecordValue
+                record["CD_completedAt"] = Date() as CKRecordValue
                 record["CD_createdAt"] = Date() as CKRecordValue
                 record["CD_updatedAt"] = Date() as CKRecordValue
             },
@@ -632,6 +739,7 @@ final class SyncStatusStore {
                 record["CD_statusRawValue"] = TaskExecutionStatus.pending.rawValue as CKRecordValue
                 record["CD_sortOrder"] = NSNumber(value: 0)
                 record["CD_isArchived"] = NSNumber(value: false)
+                record["CD_completedAt"] = Date() as CKRecordValue
                 record["CD_createdAt"] = Date() as CKRecordValue
                 record["CD_updatedAt"] = Date() as CKRecordValue
             },
@@ -641,6 +749,7 @@ final class SyncStatusStore {
                 record["CD_subtaskID"] = UUID().uuidString as CKRecordValue
                 record["CD_detail"] = "__cloudkit_probe__" as CKRecordValue
                 record["CD_statusRawValue"] = TaskExecutionStatus.pending.rawValue as CKRecordValue
+                record["CD_completedAt"] = Date() as CKRecordValue
                 record["CD_createdAt"] = Date() as CKRecordValue
                 record["CD_updatedAt"] = Date() as CKRecordValue
             }
@@ -659,10 +768,12 @@ final class SyncStatusStore {
                 record["CD_idempotencyKey"] = "__cloudkit_probe__.\(testID.uuidString)" as CKRecordValue
                 record["CD_note"] = "__cloudkit_probe__" as CKRecordValue
                 record["CD_isReversal"] = NSNumber(value: false)
+                record["CD_reversesEntryIDRawValue"] = testID.uuidString as CKRecordValue
             },
             CloudKitWriteProbe(label: "积分状态", recordType: "CD_PointRewardState") { record, testID in
                 record["CD_id"] = testID.uuidString as CKRecordValue
                 record["CD_currentStreak"] = NSNumber(value: 0)
+                record["CD_lastActiveDay"] = Date() as CKRecordValue
                 record["CD_longestStreak"] = NSNumber(value: 0)
                 record["CD_updatedAt"] = Date() as CKRecordValue
             }
@@ -726,32 +837,25 @@ final class SyncStatusStore {
 
     private static func cloudKitDirectTestSummary(
         accountStatus: CKAccountStatus,
-        baseResults: [CloudKitWriteProbeResult],
+        coreResults: [CloudKitWriteProbeResult],
         taskResults: [CloudKitWriteProbeResult],
         pointsResults: [CloudKitWriteProbeResult]
     ) -> String {
         let accountAvailable = accountStatus == .available
-        let baseFailures = baseResults.filter { !$0.succeeded }
+        let coreFailures = coreResults.filter { !$0.succeeded }
         let taskFailures = taskResults.filter { !$0.succeeded }
         let pointsFailures = pointsResults.filter { !$0.succeeded }
+        let failureCount = coreFailures.count + taskFailures.count + pointsFailures.count
 
         guard accountAvailable else {
             return "❌ iCloud 账户当前不可用，先解决账号或系统层限制。"
         }
 
-        if !baseFailures.isEmpty {
-            return "❌ 基础 CloudKit 模型也不可写，问题不只在新 schema。"
+        if failureCount > 0 {
+            return "⚠️ 发现 \(failureCount) 个 CloudKit 模型/字段写入失败，优先检查 Production Schema 是否已部署完整。"
         }
 
-        if !taskFailures.isEmpty {
-            return "⚠️ 基础模型可写，但任务系统新模型检查失败，优先检查 CloudKit Production Schema 是否已部署完整。"
-        }
-
-        if !pointsFailures.isEmpty {
-            return "⚠️ 基础模型和任务系统可写，但积分系统新模型检查失败，优先检查 CloudKit Production Schema 是否已部署完整。"
-        }
-
-        return "✅ 已覆盖的基础模型、任务系统和积分系统模型都可写。"
+        return "✅ 已覆盖全部 SwiftData 模型及关键可选字段，CloudKit 直连写入测试通过。"
     }
 
     private static func formattedProbeLines(for results: [CloudKitWriteProbeResult]) -> [String] {
