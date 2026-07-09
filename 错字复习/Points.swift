@@ -19,6 +19,7 @@ enum PointLedgerSourceType: String, Codable, CaseIterable, Identifiable {
     case taskExecution = "待办"
     case dailyStreak = "连续学习"
     case manualRedemption = "手动兑换"
+    case manualAdjustment = "手动调整"
 
     var id: String { rawValue }
 }
@@ -308,6 +309,30 @@ enum PointLedgerService {
             sourceType: .manualRedemption,
             sourceIDRawValue: id.uuidString,
             idempotencyKey: "manual-redemption-\(id.uuidString)",
+            note: trimmedTitle
+        )
+        modelContext.insert(entry)
+        return entry
+    }
+
+    @discardableResult
+    static func addManualPoints(
+        title: String,
+        amount: Int,
+        in modelContext: ModelContext
+    ) -> PointLedgerEntry? {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard amount > 0, !trimmedTitle.isEmpty else { return nil }
+
+        let id = UUID()
+        let entry = PointLedgerEntry(
+            id: id,
+            createdAt: .now,
+            amount: amount,
+            kind: .reward,
+            sourceType: .manualAdjustment,
+            sourceIDRawValue: id.uuidString,
+            idempotencyKey: "manual-add-points-\(id.uuidString)",
             note: trimmedTitle
         )
         modelContext.insert(entry)
@@ -630,7 +655,9 @@ struct PointsDashboardView: View {
     @Query private var taskItems: [TaskItem]
 
     @State private var redemptionTitle = ""
-    @State private var redemptionAmount = 5
+    @State private var redemptionAmountText = "5"
+    @State private var additionTitle = ""
+    @State private var additionAmountText = "5"
     @State private var errorMessage: String?
 
     private var balance: Int {
@@ -646,13 +673,33 @@ struct PointsDashboardView: View {
     }
 
     private var canRedeem: Bool {
-        redemptionAmount > 0 &&
-        !redemptionTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        balance >= redemptionAmount
+        guard let redemptionAmount else { return false }
+        return !redemptionTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            balance >= redemptionAmount
     }
 
-    private var recentEntries: [PointLedgerEntry] {
-        Array(entries.prefix(10))
+    private var canAddPoints: Bool {
+        additionAmount != nil &&
+            !additionTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var redemptionAmount: Int? {
+        positiveInt(from: redemptionAmountText)
+    }
+
+    private var additionAmount: Int? {
+        positiveInt(from: additionAmountText)
+    }
+
+    private var displayItems: [PointLedgerDisplayItem] {
+        PointLedgerDisplayItem.items(
+            from: entries,
+            taskTitleByExecutionID: taskTitleByExecutionID
+        )
+    }
+
+    private var recentDisplayItems: [PointLedgerDisplayItem] {
+        Array(displayItems.prefix(10))
     }
 
     private var taskTitleByExecutionID: [String: String] {
@@ -697,13 +744,10 @@ struct PointsDashboardView: View {
 
             Section {
                 TextField("兑换内容", text: $redemptionTitle)
-                Stepper(value: $redemptionAmount, in: 1...max(balance, redemptionAmount, 1)) {
-                    HStack {
-                        Text("消耗积分")
-                        Spacer()
-                        Text("\(redemptionAmount)")
-                            .foregroundStyle(.secondary)
-                    }
+                LabeledContent("消耗积分") {
+                    TextField("1", text: $redemptionAmountText)
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.trailing)
                 }
 
                 Button {
@@ -719,25 +763,42 @@ struct PointsDashboardView: View {
             }
 
             Section {
+                TextField("增加说明", text: $additionTitle)
+                LabeledContent("增加积分") {
+                    TextField("1", text: $additionAmountText)
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.trailing)
+                }
+
+                Button {
+                    addPoints()
+                } label: {
+                    Label("确认增加", systemImage: "plus.circle.fill")
+                }
+                .disabled(!canAddPoints)
+            } header: {
+                Text("手动增加")
+            } footer: {
+                Text("增加会生成一条正数流水，适合记录家长额外奖励。")
+            }
+
+            Section {
                 if entries.isEmpty {
                     Text("还没有积分记录")
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(recentEntries) { entry in
-                        PointLedgerEntryRow(
-                            entry: entry,
-                            taskTitle: taskTitleByExecutionID[entry.sourceIDRawValue]
-                        )
+                    ForEach(recentDisplayItems) { item in
+                        PointLedgerEntryRow(item: item)
                     }
 
-                    if entries.count > recentEntries.count {
+                    if displayItems.count > recentDisplayItems.count {
                         NavigationLink {
                             PointLedgerHistoryView()
                         } label: {
                             HStack {
                                 Label("查看全部明细", systemImage: "list.bullet.rectangle")
                                 Spacer()
-                                Text("\(entries.count) 条")
+                                Text("\(displayItems.count) 组")
                                     .foregroundStyle(.secondary)
                             }
                         }
@@ -746,13 +807,13 @@ struct PointsDashboardView: View {
             } header: {
                 Text("最近明细")
             } footer: {
-                if entries.count > recentEntries.count {
-                    Text("这里只显示最近 10 条，完整流水可进入全部明细查看。")
+                if displayItems.count > recentDisplayItems.count {
+                    Text("复习和听写的单项积分会按天汇总显示，完整流水仍保留在数据中。")
                 }
             }
         }
         .navigationTitle("积分与兑换")
-        .alert("兑换失败", isPresented: Binding(
+        .alert("操作失败", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
         )) {
@@ -763,9 +824,14 @@ struct PointsDashboardView: View {
     }
 
     private func redeem() {
+        guard let amount = redemptionAmount else {
+            errorMessage = "请输入有效的消耗积分。"
+            return
+        }
+
         guard PointLedgerService.redeemManual(
             title: redemptionTitle,
-            amount: redemptionAmount,
+            amount: amount,
             in: modelContext
         ) != nil else {
             errorMessage = "积分不足，或兑换内容还没有填写。"
@@ -775,11 +841,42 @@ struct PointsDashboardView: View {
         do {
             try modelContext.save()
             redemptionTitle = ""
-            redemptionAmount = min(5, max(balance, 1))
+            redemptionAmountText = "5"
             NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func addPoints() {
+        guard let amount = additionAmount else {
+            errorMessage = "请输入有效的增加积分。"
+            return
+        }
+
+        guard PointLedgerService.addManualPoints(
+            title: additionTitle,
+            amount: amount,
+            in: modelContext
+        ) != nil else {
+            errorMessage = "增加说明还没有填写，或积分数字无效。"
+            return
+        }
+
+        do {
+            try modelContext.save()
+            additionTitle = ""
+            additionAmountText = "5"
+            NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func positiveInt(from text: String) -> Int? {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Int(trimmedText), value > 0 else { return nil }
+        return value
     }
 }
 
@@ -795,17 +892,21 @@ private struct PointLedgerHistoryView: View {
         )
     }
 
+    private var displayItems: [PointLedgerDisplayItem] {
+        PointLedgerDisplayItem.items(
+            from: entries,
+            taskTitleByExecutionID: taskTitleByExecutionID
+        )
+    }
+
     var body: some View {
         List {
             if entries.isEmpty {
                 Text("还没有积分记录")
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(entries) { entry in
-                    PointLedgerEntryRow(
-                        entry: entry,
-                        taskTitle: taskTitleByExecutionID[entry.sourceIDRawValue]
-                    )
+                ForEach(displayItems) { item in
+                    PointLedgerEntryRow(item: item)
                 }
             }
         }
@@ -814,49 +915,48 @@ private struct PointLedgerHistoryView: View {
 }
 
 private struct PointLedgerEntryRow: View {
-    let entry: PointLedgerEntry
-    let taskTitle: String?
+    let item: PointLedgerDisplayItem
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: iconName)
+            Image(systemName: item.iconName)
                 .font(.headline)
-                .foregroundStyle(iconColor)
+                .foregroundStyle(item.iconColor)
                 .frame(width: 30, height: 30)
-                .background(iconColor.opacity(0.12), in: Circle())
+                .background(item.iconColor.opacity(0.12), in: Circle())
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(title)
+                Text(item.title)
                     .font(.subheadline.weight(.semibold))
-                Text(entry.createdAt.formatted(date: .abbreviated, time: .shortened))
+                Text(item.subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Spacer()
 
-            Text(entry.signedAmountText)
+            Text(item.signedAmountText)
                 .font(.headline.weight(.bold))
-                .foregroundStyle(entry.amount >= 0 ? .green : .red)
+                .foregroundStyle(item.amount >= 0 ? .green : .red)
         }
         .padding(.vertical, 4)
     }
+}
 
-    private var title: String {
-        if entry.sourceType == .taskExecution,
-           let taskTitle,
-           !taskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return entry.isReversal ? "冲正：完成待办：\(taskTitle)" : "完成待办：\(taskTitle)"
-        }
+private struct PointLedgerDisplayItem: Identifiable {
+    let id: String
+    let title: String
+    let subtitle: String
+    let amount: Int
+    let kind: PointLedgerKind
+    let createdAt: Date
 
-        if !entry.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return entry.note
-        }
-        return entry.kind.rawValue
+    var signedAmountText: String {
+        amount > 0 ? "+\(amount)" : "\(amount)"
     }
 
-    private var iconName: String {
-        switch entry.kind {
+    var iconName: String {
+        switch kind {
         case .reward:
             return "plus.circle.fill"
         case .streakBonus:
@@ -868,8 +968,8 @@ private struct PointLedgerEntryRow: View {
         }
     }
 
-    private var iconColor: Color {
-        switch entry.kind {
+    var iconColor: Color {
+        switch kind {
         case .reward:
             return .green
         case .streakBonus:
@@ -879,6 +979,103 @@ private struct PointLedgerEntryRow: View {
         case .reversal:
             return .red
         }
+    }
+
+    static func items(
+        from entries: [PointLedgerEntry],
+        taskTitleByExecutionID: [String: String]
+    ) -> [PointLedgerDisplayItem] {
+        let calendar = Calendar.current
+        var compactEntriesByKey: [PointLedgerCompactKey: [PointLedgerEntry]] = [:]
+        var items: [PointLedgerDisplayItem] = []
+
+        for entry in entries {
+            if let key = PointLedgerCompactKey(entry: entry, calendar: calendar) {
+                compactEntriesByKey[key, default: []].append(entry)
+            } else {
+                items.append(
+                    PointLedgerDisplayItem.single(
+                        entry: entry,
+                        taskTitle: taskTitleByExecutionID[entry.sourceIDRawValue]
+                    )
+                )
+            }
+        }
+
+        for (key, groupedEntries) in compactEntriesByKey {
+            items.append(PointLedgerDisplayItem.compact(key: key, entries: groupedEntries))
+        }
+
+        return items.sorted { lhs, rhs in
+            if lhs.createdAt == rhs.createdAt {
+                return lhs.id < rhs.id
+            }
+            return lhs.createdAt > rhs.createdAt
+        }
+    }
+
+    private static func single(
+        entry: PointLedgerEntry,
+        taskTitle: String?
+    ) -> PointLedgerDisplayItem {
+        PointLedgerDisplayItem(
+            id: "entry-\(entry.id.uuidString)",
+            title: title(for: entry, taskTitle: taskTitle),
+            subtitle: entry.createdAt.formatted(date: .abbreviated, time: .shortened),
+            amount: entry.amount,
+            kind: entry.kind,
+            createdAt: entry.createdAt
+        )
+    }
+
+    private static func compact(
+        key: PointLedgerCompactKey,
+        entries: [PointLedgerEntry]
+    ) -> PointLedgerDisplayItem {
+        let sortedEntries = entries.sorted { $0.createdAt > $1.createdAt }
+        let amount = sortedEntries.reduce(0) { $0 + $1.amount }
+        let createdAt = sortedEntries.first?.createdAt ?? key.day
+        let titlePrefix = key.sourceType == .reviewRecord ? "完成复习" : "完成听写判定"
+        let subtitle = "\(key.day.formatted(date: .abbreviated, time: .omitted)) · \(entries.count) 条记录"
+
+        return PointLedgerDisplayItem(
+            id: "compact-\(key.sourceType.rawValue)-\(Int(key.day.timeIntervalSinceReferenceDate))",
+            title: "\(titlePrefix) \(entries.count) 项",
+            subtitle: subtitle,
+            amount: amount,
+            kind: .reward,
+            createdAt: createdAt
+        )
+    }
+
+    private static func title(for entry: PointLedgerEntry, taskTitle: String?) -> String {
+        if entry.sourceType == .taskExecution,
+           let taskTitle,
+           !taskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return entry.isReversal ? "冲正：完成待办：\(taskTitle)" : "完成待办：\(taskTitle)"
+        }
+
+        if !entry.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return entry.note
+        }
+        return entry.kind.rawValue
+    }
+}
+
+private struct PointLedgerCompactKey: Hashable {
+    let sourceType: PointLedgerSourceType
+    let day: Date
+
+    init?(entry: PointLedgerEntry, calendar: Calendar) {
+        guard entry.kind == .reward,
+              !entry.isReversal,
+              entry.amount > 0,
+              entry.sourceType == .reviewRecord || entry.sourceType == .dictationEntry else {
+            return nil
+        }
+
+        self.sourceType = entry.sourceType
+        self.day = calendar.startOfDay(for: entry.createdAt)
     }
 }
 
