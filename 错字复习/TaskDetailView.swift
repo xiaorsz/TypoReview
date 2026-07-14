@@ -334,6 +334,7 @@ struct TaskDetailView: View {
                 }
             }
             .padding(.vertical, 4)
+            .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
 
             if taskProjection.recurrence.kind != .once {
                 Button {
@@ -345,6 +346,7 @@ struct TaskDetailView: View {
                     )
                 }
                 .tint(taskProjection.isPaused ? .blue : .orange)
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
             }
         }
     }

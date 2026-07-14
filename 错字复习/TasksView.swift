@@ -977,6 +977,7 @@ struct TasksView: View {
             }
         }
         .padding(.vertical, 4)
+        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
         .iOS17SafeSwipeActions(edge: .trailing, allowsFullSwipe: false) {
             if let liveTask {
                 if showActions, !isDone, let occurrenceDate {
