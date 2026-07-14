@@ -42,3 +42,69 @@ final class ReviewRecord {
         set { modeRawValue = newValue.rawValue }
     }
 }
+
+@Model
+final class ReviewDailyPlan {
+    var id: UUID = UUID()
+    var dayKey: String = ""
+    var itemIDsRawValue: String = "[]"
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
+
+    init(
+        id: UUID = UUID(),
+        dayKey: String,
+        itemIDs: [UUID],
+        createdAt: Date = .now,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.dayKey = dayKey
+        self.itemIDsRawValue = Self.encodeItemIDs(itemIDs)
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    var itemIDs: [UUID] {
+        get { Self.decodeItemIDs(itemIDsRawValue) }
+        set {
+            itemIDsRawValue = Self.encodeItemIDs(newValue)
+            updatedAt = .now
+        }
+    }
+
+    static func dayKey(for date: Date, calendar: Calendar = .current) -> String {
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(
+            format: "%04d-%02d-%02d",
+            components.year ?? 0,
+            components.month ?? 0,
+            components.day ?? 0
+        )
+    }
+
+    static func preferred(from plans: [ReviewDailyPlan]) -> ReviewDailyPlan? {
+        plans.min { lhs, rhs in
+            if lhs.createdAt != rhs.createdAt {
+                return lhs.createdAt < rhs.createdAt
+            }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+    }
+
+    private static func encodeItemIDs(_ ids: [UUID]) -> String {
+        guard let data = try? JSONEncoder().encode(ids),
+              let value = String(data: data, encoding: .utf8) else {
+            return "[]"
+        }
+        return value
+    }
+
+    private static func decodeItemIDs(_ value: String) -> [UUID] {
+        guard let data = value.data(using: .utf8),
+              let ids = try? JSONDecoder().decode([UUID].self, from: data) else {
+            return []
+        }
+        return ids
+    }
+}

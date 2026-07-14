@@ -33,6 +33,7 @@ struct Provider: TimelineProvider {
         let schema = Schema([
             ReviewItem.self,
             ReviewRecord.self,
+            ReviewDailyPlan.self,
             TaskItem.self,
             TaskCompletion.self,
             TaskSubitem.self,
@@ -156,8 +157,42 @@ struct Provider: TimelineProvider {
         }
         
         var reviewsCount = 0
-        if let reviewItems = try? context.fetch(FetchDescriptor<ReviewItem>()) {
-            reviewsCount = reviewItems.filter { $0.nextReviewAt <= Date.now }.count
+        if let reviewItems = try? context.fetch(FetchDescriptor<ReviewItem>()),
+           let reviewRecords = try? context.fetch(FetchDescriptor<ReviewRecord>()),
+           let dailyPlans = try? context.fetch(FetchDescriptor<ReviewDailyPlan>()) {
+            let now = Date.now
+            let dayKey = ReviewDailyPlan.dayKey(for: now, calendar: calendar)
+            let plan = ReviewDailyPlan.preferred(from: dailyPlans.filter { $0.dayKey == dayKey })
+            let reviewedTodayItemIDs = Set(
+                reviewRecords.compactMap { record -> UUID? in
+                    guard record.mode != .dictation,
+                          calendar.isDate(record.reviewedAt, inSameDayAs: now) else {
+                        return nil
+                    }
+                    return record.itemID
+                }
+            )
+            let todayStart = calendar.startOfDay(for: now)
+            let dueItems: [ReviewItem] = ReviewContentIdentity.canonicalReviewItems(from: reviewItems)
+                .filter { item in
+                    item.nextReviewAt != .distantFuture
+                        && calendar.startOfDay(for: item.nextReviewAt) <= todayStart
+                }
+            let dueItemIDs = Set(dueItems.map { $0.id })
+
+            if let plan {
+                reviewsCount = plan.itemIDs.filter {
+                    dueItemIDs.contains($0) && !reviewedTodayItemIDs.contains($0)
+                }.count
+            } else {
+                let settings = (try? context.fetch(FetchDescriptor<AppSettings>()))
+                    .flatMap { AppSettings.chooseCanonical(from: $0) }
+                let dailyLimit = settings?.dailyLimit ?? AppSettings.defaultDailyLimit
+                reviewsCount = min(
+                    dueItems.filter { !reviewedTodayItemIDs.contains($0.id) }.count,
+                    dailyLimit
+                )
+            }
         }
         
         var dictationsCount = 0

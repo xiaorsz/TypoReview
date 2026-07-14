@@ -162,6 +162,75 @@ struct ReviewScheduler {
         return changedCount
     }
 
+    /// Repairs a clear CloudKit ordering gap where a review record has arrived but the
+    /// corresponding mutable ReviewItem is still older. Dictation-follow-up items are
+    /// excluded because their track transition cannot be reconstructed from ReviewRecord
+    /// alone without losing information.
+    @discardableResult
+    static func reconcileStandardReviewProgress(in modelContext: ModelContext) throws -> Int {
+        let items = try modelContext.fetch(FetchDescriptor<ReviewItem>())
+        let records = try modelContext.fetch(FetchDescriptor<ReviewRecord>())
+            .filter { $0.mode != .dictation }
+        let latestRecordByItemID = Dictionary(
+            records.map { ($0.itemID, $0) },
+            uniquingKeysWith: { current, candidate in
+                candidate.reviewedAt > current.reviewedAt ? candidate : current
+            }
+        )
+        let scheduler = ReviewScheduler()
+        var changedCount = 0
+
+        for item in items where item.reviewTrack == .standard && !item.isDictationPass {
+            guard let latestRecord = latestRecordByItemID[item.id] else { continue }
+
+            let storedReviewDate = item.lastReviewedAt ?? .distantPast
+            let recordIsNewer = storedReviewDate < latestRecord.reviewedAt
+            let stateDisagreesAtSameReview = storedReviewDate == latestRecord.reviewedAt
+                && item.stage != latestRecord.newStage
+            guard recordIsNewer || stateDisagreesAtSameReview else { continue }
+
+            item.stage = latestRecord.newStage
+            item.lastReviewedAt = latestRecord.reviewedAt
+            item.updatedAt = max(item.updatedAt, latestRecord.reviewedAt)
+
+            switch latestRecord.result {
+            case .correct:
+                item.consecutiveCorrectCount = max(item.consecutiveCorrectCount, 1)
+                item.consecutiveWrongCount = 0
+                item.isPriority = false
+                item.nextReviewAt = latestRecord.newStage >= completionStage
+                    ? .distantFuture
+                    : scheduler.nextDate(for: latestRecord.newStage, from: latestRecord.reviewedAt)
+            case .wrong:
+                item.consecutiveCorrectCount = 0
+                item.consecutiveWrongCount = max(item.consecutiveWrongCount, 1)
+                item.isPriority = item.consecutiveWrongCount >= 2
+                item.nextReviewAt = scheduler.nextDate(for: latestRecord.newStage, from: latestRecord.reviewedAt)
+            }
+
+            changedCount += 1
+        }
+
+        return changedCount
+    }
+
+    @discardableResult
+    static func deduplicateDailyReviewPlans(in modelContext: ModelContext) throws -> Int {
+        let plans = try modelContext.fetch(FetchDescriptor<ReviewDailyPlan>())
+        let plansByDay = Dictionary(grouping: plans, by: \.dayKey)
+        var deletedCount = 0
+
+        for dailyPlans in plansByDay.values where dailyPlans.count > 1 {
+            guard let preferred = ReviewDailyPlan.preferred(from: dailyPlans) else { continue }
+            for duplicate in dailyPlans where duplicate.persistentModelID != preferred.persistentModelID {
+                modelContext.delete(duplicate)
+                deletedCount += 1
+            }
+        }
+
+        return deletedCount
+    }
+
     private static func mergeReviewItem(_ duplicate: ReviewItem, into canonical: ReviewItem) {
         if canonical.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             canonical.prompt = duplicate.prompt

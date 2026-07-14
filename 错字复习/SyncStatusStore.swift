@@ -627,6 +627,13 @@ final class SyncStatusStore {
                 record["CD_newStage"] = NSNumber(value: 0)
                 record["CD_note"] = "__cloudkit_probe__" as CKRecordValue
             },
+            CloudKitWriteProbe(label: "每日复习清单", recordType: "CD_ReviewDailyPlan") { record, testID in
+                record["CD_id"] = testID.uuidString as CKRecordValue
+                record["CD_dayKey"] = ReviewDailyPlan.dayKey(for: .now) as CKRecordValue
+                record["CD_itemIDsRawValue"] = "[]" as CKRecordValue
+                record["CD_createdAt"] = Date() as CKRecordValue
+                record["CD_updatedAt"] = Date() as CKRecordValue
+            },
             CloudKitWriteProbe(label: "听写组", recordType: "CD_DictationSession") { record, testID in
                 record["CD_id"] = testID.uuidString as CKRecordValue
                 record["CD_title"] = "__cloudkit_probe__" as CKRecordValue

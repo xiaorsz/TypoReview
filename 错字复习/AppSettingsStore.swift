@@ -399,7 +399,8 @@ final class AppSettingsStore {
     private func loadSnapshotFromSwiftData(using modelContext: ModelContext) -> AppSettingsSnapshot? {
         do {
             return try safelyAccessSwiftData {
-                try modelContext.fetch(FetchDescriptor<AppSettings>()).first.map(AppSettingsSnapshot.init)
+                let existing = try modelContext.fetch(FetchDescriptor<AppSettings>())
+                return AppSettings.chooseCanonical(from: existing).map(AppSettingsSnapshot.init)
             }
         } catch {
             lastSwiftDataError = error.localizedDescription
@@ -414,8 +415,8 @@ final class AppSettingsStore {
             try safelyAccessSwiftData {
                 let existing = try modelContext.fetch(FetchDescriptor<AppSettings>())
                 let target: AppSettings
-                if let first = existing.first {
-                    target = first
+                if let canonical = AppSettings.chooseCanonical(from: existing) {
+                    target = canonical
                 } else {
                     target = AppSettings()
                     modelContext.insert(target)
@@ -440,7 +441,7 @@ final class AppSettingsStore {
                 target.aiSummaryEnabled = aiSummaryEnabled
                 target.aiSummaryModelRawValue = aiSummaryModelRawValue
 
-                for duplicate in existing.dropFirst() {
+                for duplicate in existing where duplicate.persistentModelID != target.persistentModelID {
                     modelContext.delete(duplicate)
                 }
 

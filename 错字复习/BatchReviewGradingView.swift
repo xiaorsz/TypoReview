@@ -260,7 +260,7 @@ struct BatchReviewGradingView: View {
                             .font(.system(size: 44, weight: .bold))
                             .foregroundStyle(.white)
 
-                        Text("今日复习完成")
+                        Text("本轮复习完成")
                             .font(.system(.largeTitle, design: .rounded, weight: .bold))
 
                         Text(summaryText)

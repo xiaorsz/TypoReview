@@ -171,7 +171,7 @@ final class AppSettings {
             return settings
         }
 
-        for duplicate in allSettings where duplicate.id != canonical.id {
+        for duplicate in allSettings where duplicate.persistentModelID != canonical.persistentModelID {
             modelContext.delete(duplicate)
         }
 
@@ -186,7 +186,7 @@ final class AppSettings {
         return canonical
     }
 
-    private static func chooseCanonical(from settings: [AppSettings]) -> AppSettings? {
+    static func chooseCanonical(from settings: [AppSettings]) -> AppSettings? {
         settings.max { lhs, rhs in
             let lhsScore = lhs.priorityScore
             let rhsScore = rhs.priorityScore

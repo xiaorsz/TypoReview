@@ -33,6 +33,7 @@ struct TypoReviewApp: App {
         let schema = Schema([
             ReviewItem.self,
             ReviewRecord.self,
+            ReviewDailyPlan.self,
             TaskItem.self,
             TaskCompletion.self,
             TaskSubitem.self,
@@ -88,6 +89,10 @@ struct TypoReviewApp: App {
             )
 
             let legacyGroupStoreURL = groupURL.appendingPathComponent("typo-review.store")
+            Self.configurePersistentStoreFileProtection(
+                for: [cloudConfiguration.url, legacyGroupStoreURL],
+                fileManager: fileManager
+            )
             Self.migrateLegacyStoreIfNeeded(
                 candidates: [defaultStoreURL, legacyGroupStoreURL],
                 targetStoreURL: cloudConfiguration.url,
@@ -109,6 +114,10 @@ struct TypoReviewApp: App {
                 schema: schema,
                 url: defaultStoreURL,
                 cloudKitDatabase: .none
+            )
+            Self.configurePersistentStoreFileProtection(
+                for: [defaultStoreURL],
+                fileManager: fileManager
             )
             Self.repairLegacySchemaIfNeeded(at: defaultStoreURL, fileManager: fileManager)
             pendingExecutionTableRepairStoreURL = Self.prepareMissingTaskExecutionTableRepairIfNeeded(
@@ -237,6 +246,8 @@ struct TypoReviewApp: App {
             in: modelContext,
             appGroupIdentifier: appGroupIdentifier
         )
+        Self.reconcileStandardReviewProgressIfNeeded(in: modelContext)
+        Self.deduplicateDailyReviewPlansIfNeeded(in: modelContext)
         Self.deduplicateReviewItemsIfNeeded(
             in: modelContext,
             appGroupIdentifier: appGroupIdentifier
@@ -257,6 +268,7 @@ struct TypoReviewApp: App {
         for candidate in candidates where fileManager.fileExists(atPath: candidate.path) {
             do {
                 try moveStoreBundle(from: candidate, to: targetStoreURL, fileManager: fileManager)
+                configurePersistentStoreFileProtection(for: [targetStoreURL], fileManager: fileManager)
                 print("Migrated legacy SwiftData store from \(candidate.path) to \(targetStoreURL.path)")
                 return
             } catch {
@@ -296,10 +308,11 @@ struct TypoReviewApp: App {
         at storeURL: URL,
         fileManager: FileManager
     ) -> URL? {
+        guard canRunDirectSQLiteStoreMaintenance else { return nil }
         guard fileManager.fileExists(atPath: storeURL.path) else { return nil }
 
         var database: OpaquePointer?
-        guard sqlite3_open_v2(storeURL.path, &database, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+        guard sqlite3_open_v2(storeURL.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
             if let database {
                 sqlite3_close(database)
             }
@@ -324,6 +337,7 @@ struct TypoReviewApp: App {
 
         do {
             try moveStoreBundle(from: storeURL, to: backupURL, fileManager: fileManager)
+            configurePersistentStoreFileProtection(for: [backupURL], fileManager: fileManager)
             #if DEBUG
             DebugPerf.mark("TypoReviewApp prepared missing execution table repair backup=\(backupURL.lastPathComponent) missingTaskSubitem=\(!hasTaskSubitemTable) missingTaskExecution=\(!hasTaskExecutionRecordTable) missingSubitemExecution=\(!hasTaskSubitemExecutionRecordTable)")
             #endif
@@ -517,6 +531,10 @@ struct TypoReviewApp: App {
             return requiredTableNames
         }
 
+        guard canRunDirectSQLiteStoreMaintenance else {
+            return []
+        }
+
         var database: OpaquePointer?
         guard sqlite3_open_v2(storeURL.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
             if let database {
@@ -535,6 +553,7 @@ struct TypoReviewApp: App {
         at storeURL: URL,
         fileManager: FileManager
     ) {
+        guard canRunDirectSQLiteStoreMaintenance else { return }
         guard fileManager.fileExists(atPath: storeURL.path) else { return }
 
         var database: OpaquePointer?
@@ -637,6 +656,40 @@ struct TypoReviewApp: App {
             .appendingPathComponent(".\(baseURL.deletingPathExtension().lastPathComponent)_SUPPORT")
     }
 
+    private static var canRunDirectSQLiteStoreMaintenance: Bool {
+        UIApplication.shared.applicationState != .background &&
+            UIApplication.shared.isProtectedDataAvailable
+    }
+
+    private static func configurePersistentStoreFileProtection(
+        for storeURLs: [URL],
+        fileManager: FileManager
+    ) {
+        for storeURL in storeURLs {
+            let directoryURL = storeURL.deletingLastPathComponent()
+            try? fileManager.createDirectory(
+                at: directoryURL,
+                withIntermediateDirectories: true
+            )
+
+            setCompleteUntilFirstAuthenticationProtection(at: directoryURL, fileManager: fileManager)
+
+            for url in storeArtifactURLs(for: storeURL) where fileManager.fileExists(atPath: url.path) {
+                setCompleteUntilFirstAuthenticationProtection(at: url, fileManager: fileManager)
+            }
+        }
+    }
+
+    private static func setCompleteUntilFirstAuthenticationProtection(
+        at url: URL,
+        fileManager: FileManager
+    ) {
+        try? fileManager.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            ofItemAtPath: url.path
+        )
+    }
+
     private static func migrateLegacyTaskExecutionsIfNeeded(in modelContext: ModelContext) {
         let executionCount = (try? modelContext.fetchCount(FetchDescriptor<TaskExecutionRecord>())) ?? 0
         guard executionCount == 0 else { return }
@@ -727,6 +780,40 @@ struct TypoReviewApp: App {
             DebugPerf.mark("TypoReviewApp review item deduplication failed error=\(error.localizedDescription)")
             #endif
             print("Review item deduplication failed: \(error)")
+        }
+    }
+
+    private static func reconcileStandardReviewProgressIfNeeded(in modelContext: ModelContext) {
+        do {
+            let reconciledCount = try ReviewScheduler.reconcileStandardReviewProgress(in: modelContext)
+            if modelContext.hasChanges {
+                try modelContext.save()
+            }
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp reconciled review progress count=\(reconciledCount)")
+            #endif
+        } catch {
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp review progress reconciliation failed error=\(error.localizedDescription)")
+            #endif
+            print("Review progress reconciliation failed: \(error)")
+        }
+    }
+
+    private static func deduplicateDailyReviewPlansIfNeeded(in modelContext: ModelContext) {
+        do {
+            let deletedCount = try ReviewScheduler.deduplicateDailyReviewPlans(in: modelContext)
+            if modelContext.hasChanges {
+                try modelContext.save()
+            }
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp deduplicated daily review plans count=\(deletedCount)")
+            #endif
+        } catch {
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp daily review plan deduplication failed error=\(error.localizedDescription)")
+            #endif
+            print("Daily review plan deduplication failed: \(error)")
         }
     }
 

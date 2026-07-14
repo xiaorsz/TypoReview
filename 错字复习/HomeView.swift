@@ -42,11 +42,27 @@ private struct HomeReviewRecordProjection {
     let itemID: UUID
     let reviewedAt: Date
     let result: ReviewResult
+    let mode: ReviewMode
 
     init(_ record: ReviewRecord) {
         itemID = record.itemID
         reviewedAt = record.reviewedAt
         result = record.result
+        mode = record.mode
+    }
+}
+
+private struct HomeReviewDailyPlanProjection: Sendable {
+    let id: UUID
+    let dayKey: String
+    let itemIDs: [UUID]
+    let createdAt: Date
+
+    init(_ plan: ReviewDailyPlan) {
+        id = plan.id
+        dayKey = plan.dayKey
+        itemIDs = plan.itemIDs
+        createdAt = plan.createdAt
     }
 }
 
@@ -278,10 +294,89 @@ private struct HomeCalendarTaskProjection: Sendable {
     let task: TaskProjection
     let isArchived: Bool
 
-    init(_ task: TaskItem) {
-        self.task = TaskProjection(task)
+    init(_ task: HomeTaskModelProjection) {
+        self.task = task.task
         self.isArchived = task.isArchived
     }
+}
+
+private struct HomeTaskModelProjection: Sendable {
+    let task: TaskProjection
+    let isArchived: Bool
+    let updatedAt: Date
+
+    init(_ task: TaskItem) {
+        self.task = TaskProjection(task)
+        isArchived = task.isArchived
+        updatedAt = task.updatedAt
+    }
+}
+
+private struct HomeDashboardSourceSnapshot {
+    let reviewItems: [HomeReviewItemProjection]
+    let reviewRecords: [HomeReviewRecordProjection]
+    let reviewDailyPlans: [HomeReviewDailyPlanProjection]
+    let dictationSessions: [HomeDictationSessionProjection]
+    let dictationEntries: [HomeDictationEntryProjection]
+    let schedules: [HomeScheduleProjection]
+    let tasks: [HomeTaskModelProjection]
+    let taskExecutions: [TaskExecutionRecordProjection]
+    let taskSubtasks: [TaskSubitemProjection]
+    let pointBalance: Int
+    let pointsEarnedToday: Int
+    let currentPointStreak: Int
+
+    static let empty = HomeDashboardSourceSnapshot(
+        reviewItems: [],
+        reviewRecords: [],
+        reviewDailyPlans: [],
+        dictationSessions: [],
+        dictationEntries: [],
+        schedules: [],
+        tasks: [],
+        taskExecutions: [],
+        taskSubtasks: [],
+        pointBalance: 0,
+        pointsEarnedToday: 0,
+        currentPointStreak: 0
+    )
+}
+
+private func deduplicatedHomeTasks(_ tasks: [HomeTaskModelProjection]) -> [HomeTaskModelProjection] {
+    var preferredTaskByKey: [String: HomeTaskModelProjection] = [:]
+    var keyOrder: [String] = []
+
+    for task in tasks {
+        let normalizedTitle = task.task.title
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+        let key = normalizedTitle.isEmpty
+            ? "id:\(task.task.id.uuidString.lowercased())"
+            : "title:\(normalizedTitle)"
+        let sortKey = TaskModelDedupSortKey(
+            archivedPriority: task.isArchived ? 0 : 1,
+            updatedAt: task.updatedAt,
+            createdAt: task.task.createdAt,
+            stableID: task.task.id.uuidString
+        )
+
+        if let current = preferredTaskByKey[key] {
+            let currentSortKey = TaskModelDedupSortKey(
+                archivedPriority: current.isArchived ? 0 : 1,
+                updatedAt: current.updatedAt,
+                createdAt: current.task.createdAt,
+                stableID: current.task.id.uuidString
+            )
+            if currentSortKey < sortKey {
+                preferredTaskByKey[key] = task
+            }
+        } else {
+            preferredTaskByKey[key] = task
+            keyOrder.append(key)
+        }
+    }
+
+    return keyOrder.compactMap { preferredTaskByKey[$0] }
 }
 
 private struct HomeCalendarWeekSummary: Identifiable, Hashable {
@@ -411,6 +506,8 @@ struct HomeView: View {
         let childName: String
         let dueItems: [HomeReviewItemProjection]
         let allDueCount: Int
+        let hasReachedDailyReviewLimit: Bool
+        let dailyReviewPlanItemIDs: [UUID]
         let masteredReviewCount: Int
         let todayCompletedCount: Int
         let todayWrongCount: Int
@@ -452,6 +549,7 @@ struct HomeView: View {
         static func make(
             childName: String,
             dailyLimit: Int,
+            dailyPlanItemIDs: [UUID]?,
             reviewItems: [HomeReviewItemProjection],
             reviewRecords: [HomeReviewRecordProjection],
             dictationSessions: [HomeDictationSessionProjection],
@@ -486,14 +584,29 @@ struct HomeView: View {
                     }
                     return lhs.id.uuidString < rhs.id.uuidString
                 }
+            let todayRecs = reviewRecords.filter { calendar.isDate($0.reviewedAt, inSameDayAs: referenceDate) }
+            let reviewedTodayItemIDs = Set(
+                todayRecs
+                    .filter { $0.mode != .dictation }
+                    .map(\.itemID)
+            )
             var seenDueItemIDs = Set<UUID>()
             let allDue = sortedDue.filter { item in
-                seenDueItemIDs.insert(item.id).inserted
+                guard !reviewedTodayItemIDs.contains(item.id) else { return false }
+                return seenDueItemIDs.insert(item.id).inserted
             }
-            let cappedDueContent = Array(allDue.prefix(dailyLimit))
+            let plannedItemIDs = dailyPlanItemIDs ?? Array(allDue.prefix(dailyLimit)).map(\.id)
+            let dueByID = Dictionary(uniqueKeysWithValues: allDue.map { ($0.id, $0) })
+            let cappedDueContent: [HomeReviewItemProjection] = plannedItemIDs.compactMap { itemID in
+                guard !reviewedTodayItemIDs.contains(itemID) else { return nil }
+                return dueByID[itemID]
+            }
+            let completedPlannedItemCount = plannedItemIDs.filter(reviewedTodayItemIDs.contains).count
+            let hasReachedDailyReviewLimit = !plannedItemIDs.isEmpty
+                && completedPlannedItemCount >= plannedItemIDs.count
+                && !allDue.isEmpty
             let masteredReviewCount = canonicalReviewItems.filter(\.isMastered).count
 
-            let todayRecs = reviewRecords.filter { calendar.isDate($0.reviewedAt, inSameDayAs: referenceDate) }
             let tCompleted = todayRecs.count
             let tWrong = todayRecs.filter { $0.result == .wrong }.count
             let tCorrect = todayRecs.filter { $0.result == .correct }.count
@@ -625,6 +738,8 @@ struct HomeView: View {
                 childName: name,
                 dueItems: cappedDueContent,
                 allDueCount: allDue.count,
+                hasReachedDailyReviewLimit: hasReachedDailyReviewLimit,
+                dailyReviewPlanItemIDs: plannedItemIDs,
                 masteredReviewCount: masteredReviewCount,
                 todayCompletedCount: tCompleted,
                 todayWrongCount: tWrong,
@@ -1104,9 +1219,11 @@ struct HomeView: View {
                 icon: "book.closed",
                 title: "复习",
                 value: "\(snapshot.dueItems.count)",
-                caption: snapshot.allDueCount > snapshot.dueItems.count
-                    ? "到期 \(snapshot.allDueCount)"
-                    : "待复习",
+                caption: snapshot.hasReachedDailyReviewLimit
+                    ? "今日额度已完成"
+                    : snapshot.allDueCount > snapshot.dueItems.count
+                        ? "到期 \(snapshot.allDueCount)"
+                        : "待复习",
                 tint: .purple
             )
 
@@ -1645,26 +1762,55 @@ struct HomeView: View {
                 let backgroundContext = ModelContext(container)
                 let calendar = Calendar.current
 
-                let reviewModels = (try? backgroundContext.fetch(FetchDescriptor<ReviewItem>())) ?? []
-                let reviewRecordModels = (try? backgroundContext.fetch(FetchDescriptor<ReviewRecord>())) ?? []
-                let sessionModels = (try? backgroundContext.fetch(FetchDescriptor<DictationSession>())) ?? []
-                let entryModels = (try? backgroundContext.fetch(FetchDescriptor<DictationEntry>())) ?? []
-                let scheduleModels = (try? backgroundContext.fetch(
-                    FetchDescriptor<ScheduleItem>(predicate: #Predicate<ScheduleItem> { !$0.isArchived })
-                )) ?? []
-                let allTaskModels = (try? backgroundContext.fetch(FetchDescriptor<TaskItem>())) ?? []
-                let executionModels = (try? backgroundContext.fetch(FetchDescriptor<TaskExecutionRecord>())) ?? []
-                let subtaskModels = (try? backgroundContext.fetch(
-                    FetchDescriptor<TaskSubitem>(predicate: #Predicate<TaskSubitem> { !$0.isArchived })
-                )) ?? []
-                let pointSnapshot = PointLedgerService.currentSnapshot(in: backgroundContext)
-                let pointEntryModels = (try? backgroundContext.fetch(FetchDescriptor<PointLedgerEntry>())) ?? []
-                let pointsEarnedToday = pointEntryModels
-                    .filter { $0.amount > 0 && calendar.isDate($0.createdAt, inSameDayAs: referenceDate) }
-                    .reduce(0) { $0 + $1.amount }
+                // SwiftData models can be invalidated by a concurrent delete or CloudKit merge.
+                // Materialize every model into an immutable value while the read transaction is active,
+                // then perform the relatively expensive dashboard calculations using values only.
+                var source = HomeDashboardSourceSnapshot.empty
+                try? backgroundContext.transaction {
+                    let reviewItems = ((try? backgroundContext.fetch(FetchDescriptor<ReviewItem>())) ?? [])
+                        .map(HomeReviewItemProjection.init)
+                    let reviewRecords = ((try? backgroundContext.fetch(FetchDescriptor<ReviewRecord>())) ?? [])
+                        .map(HomeReviewRecordProjection.init)
+                    let reviewDailyPlans = ((try? backgroundContext.fetch(FetchDescriptor<ReviewDailyPlan>())) ?? [])
+                        .map(HomeReviewDailyPlanProjection.init)
+                    let dictationSessions = ((try? backgroundContext.fetch(FetchDescriptor<DictationSession>())) ?? [])
+                        .map(HomeDictationSessionProjection.init)
+                    let dictationEntries = ((try? backgroundContext.fetch(FetchDescriptor<DictationEntry>())) ?? [])
+                        .map(HomeDictationEntryProjection.init)
+                    let schedules = ((try? backgroundContext.fetch(
+                        FetchDescriptor<ScheduleItem>(predicate: #Predicate<ScheduleItem> { !$0.isArchived })
+                    )) ?? []).map(HomeScheduleProjection.init)
+                    let tasks = ((try? backgroundContext.fetch(FetchDescriptor<TaskItem>())) ?? [])
+                        .map(HomeTaskModelProjection.init)
+                    let taskExecutions = ((try? backgroundContext.fetch(FetchDescriptor<TaskExecutionRecord>())) ?? [])
+                        .map(TaskExecutionRecordProjection.init)
+                    let taskSubtasks = ((try? backgroundContext.fetch(
+                        FetchDescriptor<TaskSubitem>(predicate: #Predicate<TaskSubitem> { !$0.isArchived })
+                    )) ?? []).map(TaskSubitemProjection.init)
+                    let pointEntries = (try? backgroundContext.fetch(FetchDescriptor<PointLedgerEntry>())) ?? []
+                    let pointAmountsAndDates = pointEntries.map { (amount: $0.amount, createdAt: $0.createdAt) }
+                    let pointState = (try? backgroundContext.fetch(FetchDescriptor<PointRewardState>()))?.first
+
+                    source = HomeDashboardSourceSnapshot(
+                        reviewItems: reviewItems,
+                        reviewRecords: reviewRecords,
+                        reviewDailyPlans: reviewDailyPlans,
+                        dictationSessions: dictationSessions,
+                        dictationEntries: dictationEntries,
+                        schedules: schedules,
+                        tasks: tasks,
+                        taskExecutions: taskExecutions,
+                        taskSubtasks: taskSubtasks,
+                        pointBalance: pointAmountsAndDates.reduce(0) { $0 + $1.amount },
+                        pointsEarnedToday: pointAmountsAndDates
+                            .filter { $0.amount > 0 && calendar.isDate($0.createdAt, inSameDayAs: referenceDate) }
+                            .reduce(0) { $0 + $1.amount },
+                        currentPointStreak: pointState?.currentStreak ?? 0
+                    )
+                }
 
                 let autoArchivedCompletedAtByTaskID = Dictionary(
-                    executionModels.compactMap { record -> (UUID, Date)? in
+                    source.taskExecutions.compactMap { record -> (UUID, Date)? in
                         guard record.status == .completed,
                               let completedAt = record.completedAt,
                               calendar.isDate(completedAt, inSameDayAs: referenceDate) else {
@@ -1674,21 +1820,21 @@ struct HomeView: View {
                     },
                     uniquingKeysWith: max
                 )
-                let visibleTaskModels = allTaskModels.filter { task in
+                let visibleTaskModels = source.tasks.filter { task in
                     guard task.isArchived else { return true }
-                    guard task.recurrence.kind == .once,
-                          let completedAt = autoArchivedCompletedAtByTaskID[task.id] else {
+                    guard task.task.recurrence.kind == .once,
+                          let completedAt = autoArchivedCompletedAtByTaskID[task.task.id] else {
                         return false
                     }
                     return task.updatedAt <= completedAt
                 }
-                let deduplicatedTaskModels = TaskDedupSupport.deduplicatedTasks(allTaskModels)
-                let deduplicatedVisibleTaskModels = TaskDedupSupport.deduplicatedTasks(visibleTaskModels)
+                let deduplicatedTaskModels = deduplicatedHomeTasks(source.tasks)
+                let deduplicatedVisibleTaskModels = deduplicatedHomeTasks(visibleTaskModels)
                 let activeTaskModels = deduplicatedTaskModels.filter { !$0.isArchived }
 
-                let taskProjections = deduplicatedVisibleTaskModels.map(TaskProjection.init)
-                let taskExecutionProjections = executionModels.map(TaskExecutionRecordProjection.init)
-                let taskSubitemProjections = subtaskModels.map(TaskSubitemProjection.init)
+                let taskProjections = deduplicatedVisibleTaskModels.map(\.task)
+                let taskExecutionProjections = source.taskExecutions
+                let taskSubitemProjections = source.taskSubtasks
                 let taskProjectionResults = TodayTaskProjectionBuilder.build(
                     from: taskProjections,
                     executions: taskExecutionProjections,
@@ -1728,27 +1874,51 @@ struct HomeView: View {
                     .filter { $0.section == .todayDone }
                     .map { "\($0.task.title)#\($0.task.id.uuidString.prefix(6))@\($0.occurrenceDate.formatted(.dateTime.month().day()))" }
                     .joined(separator: ",")
-                DebugPerf.mark("HomeView background snapshot fetch end reviews=\(reviewModels.count) records=\(reviewRecordModels.count) sessions=\(sessionModels.count) entries=\(entryModels.count) schedules=\(scheduleModels.count) tasks=\(deduplicatedVisibleTaskModels.count) todayPending=\(todayPendingSummaries) todayDone=\(todayDoneSummaries)")
+                DebugPerf.mark("HomeView background snapshot fetch end reviews=\(source.reviewItems.count) records=\(source.reviewRecords.count) sessions=\(source.dictationSessions.count) entries=\(source.dictationEntries.count) schedules=\(source.schedules.count) tasks=\(deduplicatedVisibleTaskModels.count) todayPending=\(todayPendingSummaries) todayDone=\(todayDoneSummaries)")
                 #endif
 
-                return DashboardSnapshot.make(
+                let todayPlanKey = ReviewDailyPlan.dayKey(for: referenceDate, calendar: calendar)
+                let existingDailyPlan = source.reviewDailyPlans
+                    .filter { $0.dayKey == todayPlanKey }
+                    .min { lhs, rhs in
+                        if lhs.createdAt != rhs.createdAt {
+                            return lhs.createdAt < rhs.createdAt
+                        }
+                        return lhs.id.uuidString < rhs.id.uuidString
+                    }
+                let snapshot = DashboardSnapshot.make(
                     childName: childName,
                     dailyLimit: dailyLimit,
-                    reviewItems: reviewModels.map(HomeReviewItemProjection.init),
-                    reviewRecords: reviewRecordModels.map(HomeReviewRecordProjection.init),
-                    dictationSessions: sessionModels.map(HomeDictationSessionProjection.init),
-                    dictationEntries: entryModels.map(HomeDictationEntryProjection.init),
-                    schedules: scheduleModels.map(HomeScheduleProjection.init),
+                    dailyPlanItemIDs: existingDailyPlan?.itemIDs,
+                    reviewItems: source.reviewItems,
+                    reviewRecords: source.reviewRecords,
+                    dictationSessions: source.dictationSessions,
+                    dictationEntries: source.dictationEntries,
+                    schedules: source.schedules,
                     taskItems: taskDisplayItems,
                     calendarTasks: deduplicatedTaskModels.map(HomeCalendarTaskProjection.init),
                     taskExecutions: taskExecutionProjections,
                     taskSubtasks: taskSubitemProjections,
                     activeTaskCount: activeTaskModels.count,
-                    pointBalance: pointSnapshot.balance,
-                    pointsEarnedToday: pointsEarnedToday,
-                    currentPointStreak: pointSnapshot.currentStreak,
+                    pointBalance: source.pointBalance,
+                    pointsEarnedToday: source.pointsEarnedToday,
+                    currentPointStreak: source.currentPointStreak,
                     referenceDate: referenceDate
                 )
+
+                if existingDailyPlan == nil, !snapshot.dailyReviewPlanItemIDs.isEmpty {
+                    backgroundContext.insert(
+                        ReviewDailyPlan(
+                            dayKey: todayPlanKey,
+                            itemIDs: snapshot.dailyReviewPlanItemIDs,
+                            createdAt: referenceDate,
+                            updatedAt: referenceDate
+                        )
+                    )
+                    try? backgroundContext.save()
+                }
+
+                return snapshot
             }.value
 
             guard !Task.isCancelled else { return }
@@ -2182,6 +2352,10 @@ struct HomeView: View {
     }
 
     private func reviewStatusText(_ snapshot: DashboardSnapshot) -> String {
+        if snapshot.hasReachedDailyReviewLimit {
+            return "今日题量已经完成，剩余 \(snapshot.allDueCount) 项会在后续继续安排"
+        }
+
         guard !snapshot.dueItems.isEmpty else {
             return "今天复习已经全部完成了"
         }
@@ -2544,6 +2718,8 @@ struct HomeView: View {
                 childName: snapshot.childName,
                 dueItems: snapshot.dueItems,
                 allDueCount: snapshot.allDueCount,
+                hasReachedDailyReviewLimit: snapshot.hasReachedDailyReviewLimit,
+                dailyReviewPlanItemIDs: snapshot.dailyReviewPlanItemIDs,
                 masteredReviewCount: snapshot.masteredReviewCount,
                 todayCompletedCount: snapshot.todayCompletedCount,
                 todayWrongCount: snapshot.todayWrongCount,

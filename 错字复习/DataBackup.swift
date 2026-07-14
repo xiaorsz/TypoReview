@@ -276,6 +276,7 @@ enum DataBackupService {
     ) throws {
         try deleteAll(ReviewItem.self, in: modelContext)
         try deleteAll(ReviewRecord.self, in: modelContext)
+        try deleteAll(ReviewDailyPlan.self, in: modelContext)
         try deleteAll(TaskItem.self, in: modelContext)
         try deleteAll(TaskCompletion.self, in: modelContext)
         try deleteAll(TaskSubitem.self, in: modelContext)

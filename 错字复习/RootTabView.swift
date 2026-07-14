@@ -110,6 +110,17 @@ struct RootTabView: View {
                 try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s debounce
                 guard !Task.isCancelled else { return }
                 guard canRefreshLiveAppState else { return }
+                do {
+                    _ = try ReviewScheduler.reconcileStandardReviewProgress(in: modelContext)
+                    _ = try ReviewScheduler.deduplicateDailyReviewPlans(in: modelContext)
+                    if modelContext.hasChanges {
+                        try modelContext.save()
+                    }
+                } catch {
+                    #if DEBUG
+                    DebugPerf.mark("RootTabView remote review reconciliation failed error=\(error.localizedDescription)")
+                    #endif
+                }
                 appSettingsStore.refreshFromSwiftDataIfPossible(using: modelContext)
                 appSettingsStore.refreshFromUbiquitousStoreIfPossible(using: modelContext)
                 #if DEBUG
