@@ -695,7 +695,7 @@ struct SettingsView: View {
 
             if modelContext.hasChanges {
                 try modelContext.save()
-                NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
+                AppDataChangeCenter.post()
             }
 
             showInfoAlert(

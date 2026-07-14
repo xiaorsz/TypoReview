@@ -18,7 +18,8 @@ final class AppSettingsStore {
         static let aiSummaryUpdatedAt = "daily_summary_ai_updated_at_v1"
     }
 
-    private let userDefaults: UserDefaults
+    private var userDefaults: UserDefaults
+    private let appGroupIdentifier: String?
     private let ubiquitousStore = NSUbiquitousKeyValueStore.default
     private(set) var revision: Int = 0
     private(set) var lastSwiftDataError = ""
@@ -43,6 +44,7 @@ final class AppSettingsStore {
     var aiSummaryModelRawValue: String
 
     private var hasBootstrapped = false
+    private var hasActivatedExternalStores = false
     private var pendingLegacyAISummaryEnabled: Bool?
     private var pendingLegacyAISummaryModelRawValue: String?
     private var shouldMigrateLegacyAISummarySettings = false
@@ -50,12 +52,11 @@ final class AppSettingsStore {
     private var lastSyncedAISummaryModelRawValue: String
 
     init(appGroupIdentifier: String? = nil) {
-        if let appGroupIdentifier,
-           let sharedDefaults = UserDefaults(suiteName: appGroupIdentifier) {
-            userDefaults = sharedDefaults
-        } else {
-            userDefaults = .standard
-        }
+        self.appGroupIdentifier = appGroupIdentifier
+        // Keep App construction free of App Group and iCloud reads. On a real device those
+        // services can be temporarily unavailable and block the main thread before SwiftUI
+        // has created its first scene. Shared settings are activated later by bootstrap().
+        userDefaults = .standard
 
         // ⚠️ 注意：不能在这里实例化 AppSettings()。
         // AppSettings 是 @Model 类，实例化时 SwiftData 会调用 ModelContainer.currentContainer()，
@@ -82,17 +83,6 @@ final class AppSettingsStore {
         lastSyncedAISummaryEnabled = AppSettings.defaultAISummaryEnabled
         lastSyncedAISummaryModelRawValue = AppSettings.defaultAISummaryModelRawValue
 
-        if let snapshot = loadSnapshotFromDefaults() {
-            apply(snapshot: snapshot, incrementRevision: false)
-        }
-        prepareLegacyAISummarySettingsMigrationIfNeeded()
-        applyAISummarySettingsFromUbiquitousStoreIfNewer(incrementRevision: false)
-        if shouldSeedAISummarySettingsToUbiquitousStore {
-            syncAISummarySettingsToUbiquitousStoreIfNeeded()
-        } else {
-            lastSyncedAISummaryEnabled = aiSummaryEnabled
-            lastSyncedAISummaryModelRawValue = aiSummaryModelRawValue
-        }
     }
 
     var boardManualPlaybackOption: BoardManualPlaybackOption {
@@ -166,6 +156,7 @@ final class AppSettingsStore {
     }
 
     func bootstrap(using modelContext: ModelContext) {
+        activateExternalStoresIfNeeded()
         guard !hasBootstrapped else { return }
         hasBootstrapped = true
 
@@ -189,6 +180,7 @@ final class AppSettingsStore {
     }
 
     func refreshFromSwiftDataIfPossible(using modelContext: ModelContext) {
+        activateExternalStoresIfNeeded()
         guard let remoteSnapshot = loadSnapshotFromSwiftData(using: modelContext) else {
             return
         }
@@ -201,6 +193,7 @@ final class AppSettingsStore {
     }
 
     func refreshFromUbiquitousStoreIfPossible(using modelContext: ModelContext) {
+        activateExternalStoresIfNeeded()
         guard applyAISummarySettingsFromUbiquitousStoreIfNewer(incrementRevision: false) else {
             return
         }
@@ -212,6 +205,7 @@ final class AppSettingsStore {
     }
 
     func persist(using modelContext: ModelContext) {
+        activateExternalStoresIfNeeded()
         persistToDefaults()
         syncAISummarySettingsToUbiquitousStoreIfNeeded()
         markChanged()
@@ -219,6 +213,7 @@ final class AppSettingsStore {
     }
 
     func restore(from snapshot: AppSettingsSnapshot?, using modelContext: ModelContext) {
+        activateExternalStoresIfNeeded()
         if let snapshot {
             apply(snapshot: snapshot, incrementRevision: false)
         } else {
@@ -249,6 +244,29 @@ final class AppSettingsStore {
             aiSummaryEnabled: AppSettings.defaultAISummaryEnabled,
             aiSummaryModelRawValue: AppSettings.defaultAISummaryModelRawValue
         )
+    }
+
+    private func activateExternalStoresIfNeeded() {
+        guard !hasActivatedExternalStores else { return }
+        hasActivatedExternalStores = true
+
+        if let appGroupIdentifier,
+           let sharedDefaults = UserDefaults(suiteName: appGroupIdentifier) {
+            userDefaults = sharedDefaults
+        }
+
+        if let storedSnapshot = loadSnapshotFromDefaults() {
+            apply(snapshot: storedSnapshot, incrementRevision: false)
+        }
+        prepareLegacyAISummarySettingsMigrationIfNeeded()
+        applyAISummarySettingsFromUbiquitousStoreIfNewer(incrementRevision: false)
+
+        if shouldSeedAISummarySettingsToUbiquitousStore {
+            syncAISummarySettingsToUbiquitousStoreIfNeeded()
+        } else {
+            lastSyncedAISummaryEnabled = aiSummaryEnabled
+            lastSyncedAISummaryModelRawValue = aiSummaryModelRawValue
+        }
     }
 
     func boardAutoplayWindow(on date: Date) -> (start: Date, end: Date)? {
@@ -339,7 +357,6 @@ final class AppSettingsStore {
         ubiquitousStore.set(aiSummaryEnabled, forKey: UbiquitousKeys.aiSummaryEnabled)
         ubiquitousStore.set(aiSummaryModelRawValue, forKey: UbiquitousKeys.aiSummaryModelRawValue)
         ubiquitousStore.set(updatedAt, forKey: UbiquitousKeys.aiSummaryUpdatedAt)
-        ubiquitousStore.synchronize()
 
         userDefaults.set(updatedAt, forKey: StorageKeys.ubiquitousAISummaryUpdatedAt)
         lastSyncedAISummaryEnabled = aiSummaryEnabled
@@ -357,8 +374,6 @@ final class AppSettingsStore {
 
     @discardableResult
     private func applyAISummarySettingsFromUbiquitousStoreIfNewer(incrementRevision: Bool) -> Bool {
-        ubiquitousStore.synchronize()
-
         let remoteUpdatedAt = ubiquitousStore.double(forKey: UbiquitousKeys.aiSummaryUpdatedAt)
         guard remoteUpdatedAt > 0 else { return false }
 

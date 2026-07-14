@@ -842,7 +842,7 @@ struct PointsDashboardView: View {
             try modelContext.save()
             redemptionTitle = ""
             redemptionAmountText = "5"
-            NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
+            AppDataChangeCenter.post()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -867,7 +867,7 @@ struct PointsDashboardView: View {
             try modelContext.save()
             additionTitle = ""
             additionAmountText = "5"
-            NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
+            AppDataChangeCenter.post()
         } catch {
             errorMessage = error.localizedDescription
         }

@@ -21,8 +21,8 @@ final class MediaLibraryStore {
     private(set) var lastErrorMessage: String?
     private var metadataChangeObserver: MediaLibraryMetadataChangeObserver?
 
-    init() {
-        reload()
+    func startObservingChangesIfNeeded() {
+        guard metadataChangeObserver == nil else { return }
         metadataChangeObserver = MediaLibraryMetadataChangeObserver { [weak self] in
             self?.reload()
         }

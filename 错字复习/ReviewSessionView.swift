@@ -750,7 +750,7 @@ struct ReviewSessionView: View {
     private func persistChanges(message: String) -> Bool {
         do {
             try modelContext.save()
-            NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
+            AppDataChangeCenter.post()
             return true
         } catch {
             saveErrorMessage = "\(message)\n\(error.localizedDescription)"

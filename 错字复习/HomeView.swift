@@ -7,7 +7,7 @@ import AVKit
 import WidgetKit
 import UIKit
 
-private struct HomeReviewItemProjection: Identifiable, Hashable {
+struct HomeReviewItemProjection: Identifiable, Hashable {
     let id: UUID
     let type: ReviewItemType
     let content: String
@@ -38,7 +38,7 @@ private struct HomeReviewItemProjection: Identifiable, Hashable {
     }
 }
 
-private struct HomeReviewRecordProjection {
+struct HomeReviewRecordProjection {
     let itemID: UUID
     let reviewedAt: Date
     let result: ReviewResult
@@ -52,7 +52,7 @@ private struct HomeReviewRecordProjection {
     }
 }
 
-private struct HomeReviewDailyPlanProjection: Sendable {
+struct HomeReviewDailyPlanProjection: Sendable {
     let id: UUID
     let dayKey: String
     let itemIDs: [UUID]
@@ -66,7 +66,7 @@ private struct HomeReviewDailyPlanProjection: Sendable {
     }
 }
 
-private struct HomeDictationSessionProjection: Identifiable, Hashable {
+struct HomeDictationSessionProjection: Identifiable, Hashable {
     let id: UUID
     let title: String
     let type: ReviewItemType
@@ -89,7 +89,7 @@ private struct HomeDictationSessionProjection: Identifiable, Hashable {
     var isReviewed: Bool { reviewedAt != nil }
 }
 
-private struct HomeDictationEntryProjection: Identifiable, Hashable {
+struct HomeDictationEntryProjection: Identifiable, Hashable {
     let id: UUID
     let sessionID: UUID
     let sortOrder: Int
@@ -109,7 +109,7 @@ private struct HomeDictationEntryProjection: Identifiable, Hashable {
     }
 }
 
-private struct HomeScheduleProjection: Identifiable, Hashable {
+struct HomeScheduleProjection: Identifiable, Hashable {
     let id: UUID
     let title: String
     let startTime: Date
@@ -300,7 +300,7 @@ private struct HomeCalendarTaskProjection: Sendable {
     }
 }
 
-private struct HomeTaskModelProjection: Sendable {
+struct HomeTaskModelProjection: Sendable {
     let task: TaskProjection
     let isArchived: Bool
     let updatedAt: Date
@@ -312,7 +312,7 @@ private struct HomeTaskModelProjection: Sendable {
     }
 }
 
-private struct HomeDashboardSourceSnapshot {
+struct HomeDashboardSourceSnapshot {
     let reviewItems: [HomeReviewItemProjection]
     let reviewRecords: [HomeReviewRecordProjection]
     let reviewDailyPlans: [HomeReviewDailyPlanProjection]
@@ -1689,7 +1689,7 @@ struct HomeView: View {
             content
                 .onChange(of: scenePhase) { _, newPhase in onSceneChange(newPhase) }
                 .onChange(of: appRevision) { _, _ in onRefresh("appRevision") }
-                .onReceive(NotificationCenter.default.publisher(for: Notification.Name("appDataDidMutate"))) { _ in
+                .onReceive(NotificationCenter.default.publisher(for: .appDataDidChange)) { _ in
                     onRefresh("appDataDidMutate")
                 }
         }
@@ -1759,55 +1759,16 @@ struct HomeView: View {
             #endif
             let referenceDate = Date()
             let snapshot = await Task.detached(priority: .utility) {
-                let backgroundContext = ModelContext(container)
                 let calendar = Calendar.current
 
                 // SwiftData models can be invalidated by a concurrent delete or CloudKit merge.
                 // Materialize every model into an immutable value while the read transaction is active,
                 // then perform the relatively expensive dashboard calculations using values only.
-                var source = HomeDashboardSourceSnapshot.empty
-                try? backgroundContext.transaction {
-                    let reviewItems = ((try? backgroundContext.fetch(FetchDescriptor<ReviewItem>())) ?? [])
-                        .map(HomeReviewItemProjection.init)
-                    let reviewRecords = ((try? backgroundContext.fetch(FetchDescriptor<ReviewRecord>())) ?? [])
-                        .map(HomeReviewRecordProjection.init)
-                    let reviewDailyPlans = ((try? backgroundContext.fetch(FetchDescriptor<ReviewDailyPlan>())) ?? [])
-                        .map(HomeReviewDailyPlanProjection.init)
-                    let dictationSessions = ((try? backgroundContext.fetch(FetchDescriptor<DictationSession>())) ?? [])
-                        .map(HomeDictationSessionProjection.init)
-                    let dictationEntries = ((try? backgroundContext.fetch(FetchDescriptor<DictationEntry>())) ?? [])
-                        .map(HomeDictationEntryProjection.init)
-                    let schedules = ((try? backgroundContext.fetch(
-                        FetchDescriptor<ScheduleItem>(predicate: #Predicate<ScheduleItem> { !$0.isArchived })
-                    )) ?? []).map(HomeScheduleProjection.init)
-                    let tasks = ((try? backgroundContext.fetch(FetchDescriptor<TaskItem>())) ?? [])
-                        .map(HomeTaskModelProjection.init)
-                    let taskExecutions = ((try? backgroundContext.fetch(FetchDescriptor<TaskExecutionRecord>())) ?? [])
-                        .map(TaskExecutionRecordProjection.init)
-                    let taskSubtasks = ((try? backgroundContext.fetch(
-                        FetchDescriptor<TaskSubitem>(predicate: #Predicate<TaskSubitem> { !$0.isArchived })
-                    )) ?? []).map(TaskSubitemProjection.init)
-                    let pointEntries = (try? backgroundContext.fetch(FetchDescriptor<PointLedgerEntry>())) ?? []
-                    let pointAmountsAndDates = pointEntries.map { (amount: $0.amount, createdAt: $0.createdAt) }
-                    let pointState = (try? backgroundContext.fetch(FetchDescriptor<PointRewardState>()))?.first
-
-                    source = HomeDashboardSourceSnapshot(
-                        reviewItems: reviewItems,
-                        reviewRecords: reviewRecords,
-                        reviewDailyPlans: reviewDailyPlans,
-                        dictationSessions: dictationSessions,
-                        dictationEntries: dictationEntries,
-                        schedules: schedules,
-                        tasks: tasks,
-                        taskExecutions: taskExecutions,
-                        taskSubtasks: taskSubtasks,
-                        pointBalance: pointAmountsAndDates.reduce(0) { $0 + $1.amount },
-                        pointsEarnedToday: pointAmountsAndDates
-                            .filter { $0.amount > 0 && calendar.isDate($0.createdAt, inSameDayAs: referenceDate) }
-                            .reduce(0) { $0 + $1.amount },
-                        currentPointStreak: pointState?.currentStreak ?? 0
-                    )
-                }
+                let source = HomeDashboardDataLoader.load(
+                    from: container,
+                    referenceDate: referenceDate
+                )
+                let backgroundContext = ModelContext(container)
 
                 let autoArchivedCompletedAtByTaskID = Dictionary(
                     source.taskExecutions.compactMap { record -> (UUID, Date)? in
@@ -2688,7 +2649,7 @@ struct HomeView: View {
                 try? modelContext.save()
                 
                 // 告知全应用数据已变动，刷新必要 UI
-                NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
+                AppDataChangeCenter.post()
             }
         }
     }

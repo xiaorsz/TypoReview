@@ -28,9 +28,15 @@ struct TypoReviewApp: App {
         }
         #endif
 
+        #if DEBUG
+        DebugPerf.mark("TypoReviewApp AppSettingsStore init begin")
+        #endif
         _appSettingsStore = State(
             initialValue: AppSettingsStore(appGroupIdentifier: Self.appGroupIdentifierValue)
         )
+        #if DEBUG
+        DebugPerf.mark("TypoReviewApp AppSettingsStore init end")
+        #endif
         let schema = Schema([
             ReviewItem.self,
             ReviewRecord.self,
@@ -1394,7 +1400,7 @@ enum AppStorePreviewData {
         )
 
         try? modelContext.save()
-        NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
+        AppDataChangeCenter.post()
     }
 }
 #endif

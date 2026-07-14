@@ -306,7 +306,7 @@ struct DictationReviewView: View {
 
         do {
             try modelContext.save()
-            NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
+            AppDataChangeCenter.post()
             submittedSummaries = summaries
             submittedAccuracyBonusAmount = accuracyBonusAmount
             navigateToSummary = true

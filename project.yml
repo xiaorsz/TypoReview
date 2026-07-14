@@ -109,6 +109,8 @@ targets:
         type: file
       - path: 错字复习/AppSettings.swift
         type: file
+      - path: 错字复习/AppDataChangeCenter.swift
+        type: file
       - path: 错字复习/ScheduleItem.swift
         type: file
     info:

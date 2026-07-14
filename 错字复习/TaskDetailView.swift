@@ -264,7 +264,7 @@ struct TaskDetailView: View {
         .onChange(of: scenePhase) { _, newPhase in
             handleScenePhaseChange(newPhase)
         }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("appDataDidMutate"))) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .appDataDidChange)) { _ in
             Self.perfMark("received appDataDidMutate")
             requestDetailRefresh(reason: "appDataDidMutate")
         }
@@ -1458,7 +1458,7 @@ struct TaskDetailView: View {
 
             try modelContext.save()
             WidgetCenter.shared.reloadAllTimelinesInBackground()
-            NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
+            AppDataChangeCenter.post()
             scheduleDeferredDetailRefresh(after: 0.2, reason: "subtask completion persisted")
             Self.perfMark("subtask toggle persisted id=\(actionID) total=\(Self.perfMillis(since: startedAt))")
         } catch {
@@ -1826,7 +1826,7 @@ struct TaskDetailView: View {
 
             try modelContext.save()
             WidgetCenter.shared.reloadAllTimelinesInBackground()
-            NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
+            AppDataChangeCenter.post()
             scheduleDeferredDetailRefresh(after: 0.2, reason: "occurrence completion persisted")
             Self.perfMark("occurrence toggle persisted id=\(actionID) total=\(Self.perfMillis(since: startedAt))")
         } catch {

@@ -315,7 +315,7 @@ struct DictationHomeView: View {
                 snapshotRefreshTask?.cancel()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("appDataDidMutate"))) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .appDataDidChange)) { _ in
             #if DEBUG
             DebugPerf.mark("DictationHomeView received appDataDidMutate visible=\(isViewVisible)")
             #endif
@@ -541,7 +541,7 @@ struct DictationHomeView: View {
                 try backgroundContext.save()
 
                 await MainActor.run {
-                    NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
+                    AppDataChangeCenter.post()
                 }
             } catch {
                 await MainActor.run {

@@ -405,7 +405,7 @@ struct TasksView: View {
             .onChange(of: archivedSchedules) { _, _ in
                 requestSnapshotRefresh(reason: "archivedSchedules")
             }
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("appDataDidMutate"))) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .appDataDidChange)) { _ in
                 #if DEBUG
                 DebugPerf.mark("TasksView received appDataDidMutate")
                 #endif
@@ -1024,7 +1024,7 @@ struct TasksView: View {
 
         try? modelContext.save()
         saveAndReloadWidgetsDeferred()
-        NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
+        AppDataChangeCenter.post()
     }
 
     private func toggleCompletion(for task: TaskItem, occurrenceDate: Date, isDone: Bool) {
@@ -1060,7 +1060,7 @@ struct TasksView: View {
             
             try? modelContext.save()
             saveAndReloadWidgetsDeferred()
-            NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
+            AppDataChangeCenter.post()
         }
     }
 
@@ -1088,7 +1088,7 @@ struct TasksView: View {
 
         try? modelContext.save()
         saveAndReloadWidgetsDeferred()
-        NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
+        AppDataChangeCenter.post()
     }
 
     private func saveAndReloadWidgetsDeferred() {

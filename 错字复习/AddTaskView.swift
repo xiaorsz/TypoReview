@@ -307,7 +307,7 @@ struct AddTaskView: View {
             )
             #endif
             WidgetCenter.shared.reloadAllTimelinesInBackground()
-            NotificationCenter.default.post(name: NSNotification.Name("appDataDidMutate"), object: nil)
+            AppDataChangeCenter.post()
         } catch {
             #if DEBUG
             DebugPerf.mark("AddTaskView save failed id=\(actionID) error=\(error.localizedDescription)")

@@ -392,7 +392,7 @@ struct BatchReviewGradingView: View {
         
         do {
             try modelContext.save()
-            NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
+            AppDataChangeCenter.post()
         } catch {
             saveErrorMessage = "这次复习结果没有保存成功，请再试一次。\(error.localizedDescription)"
             return

@@ -74,6 +74,7 @@ struct RootTabView: View {
             DebugPerf.mark("RootTabView .task scenePhase=\(scenePhase)")
             #endif
             guard canRefreshLiveAppState else { return }
+            mediaLibraryStore.startObservingChangesIfNeeded()
             mediaLibraryStore.reload()
             scheduleIOS17BackgroundShieldStartIfNeeded()
             scheduleStartupMaintenanceIfNeeded()
@@ -82,6 +83,7 @@ struct RootTabView: View {
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 endCloudKitSettleBackgroundTask()
+                mediaLibraryStore.startObservingChangesIfNeeded()
                 mediaLibraryStore.reload()
                 scheduleIOS17BackgroundShieldStartIfNeeded()
                 scheduleStartupMaintenanceIfNeeded()
@@ -126,13 +128,13 @@ struct RootTabView: View {
                 #if DEBUG
                 DebugPerf.mark("RootTabView posting appDataDidMutate from remote change")
                 #endif
-                NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
+                AppDataChangeCenter.post()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSUbiquitousKeyValueStore.didChangeExternallyNotification)) { _ in
             guard canRefreshLiveAppState else { return }
             appSettingsStore.refreshFromUbiquitousStoreIfPossible(using: modelContext)
-            NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
+            AppDataChangeCenter.post()
         }
     }
 
@@ -330,7 +332,7 @@ struct RootTabView: View {
 
             appSettingsStore.refreshFromSwiftDataIfPossible(using: modelContext)
             appSettingsStore.refreshFromUbiquitousStoreIfPossible(using: modelContext)
-            NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
+            AppDataChangeCenter.post()
         }
     }
 

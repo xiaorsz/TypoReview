@@ -288,7 +288,7 @@ struct DictationSessionView: View {
         session.finishedAt = now
         session.updatedAt = now
         try? modelContext.save()
-        NotificationCenter.default.post(name: Notification.Name("appDataDidMutate"), object: nil)
+        AppDataChangeCenter.post()
         navigateToReview = true
     }
 }
