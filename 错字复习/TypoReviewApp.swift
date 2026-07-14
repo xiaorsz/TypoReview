@@ -14,6 +14,7 @@ struct TypoReviewApp: App {
     @State private var appSettingsStore: AppSettingsStore
     private let sharedModelContainer: ModelContainer
     private let startupMaintenanceCoordinator: StartupMaintenanceCoordinator
+    private var persistenceInitializationFailure: PersistenceInitializationFailure?
 
     init() {
         #if DEBUG
@@ -65,6 +66,7 @@ struct TypoReviewApp: App {
                 )
                 return store
             }())
+            persistenceInitializationFailure = nil
             return
         }
 
@@ -166,9 +168,14 @@ struct TypoReviewApp: App {
                 DebugPerf.mark("TypoReviewApp ModelContainer fallback init failed error=\(error.localizedDescription)")
                 #endif
                 print("Fallback ModelContainer also failed: \(error)")
+                let fallbackError = error as NSError
                 let inMemoryConfig = ModelConfiguration(isStoredInMemoryOnly: true)
                 container = try! ModelContainer(for: schema, configurations: [inMemoryConfig])
                 startupMaintenanceStoreURL = nil
+                persistenceInitializationFailure = PersistenceInitializationFailure(
+                    cloudError: nsError1,
+                    localError: fallbackError
+                )
             }
             sharedModelContainer = container
             
@@ -819,24 +826,114 @@ struct TypoReviewApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootTabView()
-                .environment(syncStatusStore)
-                .environment(mediaLibraryStore)
-                .environment(appSettingsStore)
-                .environmentObject(startupMaintenanceCoordinator)
-                .environment(\.locale, Locale(identifier: "zh_Hans"))
-                .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
-                    #if DEBUG
-                    DebugPerf.flushRecentEvents()
-                    #endif
+            Group {
+                if let persistenceInitializationFailure {
+                    PersistenceRecoveryView(failure: persistenceInitializationFailure)
+                } else {
+                    RootTabView()
+                        .environment(syncStatusStore)
+                        .environment(mediaLibraryStore)
+                        .environment(appSettingsStore)
+                        .environmentObject(startupMaintenanceCoordinator)
                 }
-                .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
-                    #if DEBUG
-                    DebugPerf.flushRecentEvents()
-                    #endif
-                }
+            }
+            .environment(\.locale, Locale(identifier: "zh_Hans"))
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+                #if DEBUG
+                DebugPerf.flushRecentEvents()
+                #endif
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
+                #if DEBUG
+                DebugPerf.flushRecentEvents()
+                #endif
+            }
         }
         .modelContainer(sharedModelContainer)
+    }
+}
+
+private struct PersistenceInitializationFailure {
+    let cloudError: NSError
+    let localError: NSError
+
+    var diagnosticText: String {
+        [
+            "听写复习本数据存储初始化失败",
+            "时间：\(Date.now.formatted(.iso8601))",
+            "CloudKit：\(Self.describe(cloudError))",
+            "本地存储：\(Self.describe(localError))"
+        ].joined(separator: "\n")
+    }
+
+    private static func describe(_ error: NSError) -> String {
+        "domain=\(error.domain), code=\(error.code), description=\(error.localizedDescription)"
+    }
+}
+
+private struct PersistenceRecoveryView: View {
+    let failure: PersistenceInitializationFailure
+    @State private var didCopyDiagnostics = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 24) {
+                    Image(systemName: "externaldrive.badge.exclamationmark")
+                        .font(.system(size: 52, weight: .semibold))
+                        .foregroundStyle(.orange)
+                        .accessibilityHidden(true)
+
+                    VStack(spacing: 10) {
+                        Text("暂时无法打开学习数据")
+                            .font(.title2.bold())
+                        Text("为了避免新内容退出 App 后丢失，当前已暂停录入和复习操作。原有数据不会在这里被覆盖。")
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        recoveryStep(number: 1, text: "完全退出 App 后重新打开。")
+                        recoveryStep(number: 2, text: "确认设备有足够存储空间，并保持 iCloud 可用。")
+                        recoveryStep(number: 3, text: "如果仍然出现此页面，请复制诊断信息并联系开发者。")
+                    }
+                    .padding(18)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+
+                    Button {
+                        UIPasteboard.general.string = failure.diagnosticText
+                        didCopyDiagnostics = true
+                    } label: {
+                        Label(didCopyDiagnostics ? "已复制诊断信息" : "复制诊断信息", systemImage: didCopyDiagnostics ? "checkmark" : "doc.on.doc")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+
+                    Text("请勿卸载 App，以免影响尚未同步的本地数据。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(24)
+                .frame(maxWidth: 560)
+                .frame(maxWidth: .infinity)
+            }
+            .background(Color(uiColor: .systemGroupedBackground))
+            .navigationTitle("数据恢复模式")
+        }
+    }
+
+    private func recoveryStep(number: Int, text: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text("\(number)")
+                .font(.subheadline.bold())
+                .foregroundStyle(.white)
+                .frame(width: 26, height: 26)
+                .background(Color.accentColor, in: Circle())
+            Text(text)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
 
