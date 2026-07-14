@@ -278,6 +278,9 @@ struct AddTaskView: View {
             existingTask.skipPolicy = skipPolicy
             existingTask.startDate = startDate
             existingTask.endDate = recurrenceKind == .once ? nil : (hasEndDate ? endDate : nil)
+            if recurrenceKind == .once, existingTask.pauseStartedAt != nil {
+                existingTask.resume(on: .now)
+            }
             existingTask.updatedAt = .now
             savedTask = existingTask
         } else {

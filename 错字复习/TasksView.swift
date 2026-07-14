@@ -924,6 +924,16 @@ struct TasksView: View {
                                     .foregroundStyle(.orange)
                             }
 
+                            if task.isPaused {
+                                Text("·")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+
+                                Label(pauseStatusText(for: task), systemImage: "pause.circle.fill")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.orange)
+                            }
+
                             if let occurrenceDateText = occurrenceDateMetadataText(
                                 occurrenceDate: occurrenceDate,
                                 occurrenceLabel: occurrenceLabel,
@@ -977,12 +987,58 @@ struct TasksView: View {
                 }
 
                 if allowsArchive {
+                    if task.recurrence.kind != .once {
+                        Button(
+                            task.isPaused ? "启用" : "暂停",
+                            systemImage: task.isPaused ? "play.fill" : "pause.fill"
+                        ) {
+                            togglePause(for: liveTask)
+                        }
+                        .tint(task.isPaused ? .blue : .orange)
+                    }
+
                     Button("归档", systemImage: "archivebox", role: .destructive) {
                         archiveTask(liveTask)
                     }
                 }
             }
         }
+    }
+
+    private func pauseStatusText(for task: TaskProjection) -> String {
+        guard let pauseStartedAt = task.pauseStartedAt else { return "" }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        return calendar.startOfDay(for: pauseStartedAt) > today ? "明日起暂停" : "已暂停"
+    }
+
+    private func togglePause(for task: TaskItem) {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+
+        if task.isPaused {
+            task.resume(on: today)
+        } else {
+            let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? today
+            task.pause(starting: tomorrow)
+        }
+
+        let updatedProjection = TaskProjection(task)
+        withAnimation {
+            pageSnapshot.taskProjectionsByID[task.id] = updatedProjection
+            pageSnapshot.displayItems.removeAll { item in
+                item.task.id == task.id && updatedProjection.isOccurrencePaused(item.occurrenceDate)
+            }
+        }
+
+        do {
+            try modelContext.save()
+        } catch {
+            print("Failed to toggle task pause: \(error)")
+        }
+        WidgetCenter.shared.reloadAllTimelinesInBackground()
+        AppDataChangeCenter.post()
+        requestSnapshotRefresh(reason: task.isPaused ? "task paused" : "task resumed", delay: 0.02)
     }
 
     private func occurrenceDateMetadataText(

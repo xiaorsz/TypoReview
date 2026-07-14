@@ -638,6 +638,8 @@ struct TaskItemSnapshot: Codable {
     let skipPolicyRawValue: String?
     let startDate: Date
     let endDate: Date?
+    let pauseIntervalsJSON: String?
+    let pauseStartedAt: Date?
     let isArchived: Bool
     let createdAt: Date
     let updatedAt: Date
@@ -650,6 +652,8 @@ struct TaskItemSnapshot: Codable {
         skipPolicyRawValue = task.skipPolicyRawValue
         startDate = task.startDate
         endDate = task.endDate
+        pauseIntervalsJSON = task.pauseIntervalsJSON
+        pauseStartedAt = task.pauseStartedAt
         isArchived = task.isArchived
         createdAt = task.createdAt
         updatedAt = task.updatedAt
@@ -664,6 +668,8 @@ struct TaskItemSnapshot: Codable {
             skipPolicy: skipPolicyRawValue.flatMap(TaskSkipPolicy.init(rawValue:)) ?? .skippable,
             startDate: startDate,
             endDate: endDate,
+            pauseIntervalsJSON: pauseIntervalsJSON,
+            pauseStartedAt: pauseStartedAt,
             isArchived: isArchived,
             createdAt: createdAt,
             updatedAt: updatedAt

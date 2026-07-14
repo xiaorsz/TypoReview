@@ -97,3 +97,80 @@ final class ReviewSchedulerTests: XCTestCase {
         ))!
     }
 }
+
+@MainActor
+final class TaskPauseTests: XCTestCase {
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        return calendar
+    }
+
+    func testPausedRecurringTaskStopsCreatingOccurrencesFromPauseDate() {
+        let task = TaskProjection(
+            id: UUID(),
+            title: "每日朗读",
+            startDate: date(2026, 7, 14),
+            recurrence: .daily,
+            pauseStartedAt: date(2026, 7, 15)
+        )
+
+        XCTAssertEqual(
+            task.scheduledOccurrenceDates(upTo: date(2026, 7, 18)),
+            [date(2026, 7, 14)]
+        )
+    }
+
+    func testResumedTaskDoesNotBackfillDatesSkippedWhilePaused() {
+        let task = TaskProjection(
+            id: UUID(),
+            title: "每日朗读",
+            startDate: date(2026, 7, 14),
+            recurrence: .daily,
+            pauseIntervals: [
+                TaskPauseInterval(
+                    startDate: date(2026, 7, 15),
+                    endDate: date(2026, 7, 18)
+                )
+            ]
+        )
+
+        XCTAssertEqual(
+            task.scheduledOccurrenceDates(upTo: date(2026, 7, 20)),
+            [
+                date(2026, 7, 14),
+                date(2026, 7, 18),
+                date(2026, 7, 19),
+                date(2026, 7, 20)
+            ]
+        )
+    }
+
+    func testPauseStateRoundTripsThroughTaskModel() {
+        let task = TaskItem(
+            title: "每周听写",
+            recurrence: .weekly([2, 4]),
+            startDate: date(2026, 7, 13)
+        )
+
+        task.pause(starting: date(2026, 7, 15))
+        XCTAssertTrue(task.isPaused)
+
+        task.resume(on: date(2026, 7, 18))
+
+        XCTAssertFalse(task.isPaused)
+        XCTAssertEqual(
+            task.pauseIntervals,
+            [TaskPauseInterval(startDate: date(2026, 7, 15), endDate: date(2026, 7, 18))]
+        )
+    }
+
+    private func date(_ year: Int, _ month: Int, _ day: Int) -> Date {
+        calendar.date(from: DateComponents(
+            timeZone: calendar.timeZone,
+            year: year,
+            month: month,
+            day: day
+        ))!
+    }
+}

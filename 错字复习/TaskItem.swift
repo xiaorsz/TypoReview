@@ -1,6 +1,50 @@
 import Foundation
 import SwiftData
 
+struct TaskPauseInterval: Codable, Hashable, Sendable {
+    let startDate: Date
+    let endDate: Date
+}
+
+enum TaskPauseSupport {
+    static func decodeIntervals(from json: String?) -> [TaskPauseInterval] {
+        guard let json,
+              let data = json.data(using: .utf8),
+              let intervals = try? JSONDecoder().decode([TaskPauseInterval].self, from: data) else {
+            return []
+        }
+        return intervals
+    }
+
+    static func encodeIntervals(_ intervals: [TaskPauseInterval]) -> String? {
+        guard !intervals.isEmpty,
+              let data = try? JSONEncoder().encode(intervals) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func isDatePaused(
+        _ date: Date,
+        completedIntervals: [TaskPauseInterval],
+        currentPauseStartDate: Date?,
+        calendar: Calendar = .current
+    ) -> Bool {
+        let day = calendar.startOfDay(for: date)
+
+        if let currentPauseStartDate,
+           day >= calendar.startOfDay(for: currentPauseStartDate) {
+            return true
+        }
+
+        return completedIntervals.contains { interval in
+            let start = calendar.startOfDay(for: interval.startDate)
+            let end = calendar.startOfDay(for: interval.endDate)
+            return day >= start && day < end
+        }
+    }
+}
+
 @Model
 final class TaskItem {
     var id: UUID = UUID()
@@ -10,6 +54,8 @@ final class TaskItem {
     var skipPolicyRawValue: String?
     var startDate: Date = Date()
     var endDate: Date?
+    var pauseIntervalsJSON: String?
+    var pauseStartedAt: Date?
     var isArchived: Bool = false
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
@@ -22,6 +68,8 @@ final class TaskItem {
         skipPolicy: TaskSkipPolicy = .skippable,
         startDate: Date = .now,
         endDate: Date? = nil,
+        pauseIntervalsJSON: String? = nil,
+        pauseStartedAt: Date? = nil,
         isArchived: Bool = false,
         createdAt: Date = .now,
         updatedAt: Date = .now
@@ -33,6 +81,8 @@ final class TaskItem {
         self.skipPolicyRawValue = skipPolicy.rawValue
         self.startDate = startDate
         self.endDate = endDate
+        self.pauseIntervalsJSON = pauseIntervalsJSON
+        self.pauseStartedAt = pauseStartedAt
         self.isArchived = isArchived
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -54,6 +104,43 @@ final class TaskItem {
         set { skipPolicyRawValue = newValue.rawValue }
     }
 
+    var pauseIntervals: [TaskPauseInterval] {
+        get { TaskPauseSupport.decodeIntervals(from: pauseIntervalsJSON) }
+        set { pauseIntervalsJSON = TaskPauseSupport.encodeIntervals(newValue) }
+    }
+
+    var isPaused: Bool {
+        recurrence.kind != .once && pauseStartedAt != nil
+    }
+
+    func pause(starting date: Date) {
+        guard recurrence.kind != .once, pauseStartedAt == nil else { return }
+        pauseStartedAt = Calendar.current.startOfDay(for: date)
+        updatedAt = .now
+    }
+
+    func resume(on date: Date) {
+        guard let pauseStartedAt else { return }
+
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: pauseStartedAt)
+        let end = calendar.startOfDay(for: date)
+        if end > start {
+            pauseIntervals.append(TaskPauseInterval(startDate: start, endDate: end))
+        }
+        self.pauseStartedAt = nil
+        updatedAt = .now
+    }
+
+    func isOccurrencePaused(_ date: Date) -> Bool {
+        guard recurrence.kind != .once else { return false }
+        return TaskPauseSupport.isDatePaused(
+            date,
+            completedIntervals: pauseIntervals,
+            currentPauseStartDate: pauseStartedAt
+        )
+    }
+
     func originText(for pendingDate: Date, relativeTo date: Date) -> String {
         let calendar = Calendar.current
         let targetDay = calendar.startOfDay(for: date)
@@ -72,31 +159,34 @@ final class TaskItem {
 
         guard target >= start else { return [] }
 
+        let scheduledDates: [Date]
         switch recurrence.kind {
         case .once:
             return [start]
 
         case .daily:
             let days = calendar.dateComponents([.day], from: start, to: target).day ?? 0
-            return (0...days).compactMap { offset in
+            scheduledDates = (0...days).compactMap { offset in
                 calendar.date(byAdding: .day, value: offset, to: start)
             }
 
         case .weekly:
-            var scheduledDates: [Date] = []
+            var weeklyDates: [Date] = []
             var checkDate = start
             while checkDate <= target {
                 let weekday = calendar.component(.weekday, from: checkDate)
                 if recurrence.weekdays.contains(weekday) {
-                    scheduledDates.append(checkDate)
+                    weeklyDates.append(checkDate)
                 }
                 guard let nextDate = calendar.date(byAdding: .day, value: 1, to: checkDate) else {
                     break
                 }
                 checkDate = nextDate
             }
-            return scheduledDates
+            scheduledDates = weeklyDates
         }
+
+        return scheduledDates.filter { !isOccurrencePaused($0) }
     }
 
     // MARK: - Display Helpers

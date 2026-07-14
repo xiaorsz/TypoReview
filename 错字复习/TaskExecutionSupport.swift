@@ -17,6 +17,8 @@ struct TaskProjection: Sendable {
     let endDate: Date?
     let recurrence: TaskRecurrence
     let skipPolicy: TaskSkipPolicy
+    let pauseIntervals: [TaskPauseInterval]
+    let pauseStartedAt: Date?
 
     init(_ task: TaskItem) {
         id = task.id
@@ -27,6 +29,8 @@ struct TaskProjection: Sendable {
         endDate = task.endDate
         recurrence = task.recurrence
         skipPolicy = task.skipPolicy
+        pauseIntervals = task.pauseIntervals
+        pauseStartedAt = task.pauseStartedAt
     }
 
     init(
@@ -37,7 +41,9 @@ struct TaskProjection: Sendable {
         startDate: Date = .now,
         endDate: Date? = nil,
         recurrence: TaskRecurrence = .once,
-        skipPolicy: TaskSkipPolicy = .skippable
+        skipPolicy: TaskSkipPolicy = .skippable,
+        pauseIntervals: [TaskPauseInterval] = [],
+        pauseStartedAt: Date? = nil
     ) {
         self.id = id
         self.title = title
@@ -47,6 +53,8 @@ struct TaskProjection: Sendable {
         self.endDate = endDate
         self.recurrence = recurrence
         self.skipPolicy = skipPolicy
+        self.pauseIntervals = pauseIntervals
+        self.pauseStartedAt = pauseStartedAt
     }
 
     // 后台上下文安全的构造器
@@ -61,6 +69,21 @@ struct TaskProjection: Sendable {
         self.endDate = task.endDate
         self.recurrence = task.recurrence
         self.skipPolicy = task.skipPolicy
+        self.pauseIntervals = task.pauseIntervals
+        self.pauseStartedAt = task.pauseStartedAt
+    }
+
+    var isPaused: Bool {
+        recurrence.kind != .once && pauseStartedAt != nil
+    }
+
+    func isOccurrencePaused(_ date: Date) -> Bool {
+        guard recurrence.kind != .once else { return false }
+        return TaskPauseSupport.isDatePaused(
+            date,
+            completedIntervals: pauseIntervals,
+            currentPauseStartDate: pauseStartedAt
+        )
     }
 
     func originText(for pendingDate: Date, relativeTo date: Date) -> String {
@@ -81,31 +104,34 @@ struct TaskProjection: Sendable {
 
         guard target >= start else { return [] }
 
+        let scheduledDates: [Date]
         switch recurrence.kind {
         case .once:
             return [start]
 
         case .daily:
             let days = calendar.dateComponents([.day], from: start, to: target).day ?? 0
-            return (0...days).compactMap { offset in
+            scheduledDates = (0...days).compactMap { offset in
                 calendar.date(byAdding: .day, value: offset, to: start)
             }
 
         case .weekly:
-            var scheduledDates: [Date] = []
+            var weeklyDates: [Date] = []
             var checkDate = start
             while checkDate <= target {
                 let weekday = calendar.component(.weekday, from: checkDate)
                 if recurrence.weekdays.contains(weekday) {
-                    scheduledDates.append(checkDate)
+                    weeklyDates.append(checkDate)
                 }
                 guard let nextDate = calendar.date(byAdding: .day, value: 1, to: checkDate) else {
                     break
                 }
                 checkDate = nextDate
             }
-            return scheduledDates
+            scheduledDates = weeklyDates
         }
+
+        return scheduledDates.filter { !isOccurrencePaused($0) }
     }
 
     private var effectiveEndDay: Date? {

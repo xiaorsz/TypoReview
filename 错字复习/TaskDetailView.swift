@@ -315,6 +315,12 @@ struct TaskDetailView: View {
                             .font(.caption)
                             .foregroundStyle(.orange)
                     }
+
+                    if taskProjection.isPaused {
+                        Label("已暂停", systemImage: "pause.circle.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.orange)
+                    }
                 }
 
                 if !taskProjection.note.isEmpty {
@@ -328,6 +334,49 @@ struct TaskDetailView: View {
                 }
             }
             .padding(.vertical, 4)
+
+            if taskProjection.recurrence.kind != .once {
+                Button {
+                    toggleTaskPause()
+                } label: {
+                    Label(
+                        taskProjection.isPaused ? "启用循环任务" : "暂停循环任务（今日任务保留）",
+                        systemImage: taskProjection.isPaused ? "play.fill" : "pause.fill"
+                    )
+                }
+                .tint(taskProjection.isPaused ? .blue : .orange)
+            }
+        }
+    }
+
+    private func toggleTaskPause() {
+        let targetTaskID = taskID
+        let descriptor = FetchDescriptor<TaskItem>(
+            predicate: #Predicate<TaskItem> { $0.id == targetTaskID }
+        )
+
+        do {
+            guard let task = try modelContext.fetch(descriptor).first else {
+                isTaskUnavailable = true
+                return
+            }
+
+            let calendar = Calendar.current
+            let today = calendar.startOfDay(for: .now)
+            if task.isPaused {
+                task.resume(on: today)
+            } else {
+                let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? today
+                task.pause(starting: tomorrow)
+            }
+
+            try modelContext.save()
+            taskProjection = TaskProjection(task)
+            WidgetCenter.shared.reloadAllTimelinesInBackground()
+            AppDataChangeCenter.post()
+            requestDetailRefresh(reason: task.isPaused ? "task paused" : "task resumed")
+        } catch {
+            persistenceErrorMessage = error.localizedDescription
         }
     }
 
