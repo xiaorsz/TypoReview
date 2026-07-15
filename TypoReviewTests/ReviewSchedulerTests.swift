@@ -98,6 +98,97 @@ final class ReviewSchedulerTests: XCTestCase {
     }
 }
 
+final class ReviewDailyPlanTests: XCTestCase {
+    func testExistingPlanExpandsWhenDailyLimitIncreases() {
+        let availableIDs = (0..<60).map { _ in UUID() }
+        let existingIDs = Array(availableIDs.prefix(5))
+
+        let expandedIDs = ReviewDailyPlan.expandedItemIDs(
+            existingItemIDs: existingIDs,
+            availableDueItemIDs: availableIDs,
+            dailyLimit: 50
+        )
+
+        XCTAssertEqual(expandedIDs.count, 50)
+        XCTAssertEqual(Array(expandedIDs.prefix(5)), existingIDs)
+    }
+
+    func testExistingPlanDoesNotReplenishCompletedItemsOrShrink() {
+        let plannedIDs = (0..<50).map { _ in UUID() }
+        let remainingDueIDs = Array(plannedIDs.dropFirst(10))
+
+        XCTAssertEqual(
+            ReviewDailyPlan.expandedItemIDs(
+                existingItemIDs: plannedIDs,
+                availableDueItemIDs: remainingDueIDs,
+                dailyLimit: 50
+            ),
+            plannedIDs
+        )
+        XCTAssertEqual(
+            ReviewDailyPlan.expandedItemIDs(
+                existingItemIDs: plannedIDs,
+                availableDueItemIDs: remainingDueIDs,
+                dailyLimit: 5
+            ),
+            plannedIDs
+        )
+    }
+}
+
+final class ScheduleDedupSupportTests: XCTestCase {
+    func testIdenticalScheduleConfigurationsCollapseToOneDisplayItem() {
+        let start = date(hour: 16, minute: 30)
+        let end = date(hour: 17, minute: 30)
+        let identity = makeIdentity(start: start, end: end)
+
+        let result = ScheduleDedupSupport.deduplicated(["first", "duplicate"]) { _ in identity }
+
+        XCTAssertEqual(result, ["first"])
+    }
+
+    func testSchedulesAtDifferentTimesRemainDistinct() {
+        let first = makeIdentity(start: date(hour: 16, minute: 30), end: date(hour: 17, minute: 30))
+        let second = makeIdentity(start: date(hour: 18), end: date(hour: 19))
+        let identities = [first, second]
+
+        let result = ScheduleDedupSupport.deduplicated(Array(identities.indices)) { identities[$0] }
+
+        XCTAssertEqual(result, [0, 1])
+    }
+
+    private func makeIdentity(start: Date, end: Date) -> ScheduleDisplayIdentity {
+        ScheduleDisplayIdentity(
+            title: "钢琴课",
+            note: "每周课程",
+            startTime: start,
+            endTime: end,
+            repeatRule: .weekly,
+            weekdays: [4, 2],
+            effectiveStartDate: date(hour: 0),
+            effectiveEndDate: nil,
+            calendar: calendar
+        )
+    }
+
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        return calendar
+    }
+
+    private func date(hour: Int, minute: Int = 0) -> Date {
+        calendar.date(from: DateComponents(
+            timeZone: calendar.timeZone,
+            year: 2026,
+            month: 7,
+            day: 15,
+            hour: hour,
+            minute: minute
+        ))!
+    }
+}
+
 @MainActor
 final class TaskPauseTests: XCTestCase {
     private var calendar: Calendar {

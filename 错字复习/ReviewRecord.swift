@@ -92,6 +92,27 @@ final class ReviewDailyPlan {
         }
     }
 
+    static func expandedItemIDs(
+        existingItemIDs: [UUID],
+        availableDueItemIDs: [UUID],
+        dailyLimit: Int
+    ) -> [UUID] {
+        var seen = Set<UUID>()
+        var result = existingItemIDs.filter { seen.insert($0).inserted }
+        let targetCount = max(dailyLimit, 0)
+
+        guard result.count < targetCount else { return result }
+
+        for itemID in availableDueItemIDs where seen.insert(itemID).inserted {
+            result.append(itemID)
+            if result.count >= targetCount {
+                break
+            }
+        }
+
+        return result
+    }
+
     private static func encodeItemIDs(_ ids: [UUID]) -> String {
         guard let data = try? JSONEncoder().encode(ids),
               let value = String(data: data, encoding: .utf8) else {

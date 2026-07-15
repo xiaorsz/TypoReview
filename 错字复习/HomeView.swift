@@ -112,6 +112,7 @@ struct HomeDictationEntryProjection: Identifiable, Hashable {
 struct HomeScheduleProjection: Identifiable, Hashable {
     let id: UUID
     let title: String
+    let note: String
     let startTime: Date
     let endTime: Date
     let repeatRule: ScheduleRepeatRule
@@ -123,6 +124,7 @@ struct HomeScheduleProjection: Identifiable, Hashable {
     init(_ schedule: ScheduleItem) {
         id = schedule.id
         title = schedule.title
+        note = schedule.note
         startTime = schedule.startTime
         endTime = schedule.endTime
         repeatRule = schedule.repeatRule
@@ -595,7 +597,16 @@ struct HomeView: View {
                 guard !reviewedTodayItemIDs.contains(item.id) else { return false }
                 return seenDueItemIDs.insert(item.id).inserted
             }
-            let plannedItemIDs = dailyPlanItemIDs ?? Array(allDue.prefix(dailyLimit)).map(\.id)
+            let plannedItemIDs: [UUID]
+            if let dailyPlanItemIDs {
+                plannedItemIDs = ReviewDailyPlan.expandedItemIDs(
+                    existingItemIDs: dailyPlanItemIDs,
+                    availableDueItemIDs: allDue.map(\.id),
+                    dailyLimit: dailyLimit
+                )
+            } else {
+                plannedItemIDs = Array(allDue.prefix(dailyLimit)).map(\.id)
+            }
             let dueByID = Dictionary(uniqueKeysWithValues: allDue.map { ($0.id, $0) })
             let cappedDueContent: [HomeReviewItemProjection] = plannedItemIDs.compactMap { itemID in
                 guard !reviewedTodayItemIDs.contains(itemID) else { return nil }
@@ -675,9 +686,27 @@ struct HomeView: View {
                 }
             }
 
-            let tSchedules = schedules
+            let sortedVisibleSchedules = schedules
                 .filter { $0.shouldAppear(on: referenceDate) && !$0.hasEnded(on: referenceDate, reference: referenceDate) }
-                .sorted { $0.startTimeMinutes < $1.startTimeMinutes }
+                .sorted { lhs, rhs in
+                    if lhs.startTimeMinutes != rhs.startTimeMinutes {
+                        return lhs.startTimeMinutes < rhs.startTimeMinutes
+                    }
+                    return lhs.id.uuidString < rhs.id.uuidString
+                }
+            let tSchedules = ScheduleDedupSupport.deduplicated(sortedVisibleSchedules) { schedule in
+                ScheduleDisplayIdentity(
+                    title: schedule.title,
+                    note: schedule.note,
+                    startTime: schedule.startTime,
+                    endTime: schedule.endTime,
+                    repeatRule: schedule.repeatRule,
+                    weekdays: schedule.weekdays,
+                    effectiveStartDate: schedule.effectiveStartDate,
+                    effectiveEndDate: schedule.effectiveEndDate,
+                    calendar: calendar
+                )
+            }
 
             let todayTaskItems = taskItems.filter { $0.section == .todayPending }
             let historicalTaskItems = taskItems.filter { $0.section == .historicalPending }
@@ -1175,7 +1204,7 @@ struct HomeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
         .background(
-            RoundedRectangle(cornerRadius: 24)
+            RoundedRectangle(cornerRadius: 20)
                 .fill(
                     LinearGradient(
                         colors: snapshot.heroGradientColors,
@@ -1183,6 +1212,7 @@ struct HomeView: View {
                         endPoint: .bottomTrailing
                     )
                 )
+                .saturation(0.82)
         )
     }
 
@@ -1211,8 +1241,7 @@ struct HomeView: View {
                 value: "\(snapshot.totalPendingTaskCount)",
                 caption: snapshot.historicalPendingTaskCount > 0
                     ? "含历史 \(snapshot.historicalPendingTaskCount)"
-                    : "待完成",
-                tint: .orange
+                    : "待完成"
             )
 
             heroMetricTile(
@@ -1223,16 +1252,14 @@ struct HomeView: View {
                     ? "今日额度已完成"
                     : snapshot.allDueCount > snapshot.dueItems.count
                         ? "到期 \(snapshot.allDueCount)"
-                        : "待复习",
-                tint: .purple
+                        : "待复习"
             )
 
             heroMetricTile(
                 icon: "text.book.closed",
                 title: "听写",
                 value: "\(snapshot.pendingDictationCount)",
-                caption: "待听写",
-                tint: .teal
+                caption: "待听写"
             )
         }
     }
@@ -1241,16 +1268,15 @@ struct HomeView: View {
         icon: String,
         title: String,
         value: String,
-        caption: String,
-        tint: Color
+        caption: String
     ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 5) {
                 Image(systemName: icon)
                     .font(.caption2.weight(.bold))
-                    .foregroundStyle(tint)
+                    .foregroundStyle(.white.opacity(0.9))
                     .frame(width: 18, height: 18)
-                    .background(.white.opacity(0.9), in: Circle())
+                    .background(.white.opacity(0.12), in: Circle())
 
                 Text(title)
                     .font(.caption2.weight(.semibold))
@@ -1274,10 +1300,10 @@ struct HomeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 9)
         .padding(.vertical, 7)
-        .background(.white.opacity(0.14), in: RoundedRectangle(cornerRadius: 14))
+        .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
         .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(.white.opacity(0.12), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(.white.opacity(0.1), lineWidth: 1)
         )
     }
 
@@ -1303,12 +1329,12 @@ struct HomeView: View {
         NavigationLink {
             PointsDashboardView()
         } label: {
-            HStack(spacing: 14) {
+            HStack(spacing: 12) {
                 Image(systemName: "star.circle.fill")
-                    .font(.title2.weight(.bold))
+                    .font(.title3.weight(.bold))
                     .foregroundStyle(.orange)
-                    .frame(width: 42, height: 42)
-                    .background(Color.orange.opacity(0.12), in: Circle())
+                    .frame(width: 36, height: 36)
+                    .background(Color.orange.opacity(0.09), in: Circle())
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text("积分")
@@ -1334,8 +1360,7 @@ struct HomeView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.tertiary)
             }
-            .padding(16)
-            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20))
+            .homeCardSurface(padding: 14)
         }
         .buttonStyle(.plain)
     }
@@ -1345,7 +1370,7 @@ struct HomeView: View {
         let daysWithTasks = weekDays.filter { $0.hasTasks }.count
         let daysCompleted = weekDays.filter { $0.hasTasks && !$0.hasIncompleteTasks }.count
 
-        return VStack(alignment: .leading, spacing: isPad ? 20 : 14) {
+        return VStack(alignment: .leading, spacing: isPad ? 18 : 12) {
             HStack {
                 Image(systemName: "calendar.badge.checkmark")
                     .font(isPad ? .title2 : .title3)
@@ -1356,11 +1381,11 @@ struct HomeView: View {
                 if daysWithTasks > 0 {
                     Text("\(daysCompleted)/\(daysWithTasks) 天完成")
                         .font(isPad ? Font.subheadline.weight(.bold) : Font.caption.weight(.bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(daysCompleted == daysWithTasks ? Color.green : Color.blue)
                         .padding(.horizontal, isPad ? 14 : 10)
                         .padding(.vertical, isPad ? 6 : 4)
                         .background(
-                            daysCompleted == daysWithTasks ? Color.green : Color.blue,
+                            (daysCompleted == daysWithTasks ? Color.green : Color.blue).opacity(0.11),
                             in: Capsule()
                         )
                 } else {
@@ -1370,7 +1395,7 @@ struct HomeView: View {
                 }
             }
 
-            VStack(spacing: isPad ? 12 : 8) {
+            VStack(spacing: isPad ? 10 : 6) {
                 calendarWeekdayHeader
 
                 ForEach(snapshot.calendarWeeks) { week in
@@ -1383,18 +1408,17 @@ struct HomeView: View {
             }
 
             // 底部颜色图例
-            HStack(spacing: isPad ? 24 : 16) {
+            HStack(spacing: isPad ? 20 : 12) {
                 calendarLegendItem(color: .green, label: "已完成")
                 calendarLegendItem(color: .orange, label: "进行中")
                 calendarLegendItem(color: .purple, label: "复习")
                 calendarLegendItem(color: .cyan, label: "听写")
             }
             .frame(maxWidth: .infinity)
-            .padding(.top, 4)
+            .padding(.top, 2)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(20)
-        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24))
+        .homeCardSurface()
     }
 
     private var calendarWeekdayHeader: some View {
@@ -1419,7 +1443,7 @@ struct HomeView: View {
     }
 
     private func calendarDayCell(_ day: HomeCalendarDaySummary) -> some View {
-        VStack(spacing: isPad ? 10 : 6) {
+        VStack(spacing: isPad ? 9 : 5) {
             // 日期数字 + 今天圆点指示器
             VStack(spacing: isPad ? 4 : 2) {
                 Text(calendarDayText(for: day.date))
@@ -1479,14 +1503,14 @@ struct HomeView: View {
             }
             .frame(height: isPad ? 20 : 14)
         }
-        .frame(maxWidth: .infinity, minHeight: isPad ? 120 : 80)
-        .padding(.vertical, isPad ? 12 : 6)
+        .frame(maxWidth: .infinity, minHeight: isPad ? 112 : 72)
+        .padding(.vertical, isPad ? 10 : 5)
         .padding(.horizontal, isPad ? 6 : 2)
-        .background(calendarDayBackground(day), in: RoundedRectangle(cornerRadius: isPad ? 18 : 12))
+        .background(calendarDayBackground(day), in: RoundedRectangle(cornerRadius: isPad ? 16 : 10))
         .overlay {
             if day.isToday {
-                RoundedRectangle(cornerRadius: isPad ? 18 : 12)
-                    .stroke(.blue, lineWidth: 2)
+                RoundedRectangle(cornerRadius: isPad ? 16 : 10)
+                    .stroke(.blue.opacity(0.75), lineWidth: 1.5)
             }
         }
         .accessibilityElement(children: .ignore)
@@ -1518,7 +1542,7 @@ struct HomeView: View {
         if !day.hasTasks {
             return Color(uiColor: .tertiarySystemGroupedBackground)
         }
-        return day.hasIncompleteTasks ? .orange.opacity(0.12) : .green.opacity(0.15)
+        return day.hasIncompleteTasks ? .orange.opacity(0.08) : .green.opacity(0.1)
     }
 
     private func calendarDayTint(_ day: HomeCalendarDaySummary) -> Color {
@@ -1867,7 +1891,17 @@ struct HomeView: View {
                     referenceDate: referenceDate
                 )
 
-                if existingDailyPlan == nil, !snapshot.dailyReviewPlanItemIDs.isEmpty {
+                if let existingDailyPlan,
+                   existingDailyPlan.itemIDs != snapshot.dailyReviewPlanItemIDs {
+                    let planID = existingDailyPlan.id
+                    let descriptor = FetchDescriptor<ReviewDailyPlan>(
+                        predicate: #Predicate<ReviewDailyPlan> { $0.id == planID }
+                    )
+                    if let storedPlan = try? backgroundContext.fetch(descriptor).first {
+                        storedPlan.itemIDs = snapshot.dailyReviewPlanItemIDs
+                        try? backgroundContext.save()
+                    }
+                } else if existingDailyPlan == nil, !snapshot.dailyReviewPlanItemIDs.isEmpty {
                     backgroundContext.insert(
                         ReviewDailyPlan(
                             dayKey: todayPlanKey,
@@ -1897,7 +1931,7 @@ struct HomeView: View {
             ScrollView {
                 let isWide = proxy.size.width >= 700
 
-                VStack(spacing: 20) {
+                VStack(spacing: 14) {
                     heroCard(snapshot)
 
                     if !AppStorePreviewMode.isEnabled && syncStatusStore.syncNoticeKind != .ready {
@@ -1916,12 +1950,12 @@ struct HomeView: View {
                     statGridSection(snapshot)
 
                     if isWide {
-                        HStack(spacing: 16) {
+                        HStack(spacing: 12) {
                             reviewEntryButton(snapshot)
                             dictationEntryButton(snapshot)
                         }
                     } else {
-                        VStack(spacing: 12) {
+                        VStack(spacing: 10) {
                             reviewEntryButton(snapshot)
                             dictationEntryButton(snapshot)
                         }
@@ -1929,7 +1963,7 @@ struct HomeView: View {
 
                     quickEntryCard
                 }
-                .padding(isWide ? 32 : 20)
+                .padding(isWide ? 28 : 16)
                 .frame(maxWidth: 960, alignment: .center)
                 .frame(maxWidth: .infinity)
             }
@@ -1944,16 +1978,16 @@ struct HomeView: View {
             ScrollView {
                 let isWide = proxy.size.width >= 700
 
-                VStack(spacing: 20) {
+                VStack(spacing: 14) {
                     loadingHeroCard
 
                     if isWide {
-                        HStack(spacing: 16) {
+                        HStack(spacing: 12) {
                             lightweightReviewPlaceholderCard
                             lightweightDictationEntryButton
                         }
                     } else {
-                        VStack(spacing: 12) {
+                        VStack(spacing: 10) {
                             lightweightReviewPlaceholderCard
                             lightweightDictationEntryButton
                         }
@@ -1971,7 +2005,7 @@ struct HomeView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 4)
                 }
-                .padding(isWide ? 32 : 20)
+                .padding(isWide ? 28 : 16)
                 .frame(maxWidth: 960, alignment: .center)
                 .frame(maxWidth: .infinity)
             }
@@ -2003,9 +2037,9 @@ struct HomeView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
+        .padding(16)
         .background(
-            RoundedRectangle(cornerRadius: 24)
+            RoundedRectangle(cornerRadius: 20)
                 .fill(
                     LinearGradient(
                         colors: [.blue.opacity(0.8), .cyan.opacity(0.6)],
@@ -2031,9 +2065,9 @@ struct HomeView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
-        .background(Color.orange)
+                .background(Color.orange.opacity(0.88))
         .foregroundStyle(.white)
-        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
     private var lightweightDictationEntryButton: some View {
@@ -2059,22 +2093,22 @@ struct HomeView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .padding()
-            .background(Color.teal)
+            .background(Color.teal.opacity(0.88))
             .foregroundStyle(.white)
-            .clipShape(RoundedRectangle(cornerRadius: 18))
+            .clipShape(RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain)
     }
 
     @ViewBuilder
     private func statGridSection(_ snapshot: DashboardSnapshot) -> some View {
-        let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: 3)
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 3)
 
-        LazyVGrid(columns: columns, spacing: 12) {
+        LazyVGrid(columns: columns, spacing: 10) {
             Button {
                 activeReviewRoute = HomeReviewRoute(itemIDs: snapshot.dueItemIDs, style: reviewStyle)
             } label: {
-                StatGridCard(icon: "book.closed", title: "今日复习", value: "\(snapshot.dueItems.count)", tint: .orange)
+                HomeStatGridCard(icon: "book.closed", title: "今日复习", value: "\(snapshot.dueItems.count)", tint: .orange)
             }
             .buttonStyle(.plain)
             .disabled(snapshot.dueItems.isEmpty)
@@ -2082,7 +2116,7 @@ struct HomeView: View {
             Button {
                 openDictationHome(source: "home stat grid")
             } label: {
-                StatGridCard(icon: "text.book.closed", title: "待听写", value: "\(snapshot.pendingDictationCount)", tint: .teal)
+                HomeStatGridCard(icon: "text.book.closed", title: "待听写", value: "\(snapshot.pendingDictationCount)", tint: .teal)
             }
             .buttonStyle(.plain)
 
@@ -2104,7 +2138,7 @@ struct HomeView: View {
                 value: snapshot.todayAccuracyText,
                 tint: .blue
             )
-            StatGridCard(icon: "star.fill", title: "已掌握", value: "\(snapshot.masteredReviewCount)", tint: .mint)
+            HomeStatGridCard(icon: "star.fill", title: "已掌握", value: "\(snapshot.masteredReviewCount)", tint: .mint)
         }
     }
 
@@ -2117,7 +2151,7 @@ struct HomeView: View {
         Button {
             openDailyReviewRecords(source: "home stat grid \(title)")
         } label: {
-            StatGridCard(icon: icon, title: title, value: value, tint: tint)
+            HomeStatGridCard(icon: icon, title: title, value: value, tint: tint)
         }
         .buttonStyle(.plain)
     }
@@ -2128,6 +2162,8 @@ struct HomeView: View {
                 Image(systemName: "pencil.tip.crop.circle.badge.plus")
                     .font(.title3)
                     .foregroundStyle(.blue)
+                    .frame(width: 34, height: 34)
+                    .background(Color.blue.opacity(0.09), in: Circle())
                 Text("快速录入")
                     .font(.headline)
                 Spacer()
@@ -2144,31 +2180,68 @@ struct HomeView: View {
                 Text("把当天写错的词句或英语录进来，保存后会从明天开始进入正式复习。")
             }
 
-            Button {
-                openAddReview(source: "home quick entry card")
-            } label: {
-                Label("新增一条错题", systemImage: "square.and.pencil")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-            }
-            .buttonStyle(.borderedProminent)
+            HStack(spacing: 10) {
+                Button {
+                    openAddReview(source: "home quick entry card")
+                } label: {
+                    quickEntryActionLabel(
+                        title: "新增一条错题",
+                        subtitle: "随手记一条",
+                        icon: "square.and.pencil",
+                        tint: .blue
+                    )
+                }
+                .buttonStyle(.plain)
 
-            NavigationLink {
-                BatchAddReviewItemsView()
-            } label: {
-                Label("批量录入多条", systemImage: "text.badge.plus")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
+                NavigationLink {
+                    BatchAddReviewItemsView()
+                } label: {
+                    quickEntryActionLabel(
+                        title: "批量录入多条",
+                        subtitle: "一次添加多条",
+                        icon: "text.badge.plus",
+                        tint: .indigo
+                    )
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.blue.opacity(0.15))
-            .foregroundStyle(.blue)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(20)
-        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24))
+        .homeCardSurface()
+    }
+
+    private func quickEntryActionLabel(
+        title: String,
+        subtitle: String,
+        icon: String,
+        tint: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Image(systemName: icon)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(tint)
+                .frame(width: 28, height: 28)
+                .background(tint.opacity(0.1), in: Circle())
+
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+
+            Text(subtitle)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, minHeight: 82, alignment: .leading)
+        .padding(12)
+        .background(tint.opacity(0.055), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(tint.opacity(0.1), lineWidth: 1)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 14))
     }
 
     private func reviewEntryButton(_ snapshot: DashboardSnapshot) -> some View {
@@ -2215,8 +2288,7 @@ struct HomeView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .padding(.vertical, 4)
+        .padding(16)
         .background(
             LinearGradient(
                 colors: snapshot.dueItems.isEmpty
@@ -2225,10 +2297,14 @@ struct HomeView: View {
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
+            .saturation(0.82)
         )
         .foregroundStyle(.white)
-        .clipShape(RoundedRectangle(cornerRadius: 24))
-        .shadow(color: (snapshot.dueItems.isEmpty ? Color.gray : Color.accentColor).opacity(0.3), radius: 12, y: 6)
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(.white.opacity(0.12), lineWidth: 1)
+        )
     }
 
     private func dictationEntryButton(_ snapshot: DashboardSnapshot) -> some View {
@@ -2277,18 +2353,21 @@ struct HomeView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .padding(.vertical, 4)
+        .padding(16)
         .background(
             LinearGradient(
-                colors: [.teal, .teal.opacity(0.8)],
+                colors: [.blue.opacity(0.92), .teal.opacity(0.82)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
+            .saturation(0.8)
         )
         .foregroundStyle(.white)
-        .clipShape(RoundedRectangle(cornerRadius: 24))
-        .shadow(color: .teal.opacity(0.3), radius: 12, y: 6)
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(.white.opacity(0.12), lineWidth: 1)
+        )
     }
 
     private func openDictationHome(source: String) {
@@ -2357,7 +2436,7 @@ struct HomeView: View {
         let schedules = snapshot.todaySchedules
 
         if !schedules.isEmpty {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Image(systemName: "calendar")
                         .font(.title3)
@@ -2403,8 +2482,7 @@ struct HomeView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(20)
-            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24))
+            .homeCardSurface()
         }
     }
 
@@ -2419,7 +2497,7 @@ struct HomeView: View {
         let historyCount = snapshot.historicalPendingTaskCount
         
         if !pendingItems.isEmpty || doneCount > 0 || !historicalItems.isEmpty || snapshot.activeTaskCount > 0 {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Image(systemName: "checklist")
                         .font(.title3)
@@ -2432,20 +2510,20 @@ struct HomeView: View {
                         if historyCount > 0 {
                             Text("历史 \(historyCount)")
                                 .font(.caption2.weight(.bold))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(.orange)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 3)
-                                .background(.orange, in: Capsule())
+                                .background(.orange.opacity(0.11), in: Capsule())
                         }
 
                         if todayTaskCount > 0 {
                             Text("\(doneCount)/\(todayTaskCount) 完成")
                                 .font(.caption.weight(.bold))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(doneCount == todayTaskCount ? Color.green : Color.purple)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 4)
                                 .background(
-                                    doneCount == todayTaskCount ? Color.green : Color.purple,
+                                    (doneCount == todayTaskCount ? Color.green : Color.purple).opacity(0.11),
                                     in: Capsule()
                                 )
                         }
@@ -2469,10 +2547,10 @@ struct HomeView: View {
                             HStack {
                                 Text("历史待完成")
                                     .font(.caption.weight(.bold))
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(.orange)
                                     .padding(.horizontal, 10)
                                     .padding(.vertical, 4)
-                                    .background(.orange, in: Capsule())
+                                    .background(.orange.opacity(0.11), in: Capsule())
                                 Text("\(historicalItems.count) 项")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -2491,10 +2569,10 @@ struct HomeView: View {
                             HStack {
                                 Text("今日已完成")
                                     .font(.caption.weight(.bold))
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(.green)
                                     .padding(.horizontal, 10)
                                     .padding(.vertical, 4)
-                                    .background(.green, in: Capsule())
+                                    .background(.green.opacity(0.11), in: Capsule())
                                 Text("\(snapshot.todayCompletedTasks.count) 项")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -2510,8 +2588,7 @@ struct HomeView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(20)
-            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24))
+            .homeCardSurface()
         }
     }
 
@@ -3134,9 +3211,13 @@ struct HomeView: View {
                     .padding(.top, 4)
             }
         }
-        .padding(20)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(style.background, in: RoundedRectangle(cornerRadius: 24))
+        .background(style.background, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(style.tint.opacity(0.1), lineWidth: 1)
+        )
     }
 
     private var syncSummaryStyle: (symbol: String, tint: Color, background: Color) {
@@ -3150,6 +3231,63 @@ struct HomeView: View {
         case .blocked:
             return ("icloud.slash.fill", .red, .red.opacity(0.08))
         }
+    }
+}
+
+private struct HomeStatGridCard: View {
+    let icon: String
+    let title: String
+    let value: String
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 20, height: 20)
+                    .background(tint.opacity(0.1), in: Circle())
+
+                Text(title)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text(value)
+                .font(.system(.title3, design: .rounded, weight: .bold))
+                .foregroundStyle(.primary)
+                .contentTransition(.numericText())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(13)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(tint.opacity(0.09), lineWidth: 1)
+        )
+    }
+}
+
+private struct HomeCardSurfaceModifier: ViewModifier {
+    let padding: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .padding(padding)
+            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18)
+                    .stroke(Color.primary.opacity(0.045), lineWidth: 1)
+            )
+    }
+}
+
+private extension View {
+    func homeCardSurface(padding: CGFloat = 16) -> some View {
+        modifier(HomeCardSurfaceModifier(padding: padding))
     }
 }
 

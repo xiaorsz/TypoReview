@@ -166,3 +166,49 @@ final class ScheduleItem {
         ) ?? endTime
     }
 }
+
+struct ScheduleDisplayIdentity: Hashable {
+    let normalizedTitle: String
+    let normalizedNote: String
+    let startTimeMinutes: Int
+    let endTimeMinutes: Int
+    let repeatRuleRawValue: String
+    let weekdays: [Int]
+    let effectiveStartDay: Date
+    let effectiveEndDay: Date?
+
+    init(
+        title: String,
+        note: String,
+        startTime: Date,
+        endTime: Date,
+        repeatRule: ScheduleRepeatRule,
+        weekdays: [Int],
+        effectiveStartDate: Date,
+        effectiveEndDate: Date?,
+        calendar: Calendar = .current
+    ) {
+        normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        normalizedNote = note.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        let startComponents = calendar.dateComponents([.hour, .minute], from: startTime)
+        startTimeMinutes = (startComponents.hour ?? 0) * 60 + (startComponents.minute ?? 0)
+
+        let endComponents = calendar.dateComponents([.hour, .minute], from: endTime)
+        endTimeMinutes = (endComponents.hour ?? 0) * 60 + (endComponents.minute ?? 0)
+        repeatRuleRawValue = repeatRule.rawValue
+        self.weekdays = weekdays.sorted()
+        effectiveStartDay = calendar.startOfDay(for: effectiveStartDate)
+        effectiveEndDay = effectiveEndDate.map { calendar.startOfDay(for: $0) }
+    }
+}
+
+enum ScheduleDedupSupport {
+    static func deduplicated<Item>(
+        _ items: [Item],
+        identity: (Item) -> ScheduleDisplayIdentity
+    ) -> [Item] {
+        var seen = Set<ScheduleDisplayIdentity>()
+        return items.filter { seen.insert(identity($0)).inserted }
+    }
+}
