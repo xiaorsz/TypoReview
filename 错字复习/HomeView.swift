@@ -1151,51 +1151,42 @@ struct HomeView: View {
         let summaryAIErrorMessage = dailySummaryPresentation?.inputHash == summaryHash
             ? dailySummaryPresentation?.aiErrorMessage
             : nil
-        let summaryAIErrorText = summaryAIErrorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
-
         return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(heroSummaryText(snapshot, result: summaryResult))
-                        .font(.system(.title3, design: .rounded, weight: .bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(3)
-                        .minimumScaleFactor(0.82)
-                        .fixedSize(horizontal: false, vertical: true)
+                Text(heroSummaryText(snapshot, result: summaryResult))
+                    .font(.system(.title3, design: .rounded, weight: .bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(3)
+                    .minimumScaleFactor(0.82)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 4)
+
+                VStack(spacing: 4) {
+                    if isSummaryLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.white)
+                            .frame(width: 28, height: 28)
+                    } else if appSettingsStore.aiSummaryEnabled {
+                        Button {
+                            refreshDailySummary(for: snapshot, force: true)
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.white.opacity(0.92))
+                                .frame(width: 28, height: 28)
+                                .background(.white.opacity(0.14), in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("重新生成今日小结")
+                    }
 
                     dailySummarySourceBadge(
                         isAIResult: isSummaryAIResult,
                         isLoading: isSummaryLoading,
                         errorMessage: summaryAIErrorMessage
                     )
-
-                    if let summaryAIErrorText, !summaryAIErrorText.isEmpty {
-                        Text(summaryAIErrorText)
-                            .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.78))
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
-                Spacer(minLength: 8)
-
-                if isSummaryLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(.white)
-                } else if appSettingsStore.aiSummaryEnabled {
-                    Button {
-                        refreshDailySummary(for: snapshot, force: true)
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.92))
-                            .frame(width: 28, height: 28)
-                            .background(.white.opacity(0.14), in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("重新生成今日小结")
                 }
             }
 
@@ -1219,18 +1210,31 @@ struct HomeView: View {
     private func dailySummarySourceBadge(isAIResult: Bool, isLoading: Bool, errorMessage: String?) -> some View {
         let trimmedError = errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let hasError = !trimmedError.isEmpty
-        let title = isLoading ? "AI 生成中" : (hasError ? "AI 失败，已用本地小结" : (isAIResult ? "AI 小结" : "本地小结"))
-        let icon = isLoading ? "sparkles" : (hasError ? "exclamationmark.triangle.fill" : (isAIResult ? "checkmark.seal.fill" : "iphone"))
+        let title = isLoading ? "AI 生成中" : (isAIResult ? "AI 小结" : "本地小结")
+        let backgroundColor: Color = hasError
+            ? .orange.opacity(0.62)
+            : (isAIResult || isLoading ? .purple.opacity(0.58) : .white.opacity(0.16))
 
-        return Label(title, systemImage: icon)
-            .font(.caption2.weight(.semibold))
+        return Group {
+            if hasError {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+            } else if isAIResult || isLoading {
+                Text("AI")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+            } else {
+                Image(systemName: "iphone")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+        }
             .foregroundStyle(.white.opacity(0.92))
-            .lineLimit(1)
-            .minimumScaleFactor(0.82)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(.white.opacity(0.16), in: Capsule())
-            .accessibilityLabel(hasError ? "\(title)：\(trimmedError)" : title)
+            .frame(width: 28, height: 28)
+            .background(backgroundColor, in: Circle())
+            .overlay {
+                Circle()
+                    .stroke(.white.opacity(0.12), lineWidth: 1)
+            }
+            .accessibilityLabel(hasError ? "AI 失败，已使用本地小结：\(trimmedError)" : title)
     }
 
     private func heroMetricStrip(_ snapshot: DashboardSnapshot) -> some View {
@@ -1244,23 +1248,39 @@ struct HomeView: View {
                     : "待完成"
             )
 
-            heroMetricTile(
-                icon: "book.closed",
-                title: "复习",
-                value: "\(snapshot.dueItems.count)",
-                caption: snapshot.hasReachedDailyReviewLimit
-                    ? "今日额度已完成"
-                    : snapshot.allDueCount > snapshot.dueItems.count
-                        ? "到期 \(snapshot.allDueCount)"
-                        : "待复习"
-            )
+            Button {
+                activeReviewRoute = HomeReviewRoute(itemIDs: snapshot.dueItemIDs, style: reviewStyle)
+            } label: {
+                heroMetricTile(
+                    icon: "book.closed",
+                    title: "复习",
+                    value: "\(snapshot.dueItems.count)",
+                    caption: snapshot.hasReachedDailyReviewLimit
+                        ? "今日额度已完成"
+                        : snapshot.allDueCount > snapshot.dueItems.count
+                            ? "到期 \(snapshot.allDueCount)"
+                            : "待复习",
+                    showsDisclosureIndicator: true
+                )
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity)
+            .accessibilityHint("进入今日复习")
 
-            heroMetricTile(
-                icon: "text.book.closed",
-                title: "听写",
-                value: "\(snapshot.pendingDictationCount)",
-                caption: "待听写"
-            )
+            Button {
+                openDictationHome(source: "home hero metric")
+            } label: {
+                heroMetricTile(
+                    icon: "text.book.closed",
+                    title: "听写",
+                    value: "\(snapshot.pendingDictationCount)",
+                    caption: "待听写",
+                    showsDisclosureIndicator: true
+                )
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity)
+            .accessibilityHint("进入听写页面")
         }
     }
 
@@ -1268,7 +1288,8 @@ struct HomeView: View {
         icon: String,
         title: String,
         value: String,
-        caption: String
+        caption: String,
+        showsDisclosureIndicator: Bool = false
     ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 5) {
@@ -1282,6 +1303,14 @@ struct HomeView: View {
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.white.opacity(0.88))
                     .lineLimit(1)
+
+                if showsDisclosureIndicator {
+                    Spacer(minLength: 0)
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.72))
+                }
             }
 
             Text(value)
@@ -2108,7 +2137,7 @@ struct HomeView: View {
             Button {
                 activeReviewRoute = HomeReviewRoute(itemIDs: snapshot.dueItemIDs, style: reviewStyle)
             } label: {
-                HomeStatGridCard(icon: "book.closed", title: "今日复习", value: "\(snapshot.dueItems.count)", tint: .orange)
+                HomeStatGridCard(icon: "book.closed", title: "今日待复习", value: "\(snapshot.dueItems.count)", tint: .orange)
             }
             .buttonStyle(.plain)
             .disabled(snapshot.dueItems.isEmpty)
@@ -2122,7 +2151,7 @@ struct HomeView: View {
 
             dailyReviewRecordButton(
                 icon: "checkmark.circle",
-                title: "今日完成",
+                title: "今日已完成",
                 value: "\(snapshot.todayCompletedCount)",
                 tint: .green
             )
@@ -2138,7 +2167,7 @@ struct HomeView: View {
                 value: snapshot.todayAccuracyText,
                 tint: .blue
             )
-            HomeStatGridCard(icon: "star.fill", title: "已掌握", value: "\(snapshot.masteredReviewCount)", tint: .mint)
+            HomeStatGridCard(icon: "star.fill", title: "全部已掌握", value: "\(snapshot.masteredReviewCount)", tint: .mint)
         }
     }
 

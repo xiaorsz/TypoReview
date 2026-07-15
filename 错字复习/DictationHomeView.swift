@@ -169,6 +169,7 @@ struct DictationHomeView: View {
     @State private var isViewVisible = false
     @State private var isSnapshotRefreshInFlight = false
     @State private var needsSnapshotRefreshAfterCurrent = false
+    @State private var isCompletedSectionExpanded = false
 
     private struct DictationHomeSnapshot {
         let todayAndOverdue: [DictationSessionProjection]
@@ -225,19 +226,11 @@ struct DictationHomeView: View {
     }
 
     private var canRenderLiveContent: Bool {
-        scenePhase == .active && UIApplication.shared.applicationState == .active && isViewVisible
+        scenePhase == .active && isViewVisible
     }
     
     var body: some View {
         List {
-            Section {
-                NavigationLink {
-                    AddDictationSessionView()
-                } label: {
-                    Label("新增听写计划", systemImage: "plus.circle.fill")
-                }
-            }
-
             if !isSnapshotLoaded {
                 statusSection(
                     title: canRenderLiveContent ? "正在加载听写安排..." : "正在恢复听写内容...",
@@ -250,36 +243,76 @@ struct DictationHomeView: View {
 
                 if snapshot.isEmpty {
                     Section {
-                        ContentUnavailableView(
-                            "还没有听写记录",
-                            systemImage: "text.book.closed",
-                            description: Text("先设置要听写的内容并指定好日期。")
-                        )
+                        ContentUnavailableView {
+                            Label("还没有听写记录", systemImage: "text.book.closed")
+                        } description: {
+                            Text("先设置要听写的内容并指定好日期。")
+                        } actions: {
+                            NavigationLink {
+                                AddDictationSessionView()
+                            } label: {
+                                Label("新增听写计划", systemImage: "plus")
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
                     }
                 } else {
+                    overviewSection
+
                     let todaySessions = snapshot.todayAndOverdue
                     if !todaySessions.isEmpty {
-                        Section("今日及待办（\(snapshot.todayAndOverdueEntryCount) 条）") {
+                        Section {
                             ForEach(todaySessions) { session in
                                 sessionRow(for: session, entries: snapshot.entries(for: session))
                             }
+                        } header: {
+                            sectionHeader(title: "今日及待办", detail: "\(snapshot.todayAndOverdueEntryCount) 条")
                         }
                     }
 
                     let upcomingSessions = snapshot.upcoming
                     if !upcomingSessions.isEmpty {
-                        Section("未来计划") {
+                        Section {
                             ForEach(upcomingSessions) { session in
                                 sessionRow(for: session, entries: snapshot.entries(for: session))
                             }
+                        } header: {
+                            sectionHeader(title: "未来计划", detail: "\(upcomingSessions.count) 组")
                         }
                     }
 
                     let completedSessions = snapshot.completed
                     if !completedSessions.isEmpty {
-                        Section("已完成") {
-                            ForEach(completedSessions) { session in
+                        let visibleCompletedSessions = isCompletedSectionExpanded
+                            ? completedSessions
+                            : Array(completedSessions.prefix(10))
+
+                        Section {
+                            ForEach(visibleCompletedSessions) { session in
                                 sessionRow(for: session, entries: snapshot.entries(for: session))
+                            }
+                        } header: {
+                            if completedSessions.count > 10 {
+                                Button {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        isCompletedSectionExpanded.toggle()
+                                    }
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Text("已完成")
+                                        Text("\(completedSessions.count) 组")
+                                            .foregroundStyle(.tertiary)
+                                        Spacer()
+                                        Text(isCompletedSectionExpanded ? "收起" : "查看全部")
+                                            .font(.caption2.weight(.medium))
+                                        Image(systemName: isCompletedSectionExpanded ? "chevron.up" : "chevron.down")
+                                            .font(.caption2.weight(.semibold))
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            } else {
+                                sectionHeader(title: "已完成", detail: "\(completedSessions.count) 组")
                             }
                         }
                     }
@@ -290,6 +323,16 @@ struct DictationHomeView: View {
         .background(Color(uiColor: .systemGroupedBackground))
         .navigationTitle("听写安排")
         .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink {
+                    AddDictationSessionView()
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("新增听写计划")
+            }
+        }
         .onAppear {
             isViewVisible = true
             #if DEBUG
@@ -378,6 +421,73 @@ struct DictationHomeView: View {
         }
     }
 
+    private var overviewSection: some View {
+        Section {
+            HStack(spacing: 8) {
+                overviewMetric(
+                    icon: "text.book.closed.fill",
+                    title: "今日待听写",
+                    value: snapshot.todayAndOverdueEntryCount,
+                    tint: .blue
+                )
+                overviewMetric(
+                    icon: "calendar.badge.clock",
+                    title: "未来计划",
+                    value: snapshot.upcoming.count,
+                    tint: .indigo
+                )
+                overviewMetric(
+                    icon: "checkmark.circle.fill",
+                    title: "已完成",
+                    value: snapshot.completed.count,
+                    tint: .green
+                )
+            }
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+            .listRowBackground(Color.clear)
+        }
+    }
+
+    private func overviewMetric(icon: String, title: String, value: Int, tint: Color) -> some View {
+        VStack(spacing: 7) {
+            HStack(spacing: 7) {
+                Image(systemName: icon)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 26, height: 26)
+                    .background(tint.opacity(0.1), in: Circle())
+
+                Text("\(value)")
+                    .font(.system(.title2, design: .rounded, weight: .bold))
+                    .foregroundStyle(.primary)
+                    .contentTransition(.numericText())
+            }
+
+            Text(title)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+        }
+        .frame(maxWidth: .infinity, minHeight: 66, alignment: .center)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 10)
+        .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(tint.opacity(0.1), lineWidth: 1)
+        }
+    }
+
+    private func sectionHeader(title: String, detail: String) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text(detail)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
     private func requestSnapshotRefresh(reason: String, delay: TimeInterval = 0.08) {
         #if DEBUG
         DebugPerf.mark("DictationHomeView requestSnapshotRefresh reason=\(reason) delay=\(delay)")
@@ -449,8 +559,9 @@ struct DictationHomeView: View {
 
     private func sessionRow(for session: DictationSessionProjection, entries: [DictationEntryProjection]) -> some View {
         let routeKind: DictationRoute.Kind = (session.isReviewed || session.isFinished) ? .review : .session
+        let tint = statusColor(for: session)
 
-        return HStack(spacing: 0) {
+        return HStack(spacing: 10) {
             Button {
                 #if DEBUG
                 DebugPerf.mark("DictationHomeView session row tap title=\(session.title) kind=\(routeKind)")
@@ -458,23 +569,43 @@ struct DictationHomeView: View {
                 #endif
                 activeRoute = DictationRoute(sessionID: session.id, title: session.title, kind: routeKind)
             } label: {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text(session.title)
-                            .font(.headline)
-                        Spacer()
-                        Text(statusText(for: session))
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(statusColor(for: session))
-                    }
+                HStack(spacing: 12) {
+                    Image(systemName: session.isReviewed ? "checkmark" : "waveform")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(tint)
+                        .frame(width: 34, height: 34)
+                        .background(tint.opacity(0.09), in: Circle())
 
-                    HStack {
-                        Text("\(session.type.displayName) · \(entries.count) 条")
-                        Spacer()
-                        Text(session.scheduledDate.formatted(date: .abbreviated, time: .omitted))
-                            .font(.caption)
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack(spacing: 8) {
+                            Text(session.title)
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+
+                            Spacer(minLength: 4)
+
+                            Text(statusText(for: session))
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(tint)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(tint.opacity(0.09), in: Capsule())
+                        }
+
+                        HStack(spacing: 10) {
+                            Label("\(entries.count) 条", systemImage: "list.number")
+                            Label(
+                                session.scheduledDate.formatted(date: .abbreviated, time: .omitted),
+                                systemImage: "calendar"
+                            )
+                            Spacer(minLength: 0)
+                            Text(session.type.displayName)
+                                .lineLimit(1)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
-                    .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
@@ -489,16 +620,18 @@ struct DictationHomeView: View {
                     #endif
                     previewSession = session
                 } label: {
-                    Image(systemName: "eye.circle")
-                        .font(.title2)
-                        .foregroundStyle(.blue.opacity(0.8))
-                        .padding(.leading, 12)
-                        .padding(.vertical, 4)
+                    Image(systemName: "eye")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.blue)
+                        .frame(width: 32, height: 32)
+                        .background(Color.blue.opacity(0.08), in: Circle())
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("预习 \(session.title)")
             }
         }
+        .padding(.vertical, 5)
         .iOS17SafeSwipeActions {
             Button(role: .destructive) {
                 deleteSession(session)
