@@ -2246,24 +2246,27 @@ struct HomeView: View {
         tint: Color
     ) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            Image(systemName: icon)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(tint)
-                .frame(width: 28, height: 28)
-                .background(tint.opacity(0.1), in: Circle())
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 28, height: 28)
+                    .background(tint.opacity(0.1), in: Circle())
 
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.78)
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+            }
 
             Text(subtitle)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .padding(.leading, 36)
         }
-        .frame(maxWidth: .infinity, minHeight: 82, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 68, alignment: .leading)
         .padding(12)
         .background(tint.opacity(0.055), in: RoundedRectangle(cornerRadius: 14))
         .overlay(

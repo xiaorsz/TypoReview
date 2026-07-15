@@ -12,42 +12,23 @@ struct LibraryView: View {
 
     private let scheduler = ReviewScheduler()
 
-    private var canonicalItems: [ReviewItem] {
-        ReviewContentIdentity.canonicalReviewItems(from: reviewItems)
-            .sorted {
-                if $0.updatedAt != $1.updatedAt {
-                    return $0.updatedAt > $1.updatedAt
-                }
-                return $0.id.uuidString < $1.id.uuidString
-            }
-    }
-
-    private var filteredItems: [ReviewItem] {
-        let now = Date()
-        let scopedItems = canonicalItems.filter { item in
-            matches(item, filter: filter, referenceDate: now) && matches(item, stageFilter: stageFilter)
-        }
-
-        guard !searchText.isEmpty else { return scopedItems }
-        return scopedItems.filter {
-            $0.content.localizedCaseInsensitiveContains(searchText) ||
-            $0.prompt.localizedCaseInsensitiveContains(searchText) ||
-            $0.source.localizedCaseInsensitiveContains(searchText)
-        }
-    }
-
-    private var displayedItems: [ReviewItem] {
-        Array(filteredItems.prefix(displayedItemLimit))
+    private struct ViewSnapshot {
+        let filterCounts: [LibraryFilter: Int]
+        let stageFilterCounts: [LibraryStageFilter: Int]
+        let filteredItems: [ReviewItem]
+        let displayedItems: [ReviewItem]
     }
 
     var body: some View {
+        let snapshot = makeViewSnapshot()
+
         List {
             Section {
                 VStack(alignment: .leading, spacing: 8) {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
                             ForEach(LibraryFilter.allCases) { item in
-                                filterButton(item)
+                                filterButton(item, count: snapshot.filterCounts[item, default: 0])
                             }
                         }
                     }
@@ -55,7 +36,7 @@ struct LibraryView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
                             ForEach(LibraryStageFilter.options) { item in
-                                stageFilterButton(item)
+                                stageFilterButton(item, count: snapshot.stageFilterCounts[item, default: 0])
                             }
                         }
                     }
@@ -64,7 +45,7 @@ struct LibraryView: View {
                 .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 6, trailing: 0))
             }
 
-            if filteredItems.isEmpty {
+            if snapshot.filteredItems.isEmpty {
                 ContentUnavailableView {
                     Label(emptyTitle, systemImage: emptyIcon)
                 } description: {
@@ -87,7 +68,7 @@ struct LibraryView: View {
                     }
                 }
             } else {
-                ForEach(displayedItems) { item in
+                ForEach(snapshot.displayedItems) { item in
                     NavigationLink {
                         AddReviewItemView(item: item)
                     } label: {
@@ -119,7 +100,7 @@ struct LibraryView: View {
                     }
                 }
 
-                paginationFooter
+                paginationFooter(snapshot: snapshot)
             }
         }
         .listStyle(.insetGrouped)
@@ -155,6 +136,60 @@ struct LibraryView: View {
         }
     }
 
+    private func makeViewSnapshot(referenceDate: Date = .now) -> ViewSnapshot {
+        let canonicalItems = ReviewContentIdentity.canonicalReviewItems(from: reviewItems)
+            .sorted {
+                if $0.updatedAt != $1.updatedAt {
+                    return $0.updatedAt > $1.updatedAt
+                }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+
+        var filterCounts = Dictionary(
+            uniqueKeysWithValues: LibraryFilter.allCases.map { ($0, 0) }
+        )
+        var stageFilterCounts = Dictionary(
+            uniqueKeysWithValues: LibraryStageFilter.options.map { ($0, 0) }
+        )
+        var scopedItems: [ReviewItem] = []
+        scopedItems.reserveCapacity(canonicalItems.count)
+
+        for item in canonicalItems {
+            for candidateFilter in LibraryFilter.allCases
+            where matches(item, filter: candidateFilter, referenceDate: referenceDate) {
+                filterCounts[candidateFilter, default: 0] += 1
+            }
+
+            guard matches(item, filter: filter, referenceDate: referenceDate) else { continue }
+
+            for candidateStage in LibraryStageFilter.options
+            where matches(item, stageFilter: candidateStage) {
+                stageFilterCounts[candidateStage, default: 0] += 1
+            }
+
+            guard matches(item, stageFilter: stageFilter) else { continue }
+            scopedItems.append(item)
+        }
+
+        let filteredItems: [ReviewItem]
+        if searchText.isEmpty {
+            filteredItems = scopedItems
+        } else {
+            filteredItems = scopedItems.filter {
+                $0.content.localizedCaseInsensitiveContains(searchText) ||
+                $0.prompt.localizedCaseInsensitiveContains(searchText) ||
+                $0.source.localizedCaseInsensitiveContains(searchText)
+            }
+        }
+
+        return ViewSnapshot(
+            filterCounts: filterCounts,
+            stageFilterCounts: stageFilterCounts,
+            filteredItems: filteredItems,
+            displayedItems: Array(filteredItems.prefix(displayedItemLimit))
+        )
+    }
+
     private func matches(_ item: ReviewItem, filter: LibraryFilter, referenceDate: Date) -> Bool {
         switch filter {
         case .all:
@@ -168,16 +203,7 @@ struct LibraryView: View {
         }
     }
 
-    private func filterCount(_ filter: LibraryFilter) -> Int {
-        let now = Date()
-        return canonicalItems.reduce(into: 0) { count, item in
-            if matches(item, filter: filter, referenceDate: now) {
-                count += 1
-            }
-        }
-    }
-
-    private func filterButton(_ item: LibraryFilter) -> some View {
+    private func filterButton(_ item: LibraryFilter, count: Int) -> some View {
         let isSelected = filter == item
 
         return Button {
@@ -188,7 +214,7 @@ struct LibraryView: View {
         } label: {
             HStack(spacing: 5) {
                 Text(item.rawValue)
-                Text("\(filterCount(item))")
+                Text("\(count)")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(isSelected ? .white.opacity(0.82) : .secondary)
             }
@@ -219,16 +245,7 @@ struct LibraryView: View {
         }
     }
 
-    private func stageFilterCount(_ stageFilter: LibraryStageFilter) -> Int {
-        let now = Date()
-        return canonicalItems.reduce(into: 0) { count, item in
-            if matches(item, filter: filter, referenceDate: now) && matches(item, stageFilter: stageFilter) {
-                count += 1
-            }
-        }
-    }
-
-    private func stageFilterButton(_ item: LibraryStageFilter) -> some View {
+    private func stageFilterButton(_ item: LibraryStageFilter, count: Int) -> some View {
         let isSelected = stageFilter == item
 
         return Button {
@@ -239,7 +256,7 @@ struct LibraryView: View {
         } label: {
             HStack(spacing: 5) {
                 Text(item.title)
-                Text("\(stageFilterCount(item))")
+                Text("\(count)")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(isSelected ? Color.white.opacity(0.82) : Color.secondary)
             }
@@ -260,15 +277,15 @@ struct LibraryView: View {
     }
 
     @ViewBuilder
-    private var paginationFooter: some View {
-        if filteredItems.count > 50 {
+    private func paginationFooter(snapshot: ViewSnapshot) -> some View {
+        if snapshot.filteredItems.count > 50 {
             Section {
                 VStack(spacing: 8) {
-                    Text("已显示 \(displayedItems.count) / 共 \(filteredItems.count) 条")
+                    Text("已显示 \(snapshot.displayedItems.count) / 共 \(snapshot.filteredItems.count) 条")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    if displayedItems.count < filteredItems.count {
+                    if snapshot.displayedItems.count < snapshot.filteredItems.count {
                         Button {
                             displayedItemLimit += 50
                         } label: {

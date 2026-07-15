@@ -11,6 +11,7 @@
 		02170754DD292DCFA5C74304 /* MediaLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCF86A62DB2A1AA848434BAC /* MediaLibraryStore.swift */; };
 		03448C3E10ED5C62E9AC4EF0 /* Points.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DBB2F7F33A81E1F70807E72 /* Points.swift */; };
 		05D5B2F072C304A399E4A4F8 /* MediaLibraryStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = F77C7D3F87D5519E83569CA0 /* MediaLibraryStorage.swift */; };
+		0C54AB9F68BF65DBEBD1214A /* Grade5EnglishDictationPlanImporterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D30746825CCB6331C055DBD /* Grade5EnglishDictationPlanImporterTests.swift */; };
 		0CF6EA9D83611EC51A035122 /* ReviewRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ACD58BD800639DC62AB3988 /* ReviewRecord.swift */; };
 		0F2CA7D056FF1BE32917CB6D /* HomeDashboardDataLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1AE669F908DAA7398525F62 /* HomeDashboardDataLoader.swift */; };
 		163A4487C87EE2A920542397 /* EnglishGlossService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C15C5653E94F3CC37C6CB72E /* EnglishGlossService.swift */; };
@@ -52,6 +53,7 @@
 		7350AF86868396BB77881B4A /* AddReviewItemView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFFC43C9FF7768E732522AE5 /* AddReviewItemView.swift */; };
 		7C846FEEA034B97E5EA18910 /* ScheduleItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0A42DE1DFCACBAA52B4531 /* ScheduleItem.swift */; };
 		7DA63F70908CC43C3F19C94F /* TaskExecutionSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D919BCC4163E4167EBAE825F /* TaskExecutionSupport.swift */; };
+		7E8182BE38D938589C41978D /* Grade5EnglishDictationPlanImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8CF86AA7FC57EDBD7D543EF /* Grade5EnglishDictationPlanImporter.swift */; };
 		8101EFDBFE693CE7C0CEF6CE /* DataBackup.swift in Sources */ = {isa = PBXBuildFile; fileRef = D52668595FD4C40411DDCF20 /* DataBackup.swift */; };
 		8B58527C28E31748BB6A27C5 /* AddDictationSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35B9623148B3E1F3AF728F7B /* AddDictationSessionView.swift */; };
 		8DD0DB1825D5A2A8FBA4F3AD /* Contents.json in Resources */ = {isa = PBXBuildFile; fileRef = 86837560373D9A64F21BD7FB /* Contents.json */; };
@@ -64,6 +66,7 @@
 		A046BF33825080EEED7D2285 /* TaskItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6A74373962C3C4C62923384 /* TaskItem.swift */; };
 		AC5DDB6A0F340EAB0D39549B /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A99D2AE03D18721598C7D8E5 /* Localizable.strings */; };
 		B7EB4DA6A822CF40AB65AFB9 /* SpeechAudioSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B6BED7625915F1CA069DAB6 /* SpeechAudioSession.swift */; };
+		BA1C652DD2F6014D8E8855A9 /* Grade5ChineseDictationPlanImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68697C00FBC6375BFCE2DC7D /* Grade5ChineseDictationPlanImporter.swift */; };
 		BA3B7C0964D938CF4B19305E /* DictationEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0F396BBF587A380BEE3F397 /* DictationEntry.swift */; };
 		BB05FCD5CE7DA8AFAA98C5BD /* ReviewScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = C78706DDBA19DB8AE3305527 /* ReviewScheduler.swift */; };
 		BCA1F6051C1B8C07E1210BF2 /* AppDataChangeCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC2B604530213B2B32EE218E /* AppDataChangeCenter.swift */; };
@@ -81,6 +84,7 @@
 		F24EAA2C2EDFBE490535AC3E /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BED107080E55F2BD20BBDA2 /* RootTabView.swift */; };
 		F2639B6BCE88ED5084EADFDB /* AddScheduleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A4D0019865BF5BEADD017D9 /* AddScheduleView.swift */; };
 		F57CFB6F0C8C4D236FB6878D /* TypoWidgetLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0719D37F7BD0FEE00156CFFB /* TypoWidgetLiveActivity.swift */; };
+		F806FCD140EADB3FA9BB9620 /* Grade5ChineseDictationPlanImporterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC14A829652113A150E05B1A /* Grade5ChineseDictationPlanImporterTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -140,6 +144,7 @@
 		54E7E4D3A83E8BB53D0F1DBA /* DictationReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationReviewView.swift; sourceTree = "<group>"; };
 		639EFA48907D78F1554913B1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		67CBEE4738C53CAF8BFD0E09 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		68697C00FBC6375BFCE2DC7D /* Grade5ChineseDictationPlanImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Grade5ChineseDictationPlanImporter.swift; sourceTree = "<group>"; };
 		69297C3450DFB660ED1F3DE2 /* ObjectiveCExceptionCatcher.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ObjectiveCExceptionCatcher.m; sourceTree = "<group>"; };
 		6A4D0019865BF5BEADD017D9 /* AddScheduleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddScheduleView.swift; sourceTree = "<group>"; };
 		6BED107080E55F2BD20BBDA2 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
@@ -148,6 +153,7 @@
 		73337980C30B8D19A0BB0A00 /* ReviewSessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewSessionView.swift; sourceTree = "<group>"; };
 		784F6272A4455A0B3B474874 /* DictationSessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationSessionView.swift; sourceTree = "<group>"; };
 		7B43E29B6728FBAA1D22D769 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
+		7D30746825CCB6331C055DBD /* Grade5EnglishDictationPlanImporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Grade5EnglishDictationPlanImporterTests.swift; sourceTree = "<group>"; };
 		7E8B64A4B415CF43C0F3EEDD /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		7EAC75D915715917D72FF083 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
 		7EFCE1B1D4218D4C5A356E18 /* TypoWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypoWidget.swift; sourceTree = "<group>"; };
@@ -180,10 +186,12 @@
 		D919BCC4163E4167EBAE825F /* TaskExecutionSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskExecutionSupport.swift; sourceTree = "<group>"; };
 		DC2B604530213B2B32EE218E /* AppDataChangeCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDataChangeCenter.swift; sourceTree = "<group>"; };
 		DCF86A62DB2A1AA848434BAC /* MediaLibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryStore.swift; sourceTree = "<group>"; };
+		E8CF86AA7FC57EDBD7D543EF /* Grade5EnglishDictationPlanImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Grade5EnglishDictationPlanImporter.swift; sourceTree = "<group>"; };
 		E981311286FBC45F0EFB2166 /* TypoWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TypoWidget.entitlements; sourceTree = "<group>"; };
 		EC0219F9D579B8E10D54BCAE /* AppIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIntent.swift; sourceTree = "<group>"; };
 		F77C7D3F87D5519E83569CA0 /* MediaLibraryStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryStorage.swift; sourceTree = "<group>"; };
 		F8826455F72FA5B533C0554E /* MediaPlaybackCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaPlaybackCoordinator.swift; sourceTree = "<group>"; };
+		FC14A829652113A150E05B1A /* Grade5ChineseDictationPlanImporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Grade5ChineseDictationPlanImporterTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -213,6 +221,8 @@
 				9408EBC5E29D4004352C8DC2 /* DictationSession.swift */,
 				784F6272A4455A0B3B474874 /* DictationSessionView.swift */,
 				C15C5653E94F3CC37C6CB72E /* EnglishGlossService.swift */,
+				68697C00FBC6375BFCE2DC7D /* Grade5ChineseDictationPlanImporter.swift */,
+				E8CF86AA7FC57EDBD7D543EF /* Grade5EnglishDictationPlanImporter.swift */,
 				B1AE669F908DAA7398525F62 /* HomeDashboardDataLoader.swift */,
 				A320D12ED2C802E15DB792C0 /* HomeView.swift */,
 				639EFA48907D78F1554913B1 /* Info.plist */,
@@ -253,6 +263,8 @@
 		2A53280D2C178BB4D621FC99 /* TypoReviewTests */ = {
 			isa = PBXGroup;
 			children = (
+				FC14A829652113A150E05B1A /* Grade5ChineseDictationPlanImporterTests.swift */,
+				7D30746825CCB6331C055DBD /* Grade5EnglishDictationPlanImporterTests.swift */,
 				3B5B13F8AB47E2DB03305856 /* ReviewSchedulerTests.swift */,
 			);
 			path = TypoReviewTests;
@@ -481,6 +493,8 @@
 				52C80639956553686BF9E68F /* DictationSession.swift in Sources */,
 				C4A164C2713F7EBDE40E4E17 /* DictationSessionView.swift in Sources */,
 				163A4487C87EE2A920542397 /* EnglishGlossService.swift in Sources */,
+				BA1C652DD2F6014D8E8855A9 /* Grade5ChineseDictationPlanImporter.swift in Sources */,
+				7E8182BE38D938589C41978D /* Grade5EnglishDictationPlanImporter.swift in Sources */,
 				0F2CA7D056FF1BE32917CB6D /* HomeDashboardDataLoader.swift in Sources */,
 				67A2D2AB90E5C98ED3ACD524 /* HomeView.swift in Sources */,
 				1F5BBAEFD6C810FCEBCB7CBD /* LibraryView.swift in Sources */,
@@ -515,6 +529,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F806FCD140EADB3FA9BB9620 /* Grade5ChineseDictationPlanImporterTests.swift in Sources */,
+				0C54AB9F68BF65DBEBD1214A /* Grade5EnglishDictationPlanImporterTests.swift in Sources */,
 				625D57263F5433D997BF62C9 /* ReviewSchedulerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

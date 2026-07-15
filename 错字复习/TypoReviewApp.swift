@@ -246,6 +246,19 @@ struct TypoReviewApp: App {
         )
         Self.migrateLegacyTaskExecutionsIfNeeded(in: modelContext)
         TaskExecutionSupport.migrateLegacySubtasksIfNeeded(in: modelContext)
+        do {
+            let removedSubtaskCount = try TaskExecutionSupport.deduplicateSubtasks(in: modelContext)
+            #if DEBUG
+            if removedSubtaskCount > 0 {
+                DebugPerf.mark("TypoReviewApp deduplicated task subtasks count=\(removedSubtaskCount)")
+            }
+            #endif
+        } catch {
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp task subtask deduplication failed error=\(error.localizedDescription)")
+            #endif
+            print("Task subtask deduplication failed: \(error)")
+        }
         _ = try? AppSettings.ensureSingleton(in: modelContext)
         Self.normalizeReviewDatesIfNeeded(
             in: modelContext,
@@ -265,6 +278,40 @@ struct TypoReviewApp: App {
             in: modelContext,
             appGroupIdentifier: appGroupIdentifier
         )
+
+        do {
+            if let result = try Grade5ChineseDictationPlanImporter.importIfRequested(in: modelContext) {
+                #if DEBUG
+                DebugPerf.mark(
+                    "Grade 5 dictation plan import insertedSessions=\(result.insertedSessions) refreshedSessions=\(result.refreshedSessions) entries=\(result.insertedEntries)"
+                )
+                #endif
+            }
+        } catch {
+            #if DEBUG
+            DebugPerf.mark("Grade 5 dictation plan import failed error=\(error.localizedDescription)")
+            #endif
+            print("Grade 5 dictation plan import failed: \(error)")
+        }
+
+        do {
+            let importDefaults = appGroupIdentifier.flatMap { UserDefaults(suiteName: $0) } ?? .standard
+            if let result = try Grade5EnglishDictationPlanImporter.importIfNeeded(
+                in: modelContext,
+                defaults: importDefaults
+            ) {
+                #if DEBUG
+                DebugPerf.mark(
+                    "Grade 5 English plan import insertedSessions=\(result.insertedSessions) refreshedSessions=\(result.refreshedSessions) entries=\(result.insertedEntries)"
+                )
+                #endif
+            }
+        } catch {
+            #if DEBUG
+            DebugPerf.mark("Grade 5 English plan import failed error=\(error.localizedDescription)")
+            #endif
+            print("Grade 5 English plan import failed: \(error)")
+        }
 
         #if DEBUG
         DebugPerf.mark("TypoReviewApp deferred startup maintenance end")

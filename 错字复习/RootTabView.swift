@@ -61,6 +61,12 @@ struct RootTabView: View {
                 legacyTabView
             }
         }
+        .onChange(of: selectedLegacyTab) { _, newTab in
+            markLegacyTabVisited(newTab)
+            #if DEBUG
+            DebugPerf.mark("RootTabView selectedLegacyTab=\(newTab)")
+            #endif
+        }
         .task {
             #if DEBUG
             if AppStorePreviewMode.isEnabled {
@@ -142,32 +148,43 @@ struct RootTabView: View {
     private var modernTabView: some View {
         TabView(selection: $selectedLegacyTab) {
             Tab("首页", systemImage: "house.fill", value: LegacyTab.home) {
-                NavigationStack {
+                tabRoot(for: .home) {
                     HomeView()
                 }
             }
 
             Tab("题库", systemImage: "square.grid.2x2.fill", value: LegacyTab.library) {
-                NavigationStack {
-                    LibraryView()
+                tabRoot(for: .library) {
+                    DeferredTabContent(
+                        title: "题库",
+                        loadingMessage: "正在打开题库..."
+                    ) {
+                        LibraryView()
+                    }
                 }
             }
 
             Tab("听写", systemImage: "text.book.closed.fill", value: LegacyTab.dictation) {
-                NavigationStack {
-                    DictationHomeView()
+                tabRoot(for: .dictation) {
+                    DeferredDictationHomeView()
                 }
             }
 
             Tab("待办", systemImage: "checklist", value: LegacyTab.tasks) {
-                NavigationStack {
-                    TasksView()
+                tabRoot(for: .tasks) {
+                    DeferredTasksHomeView()
                 }
             }
 
             Tab("设置", systemImage: "gearshape.fill", value: LegacyTab.settings) {
-                NavigationStack {
-                    SettingsView()
+                tabRoot(for: .settings) {
+                    DeferredTabContent(
+                        title: "设置",
+                        loadingMessage: "正在打开设置...",
+                        delayNanoseconds: 80_000_000
+                    ) {
+                        SettingsView()
+                    }
                 }
             }
         }
@@ -176,7 +193,7 @@ struct RootTabView: View {
 
     private var legacyTabView: some View {
         TabView(selection: $selectedLegacyTab) {
-            legacyTabRoot(for: .home) {
+            tabRoot(for: .home) {
                 HomeView()
             }
             .tabItem {
@@ -184,15 +201,20 @@ struct RootTabView: View {
             }
             .tag(LegacyTab.home)
 
-            legacyTabRoot(for: .library) {
-                LibraryView()
+            tabRoot(for: .library) {
+                DeferredTabContent(
+                    title: "题库",
+                    loadingMessage: "正在打开题库..."
+                ) {
+                    LibraryView()
+                }
             }
             .tabItem {
                 Label("题库", systemImage: "square.grid.2x2.fill")
             }
             .tag(LegacyTab.library)
 
-            legacyTabRoot(for: .dictation) {
+            tabRoot(for: .dictation) {
                 DeferredDictationHomeView()
             }
             .tabItem {
@@ -200,7 +222,7 @@ struct RootTabView: View {
             }
             .tag(LegacyTab.dictation)
 
-            legacyTabRoot(for: .tasks) {
+            tabRoot(for: .tasks) {
                 DeferredTasksHomeView()
             }
             .tabItem {
@@ -208,24 +230,24 @@ struct RootTabView: View {
             }
             .tag(LegacyTab.tasks)
 
-            legacyTabRoot(for: .settings) {
-                SettingsView()
+            tabRoot(for: .settings) {
+                DeferredTabContent(
+                    title: "设置",
+                    loadingMessage: "正在打开设置...",
+                    delayNanoseconds: 80_000_000
+                ) {
+                    SettingsView()
+                }
             }
             .tabItem {
                 Label("设置", systemImage: "gearshape.fill")
             }
             .tag(LegacyTab.settings)
         }
-        .onChange(of: selectedLegacyTab) { _, newTab in
-            markLegacyTabVisited(newTab)
-            #if DEBUG
-            DebugPerf.mark("RootTabView selectedLegacyTab=\(newTab)")
-            #endif
-        }
     }
 
     @ViewBuilder
-    private func legacyTabRoot<Content: View>(
+    private func tabRoot<Content: View>(
         for tab: LegacyTab,
         @ViewBuilder content: () -> Content
     ) -> some View {
@@ -401,6 +423,79 @@ struct RootTabView: View {
             DebugPerf.mark("RootTabView starting iOS17 background scene shield after settle")
             #endif
             IOS17BackgroundSceneShield.shared.start()
+        }
+    }
+}
+
+private struct DeferredTabContent<Content: View>: View {
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var isReady = false
+    @State private var activationTask: Task<Void, Never>?
+
+    let title: String
+    let loadingMessage: String
+    let delayNanoseconds: UInt64
+    private let content: () -> Content
+
+    init(
+        title: String,
+        loadingMessage: String,
+        delayNanoseconds: UInt64 = 120_000_000,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.title = title
+        self.loadingMessage = loadingMessage
+        self.delayNanoseconds = delayNanoseconds
+        self.content = content
+    }
+
+    var body: some View {
+        Group {
+            if isReady {
+                content()
+            } else {
+                List {
+                    Section {
+                        HStack(spacing: 12) {
+                            ProgressView()
+                            Text(loadingMessage)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 20)
+                    }
+                }
+                .scrollContentBackground(.hidden)
+                .background(Color(uiColor: .systemGroupedBackground))
+                .navigationTitle(title)
+                .navigationBarTitleDisplayMode(.large)
+            }
+        }
+        .onAppear {
+            activateAfterTabTransition()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                activateAfterTabTransition()
+            } else {
+                activationTask?.cancel()
+            }
+        }
+        .onDisappear {
+            activationTask?.cancel()
+        }
+    }
+
+    private func activateAfterTabTransition() {
+        activationTask?.cancel()
+        guard !isReady, scenePhase == .active else { return }
+
+        activationTask = Task { @MainActor in
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            guard !Task.isCancelled, scenePhase == .active else { return }
+            isReady = true
         }
     }
 }

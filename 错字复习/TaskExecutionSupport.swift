@@ -195,9 +195,10 @@ struct TaskSubitemProjection: Identifiable, Sendable {
     let note: String
     let detail: String
     var status: TaskExecutionStatus
-    let sortOrder: Int
+    var sortOrder: Int
     let isArchived: Bool
     let createdAt: Date
+    let updatedAt: Date
 
     init(_ subtask: TaskSubitem) {
         id = subtask.id
@@ -210,6 +211,39 @@ struct TaskSubitemProjection: Identifiable, Sendable {
         sortOrder = subtask.sortOrder
         isArchived = subtask.isArchived
         createdAt = subtask.createdAt
+        updatedAt = subtask.updatedAt
+    }
+}
+
+private struct TaskSubitemDeduplicationKey: Hashable {
+    let parentTaskID: UUID
+    let taskExecutionID: UUID
+    let sortOrder: Int
+    let title: String
+    let note: String
+    let detail: String
+    let isArchived: Bool
+
+    init?(_ subtask: TaskSubitem) {
+        guard let taskExecutionID = subtask.taskExecutionID else { return nil }
+        parentTaskID = subtask.parentTaskID
+        self.taskExecutionID = taskExecutionID
+        sortOrder = subtask.sortOrder
+        title = subtask.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        note = subtask.note.trimmingCharacters(in: .whitespacesAndNewlines)
+        detail = subtask.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        isArchived = subtask.isArchived
+    }
+
+    init?(_ subtask: TaskSubitemProjection) {
+        guard let taskExecutionID = subtask.taskExecutionID else { return nil }
+        parentTaskID = subtask.parentTaskID
+        self.taskExecutionID = taskExecutionID
+        sortOrder = subtask.sortOrder
+        title = subtask.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        note = subtask.note.trimmingCharacters(in: .whitespacesAndNewlines)
+        detail = subtask.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        isArchived = subtask.isArchived
     }
 }
 
@@ -484,6 +518,78 @@ enum TaskExecutionSupport {
         Calendar.current.startOfDay(for: date)
     }
 
+    /// 修复旧版快速连点或同步冲突产生的重复子任务。
+    /// 只合并 UUID 相同，或“同次执行 + 同排序位置 + 内容完全相同”的记录，
+    /// 避免误删用户有意创建的同名子任务。
+    @discardableResult
+    static func deduplicateSubtasks(in modelContext: ModelContext) throws -> Int {
+        let allSubtasks = try modelContext.fetch(FetchDescriptor<TaskSubitem>())
+        guard allSubtasks.count > 1 else { return 0 }
+
+        var deletedCount = 0
+        var idSurvivors: [TaskSubitem] = []
+        let groupsByID = Dictionary(grouping: allSubtasks, by: \.id)
+
+        for group in groupsByID.values {
+            let winner = group.max(by: subtaskDeduplicationPreference)!
+            idSurvivors.append(winner)
+            for duplicate in group where duplicate !== winner {
+                modelContext.delete(duplicate)
+                deletedCount += 1
+            }
+        }
+
+        let keyedSurvivors = idSurvivors.compactMap { subtask -> (TaskSubitemDeduplicationKey, TaskSubitem)? in
+            guard let key = TaskSubitemDeduplicationKey(subtask) else { return nil }
+            return (key, subtask)
+        }
+        let groupsByContent = Dictionary(grouping: keyedSurvivors, by: { $0.0 })
+
+        for group in groupsByContent.values where group.count > 1 {
+            let candidates = group.map(\.1)
+            let winner = candidates.max(by: subtaskDeduplicationPreference)!
+            for duplicate in candidates where duplicate !== winner {
+                modelContext.delete(duplicate)
+                deletedCount += 1
+            }
+        }
+
+        if deletedCount > 0 {
+            try modelContext.save()
+        }
+        return deletedCount
+    }
+
+    private static func deduplicatedSubtasks(_ subtasks: [TaskSubitem]) -> [TaskSubitem] {
+        let idWinners = Dictionary(grouping: subtasks, by: \.id).values.compactMap {
+            $0.max(by: subtaskDeduplicationPreference)
+        }
+        let unkeyed = idWinners.filter { TaskSubitemDeduplicationKey($0) == nil }
+        let keyed = idWinners.compactMap { subtask -> (TaskSubitemDeduplicationKey, TaskSubitem)? in
+            guard let key = TaskSubitemDeduplicationKey(subtask) else { return nil }
+            return (key, subtask)
+        }
+        let contentWinners = Dictionary(grouping: keyed, by: { $0.0 }).values.compactMap { group in
+            group.map(\.1).max(by: subtaskDeduplicationPreference)
+        }
+        return (unkeyed + contentWinners).sorted(by: sortSubtasks)
+    }
+
+    static func deduplicatedSubtasks(_ subtasks: [TaskSubitemProjection]) -> [TaskSubitemProjection] {
+        let idWinners = Dictionary(grouping: subtasks, by: \.id).values.compactMap {
+            $0.max(by: subtaskDeduplicationPreference)
+        }
+        let unkeyed = idWinners.filter { TaskSubitemDeduplicationKey($0) == nil }
+        let keyed = idWinners.compactMap { subtask -> (TaskSubitemDeduplicationKey, TaskSubitemProjection)? in
+            guard let key = TaskSubitemDeduplicationKey(subtask) else { return nil }
+            return (key, subtask)
+        }
+        let contentWinners = Dictionary(grouping: keyed, by: { $0.0 }).values.compactMap { group in
+            group.map(\.1).max(by: subtaskDeduplicationPreference)
+        }
+        return (unkeyed + contentWinners).sorted(by: sortSubtasks)
+    }
+
     static func legacyTemplateSubtasks(
         for taskID: UUID,
         in subtasks: [TaskSubitem]
@@ -502,12 +608,25 @@ enum TaskExecutionSupport {
         in subtasks: [TaskSubitem]
     ) -> [TaskSubitem] {
         guard let executionRecord else { return [] }
-        return subtasks
-            .filter {
+        return deduplicatedSubtasks(
+            subtasks.filter {
                 $0.taskExecutionID == executionRecord.id &&
                 !$0.isArchived
             }
-            .sorted(by: sortSubtasks)
+        )
+    }
+
+    static func executionSubtasks(
+        for executionRecord: TaskExecutionRecordProjection?,
+        in subtasks: [TaskSubitemProjection]
+    ) -> [TaskSubitemProjection] {
+        guard let executionRecord else { return [] }
+        return deduplicatedSubtasks(
+            subtasks.filter {
+                $0.taskExecutionID == executionRecord.id &&
+                !$0.isArchived
+            }
+        )
     }
 
     static func executionRecord(
@@ -561,7 +680,9 @@ enum TaskExecutionSupport {
         let taskExecutions = executions.filter { $0.taskID == task.id }
         let executionsByDate = Dictionary(grouping: taskExecutions) { day(for: $0.occurrenceDate) }
         
-        let validSubtasks = allSubtasks.filter { $0.parentTaskID == task.id && $0.taskExecutionID != nil && !$0.isArchived }
+        let validSubtasks = TaskExecutionSupport.deduplicatedSubtasks(
+            allSubtasks.filter { $0.parentTaskID == task.id && $0.taskExecutionID != nil && !$0.isArchived }
+        )
         let subtasksByExecutionID = Dictionary(grouping: validSubtasks) { $0.taskExecutionID! }
 
         return task.scheduledOccurrenceDates(upTo: date).compactMap { occurrenceDate in
@@ -621,11 +742,13 @@ enum TaskExecutionSupport {
         let today = day(for: date)
         let taskExecutions = executions.filter { $0.taskID == task.id }
         let executionsByDate = Dictionary(grouping: taskExecutions) { day(for: $0.occurrenceDate) }
-        let validSubtasks = allSubtasks.filter {
-            $0.parentTaskID == task.id &&
-            $0.taskExecutionID != nil &&
-            !$0.isArchived
-        }
+        let validSubtasks = deduplicatedSubtasks(
+            allSubtasks.filter {
+                $0.parentTaskID == task.id &&
+                $0.taskExecutionID != nil &&
+                !$0.isArchived
+            }
+        )
         let subtasksByExecutionID = Dictionary(grouping: validSubtasks) { $0.taskExecutionID! }
 
         return task.scheduledOccurrenceDates(upTo: date).compactMap { occurrenceDate in
@@ -687,7 +810,7 @@ enum TaskExecutionSupport {
         
         // --- 核心性能优化：在任务百日大循环之外，一次性将全库的记录按照 taskID 切分好！
         // 从而彻底防止内部每次检查 task.id 而导致读取 CoreData PersistentModel 发生锁耗时（会导致 Watchdog）
-        let validSubtasks = subtasks.filter { !$0.isArchived }
+        let validSubtasks = deduplicatedSubtasks(subtasks.filter { !$0.isArchived })
         let subtasksByTask = Dictionary(grouping: validSubtasks, by: \.parentTaskID)
         let executionsByTask = Dictionary(grouping: executions, by: \.taskID)
 
@@ -1103,6 +1226,29 @@ enum TaskExecutionSupport {
         return lhs.sortOrder < rhs.sortOrder
     }
 
+    private static func subtaskDeduplicationPreference(_ lhs: TaskSubitem, _ rhs: TaskSubitem) -> Bool {
+        if lhs.updatedAt != rhs.updatedAt {
+            return lhs.updatedAt < rhs.updatedAt
+        }
+        if lhs.createdAt != rhs.createdAt {
+            return lhs.createdAt < rhs.createdAt
+        }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+
+    private static func subtaskDeduplicationPreference(
+        _ lhs: TaskSubitemProjection,
+        _ rhs: TaskSubitemProjection
+    ) -> Bool {
+        if lhs.updatedAt != rhs.updatedAt {
+            return lhs.updatedAt < rhs.updatedAt
+        }
+        if lhs.createdAt != rhs.createdAt {
+            return lhs.createdAt < rhs.createdAt
+        }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+
     private static func sortSubtasks(_ lhs: TaskSubitemProjection, _ rhs: TaskSubitemProjection) -> Bool {
         if lhs.sortOrder == rhs.sortOrder {
             return lhs.createdAt < rhs.createdAt
@@ -1283,11 +1429,13 @@ enum TodayTaskProjectionBuilder {
         let taskExecutions = executions.filter { $0.taskID == task.id }
         let executionsByDate = Dictionary(grouping: taskExecutions) { Calendar.current.startOfDay(for: $0.occurrenceDate) }
 
-        let validSubtasks = subtasks.filter {
-            $0.parentTaskID == task.id &&
-            $0.taskExecutionID != nil &&
-            !$0.isArchived
-        }
+        let validSubtasks = TaskExecutionSupport.deduplicatedSubtasks(
+            subtasks.filter {
+                $0.parentTaskID == task.id &&
+                $0.taskExecutionID != nil &&
+                !$0.isArchived
+            }
+        )
         let subtasksByExecutionID = Dictionary(grouping: validSubtasks) { $0.taskExecutionID! }
 
         return task.scheduledOccurrenceDates(upTo: targetDate).compactMap { occurrenceDate in
@@ -1417,9 +1565,12 @@ enum TodayTaskProjectionBuilder {
         in subtasks: [TaskSubitemProjection]
     ) -> [TaskSubitemProjection] {
         guard let executionRecord else { return [] }
-        return subtasks
-            .filter { $0.taskExecutionID == executionRecord.id }
-            .sorted(by: sortSubtasks)
+        return TaskExecutionSupport.deduplicatedSubtasks(
+            subtasks.filter {
+                $0.taskExecutionID == executionRecord.id &&
+                !$0.isArchived
+            }
+        )
     }
 
     private static func subtaskProgress(

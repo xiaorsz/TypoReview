@@ -14,9 +14,19 @@ struct TaskDetailView: View {
     @State private var preferredExecutionRecordID: UUID?
     @State private var parentDetailDraft = ""
     @State private var isEditingParentDetail = false
+    @State private var isSavingParentDetail = false
     @State private var persistenceErrorMessage: String?
     @State private var subtaskEditorTarget: SubtaskEditorTarget?
     @State private var isCreatingSubtask = false
+    @State private var isSavingQuickSubtask = false
+    @State private var isSavingSubtaskEditor = false
+    @State private var isSavingTaskState = false
+    @State private var isHistoryExpanded = false
+    @State private var pendingDeletedSubtask: TaskSubitemProjection?
+    @State private var pendingDeletionTask: Task<Void, Never>?
+    @State private var pendingSubtaskOrder: [UUID]?
+    @State private var orderPersistenceTask: Task<Void, Never>?
+    @State private var isOrderPersistenceInFlight = false
     @State private var quickSubtaskOccurrenceDate: Date?
     @State private var subtaskTitleDraft = ""
     @State private var subtaskNoteDraft = ""
@@ -74,6 +84,11 @@ struct TaskDetailView: View {
         let startedAt: CFTimeInterval
     }
 
+    private enum CompletionPersistenceOutcome: Sendable {
+        case saved
+        case failed(String)
+    }
+
     private struct OccurrenceSnapshotState: Sendable {
         let pending: [TaskOccurrenceSnapshot]
         let completed: [TaskOccurrenceSnapshot]
@@ -127,6 +142,16 @@ struct TaskDetailView: View {
         guard !currentOccurrenceSubtasks.isEmpty else { return nil }
         let completed = currentOccurrenceSubtasks.filter { $0.status == .completed }.count
         return "\(completed)/\(currentOccurrenceSubtasks.count) 子任务已完成"
+    }
+
+    private var subtaskProgressValue: Double {
+        guard !currentOccurrenceSubtasks.isEmpty else { return 0 }
+        let completed = currentOccurrenceSubtasks.filter { $0.status == .completed }.count
+        return Double(completed) / Double(currentOccurrenceSubtasks.count)
+    }
+
+    private var occurrenceHistory: [TaskOccurrenceSnapshot] {
+        completedOccurrences.sorted { $0.occurrenceDate > $1.occurrenceDate }
     }
 
     private var currentOccurrenceHasSubtaskNotes: Bool {
@@ -230,8 +255,8 @@ struct TaskDetailView: View {
                         occurrenceSwitcherSection(title: "未来待办", snapshots: upcomingOccurrences)
                     }
 
-                    if !completedOccurrences.isEmpty {
-                        occurrenceSwitcherSection(title: "已完成历史", snapshots: completedOccurrences)
+                    if !occurrenceHistory.isEmpty {
+                        occurrenceHistorySection
                     }
                 } else {
                     detailLoadingSection
@@ -241,11 +266,32 @@ struct TaskDetailView: View {
         .navigationTitle("任务详情")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            if currentOccurrenceSubtasks.count > 1 {
+                ToolbarItem(placement: .topBarTrailing) {
+                    EditButton()
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
-                NavigationLink {
-                    TaskEditorLoaderView(taskID: taskID, fallbackTitle: taskProjection.title)
+                Menu {
+                    NavigationLink {
+                        TaskEditorLoaderView(taskID: taskID, fallbackTitle: taskProjection.title)
+                    } label: {
+                        Label("编辑任务", systemImage: "square.and.pencil")
+                    }
+
+                    if taskProjection.recurrence.kind != .once {
+                        Button {
+                            toggleTaskPause()
+                        } label: {
+                            Label(
+                                taskProjection.isPaused ? "启用循环任务" : "暂停循环任务",
+                                systemImage: taskProjection.isPaused ? "play.fill" : "pause.fill"
+                            )
+                        }
+                        .disabled(isSavingTaskState)
+                    }
                 } label: {
-                    Text("编辑任务")
+                    Image(systemName: "ellipsis.circle")
                 }
             }
         }
@@ -258,8 +304,9 @@ struct TaskDetailView: View {
             detailDataActivationTask?.cancel()
             occurrenceSnapshotRefreshTask?.cancel()
             deferredPersistenceTask?.cancel()
+            flushPendingSubtaskOrderOnExit()
+            commitPendingDeletion()
             flushPendingCompletionMutationsOnExit()
-            saveParentDetail()
         }
         .onChange(of: scenePhase) { _, newPhase in
             handleScenePhaseChange(newPhase)
@@ -276,8 +323,9 @@ struct TaskDetailView: View {
             let t0 = CACurrentMediaTime()
             Self.perfMark("selectedOccurrenceDate changed to=\(Self.perfDateLabel(selectedOccurrenceDate))")
             syncCalendarToSelectedDate()
-            refreshParentDetailDraft()
-            requestDetailRefresh(reason: "selectedOccurrenceDate")
+            if !applyCachedSelection() {
+                requestDetailRefresh(reason: "selectedOccurrenceDate cache miss")
+            }
             Self.perfMark("selectedOccurrenceDate main path end elapsed=\(Self.perfMillis(since: t0))")
         }
         .onChange(of: weekOffset) { _, _ in
@@ -286,6 +334,26 @@ struct TaskDetailView: View {
         }
         .sheet(isPresented: $isEditingParentDetail) { parentDetailEditorSheet }
         .sheet(item: $subtaskEditorTarget) { target in subtaskEditorSheet(target) }
+        .safeAreaInset(edge: .bottom) {
+            if let pendingDeletedSubtask {
+                HStack(spacing: 12) {
+                    Image(systemName: "trash")
+                        .foregroundStyle(.secondary)
+                    Text("已删除“\(pendingDeletedSubtask.title)”")
+                        .font(.subheadline)
+                        .lineLimit(1)
+                    Spacer()
+                    Button("撤销") { undoPendingDeletion() }
+                        .fontWeight(.semibold)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                .padding(.horizontal)
+                .padding(.bottom, 6)
+                .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+            }
+        }
         .alert("保存失败", isPresented: Binding(get: { persistenceErrorMessage != nil }, set: { if !$0 { persistenceErrorMessage = nil } })) {
             Button("知道了") { persistenceErrorMessage = nil }
         } message: { Text(persistenceErrorMessage ?? "发生未知错误") }
@@ -295,90 +363,97 @@ struct TaskDetailView: View {
 
     private var summarySection: some View {
         Section {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 10) {
                 Text(taskProjection.title)
-                    .font(.headline)
+                    .font(.title3.weight(.bold))
 
-                HStack(spacing: 8) {
-                    Label(taskProjection.recurrenceLabel, systemImage: taskProjection.recurrence.kind == .once ? "1.circle" : "arrow.triangle.2.circlepath")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) { summaryMetadata }
+                    VStack(alignment: .leading, spacing: 6) { summaryMetadata }
+                }
 
-                    if let effectiveDateRangeLabel = taskProjection.effectiveDateRangeLabel {
-                        Text(effectiveDateRangeLabel)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if taskProjection.skipPolicy == .unskippable {
-                        Label("不可跳过", systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-
-                    if taskProjection.isPaused {
-                        Label("已暂停", systemImage: "pause.circle.fill")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.orange)
-                    }
+                if taskProjection.isPaused {
+                    Label("循环已暂停，今天已有的任务仍然保留", systemImage: "pause.circle.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
                 }
 
                 if !taskProjection.note.isEmpty {
-                    Text(taskProjection.note)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-
-                    Text("任务备注适合放长期说明；本次说明请在当前处理里单独记录。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Divider()
+                    Label {
+                        Text(taskProjection.note)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    } icon: {
+                        Image(systemName: "note.text")
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, 6)
             .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+        }
+    }
 
-            if taskProjection.recurrence.kind != .once {
-                Button {
-                    toggleTaskPause()
-                } label: {
-                    Label(
-                        taskProjection.isPaused ? "启用循环任务" : "暂停循环任务（今日任务保留）",
-                        systemImage: taskProjection.isPaused ? "play.fill" : "pause.fill"
-                    )
-                }
-                .tint(taskProjection.isPaused ? .blue : .orange)
-                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-            }
+    @ViewBuilder
+    private var summaryMetadata: some View {
+        Label(taskProjection.recurrenceLabel, systemImage: taskProjection.recurrence.kind == .once ? "1.circle" : "arrow.triangle.2.circlepath")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        if let effectiveDateRangeLabel = taskProjection.effectiveDateRangeLabel {
+            Label(effectiveDateRangeLabel, systemImage: "calendar")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        if taskProjection.skipPolicy == .unskippable {
+            Label("不可跳过", systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
         }
     }
 
     private func toggleTaskPause() {
+        guard !isSavingTaskState else { return }
+        isSavingTaskState = true
         let targetTaskID = taskID
-        let descriptor = FetchDescriptor<TaskItem>(
-            predicate: #Predicate<TaskItem> { $0.id == targetTaskID }
-        )
+        let container = modelContext.container
 
-        do {
-            guard let task = try modelContext.fetch(descriptor).first else {
-                isTaskUnavailable = true
-                return
+        Task {
+            let result: Result<TaskProjection, Error> = await Task.detached(priority: .userInitiated) {
+                do {
+                    let context = ModelContext(container)
+                    let descriptor = FetchDescriptor<TaskItem>(predicate: #Predicate<TaskItem> { $0.id == targetTaskID })
+                    guard let task = try context.fetch(descriptor).first else {
+                        throw CocoaError(.fileNoSuchFile)
+                    }
+
+                    let calendar = Calendar.current
+                    let today = calendar.startOfDay(for: .now)
+                    if task.isPaused {
+                        task.resume(on: today)
+                    } else {
+                        let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? today
+                        task.pause(starting: tomorrow)
+                    }
+                    try context.save()
+                    return .success(TaskProjection(task))
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+
+            isSavingTaskState = false
+            switch result {
+            case let .success(projection):
+                taskProjection = projection
+                WidgetCenter.shared.reloadAllTimelinesInBackground()
+                AppDataChangeCenter.post()
+                requestDetailRefresh(reason: "task pause state changed")
+            case let .failure(error):
+                persistenceErrorMessage = error.localizedDescription
             }
-
-            let calendar = Calendar.current
-            let today = calendar.startOfDay(for: .now)
-            if task.isPaused {
-                task.resume(on: today)
-            } else {
-                let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? today
-                task.pause(starting: tomorrow)
-            }
-
-            try modelContext.save()
-            taskProjection = TaskProjection(task)
-            WidgetCenter.shared.reloadAllTimelinesInBackground()
-            AppDataChangeCenter.post()
-            requestDetailRefresh(reason: task.isPaused ? "task paused" : "task resumed")
-        } catch {
-            persistenceErrorMessage = error.localizedDescription
         }
     }
 
@@ -392,23 +467,52 @@ struct TaskDetailView: View {
     }
 
     private var occurrenceCalendarGrid: some View {
-        Section {
+        Section("选择日期") {
             VStack(spacing: 12) {
                 headerView
                 weekdayLabels
                 dateGrid
-            }.padding(.vertical, 8)
+            }
+            .padding(.vertical, 6)
         }
     }
 
     private var headerView: some View {
-        HStack {
-            Button { withAnimation { weekOffset -= 1 } } label: { Image(systemName: "chevron.left").padding(8).background(Circle().fill(.quaternary)) }
+        HStack(spacing: 10) {
+            Button { withAnimation { weekOffset -= 1 } } label: {
+                Image(systemName: "chevron.left")
+                    .frame(width: 36, height: 36)
+                    .background(Circle().fill(.quaternary))
+            }
+            .accessibilityLabel("前一周")
+
             Spacer()
-            Text(calendarMonthYearLabel).font(.headline)
+
+            VStack(spacing: 2) {
+                Text(calendarMonthYearLabel)
+                    .font(.headline)
+                if weekOffset != 0 {
+                    Button("回到今天") {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            weekOffset = 0
+                            selectTodayOrNearestOccurrence()
+                        }
+                    }
+                    .font(.caption.weight(.semibold))
+                }
+            }
+
             Spacer()
-            Button { withAnimation { weekOffset += 1 } } label: { Image(systemName: "chevron.right").padding(8).background(Circle().fill(.quaternary)) }
-        }.buttonStyle(.plain).padding(.horizontal)
+
+            Button { withAnimation { weekOffset += 1 } } label: {
+                Image(systemName: "chevron.right")
+                    .frame(width: 36, height: 36)
+                    .background(Circle().fill(.quaternary))
+            }
+            .accessibilityLabel("后一周")
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 2)
     }
 
     private var weekdayLabels: some View {
@@ -442,39 +546,70 @@ struct TaskDetailView: View {
 
     private var calendarMonthYearLabel: String {
         let middleDate = Calendar.current.date(byAdding: .day, value: 7, to: gridStartDate)!
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy年 M月"
-        return formatter.string(from: middleDate)
+        return middleDate.formatted(.dateTime.year().month())
     }
 
     private func calendarCell(for date: Date) -> some View {
         let snapshot = timelineSnapshots.first { Calendar.current.isDate($0.occurrenceDate, inSameDayAs: date) }
         let isSelected = currentOccurrenceDate.map { Calendar.current.isDate(date, inSameDayAs: $0) } ?? false
         let isToday = Calendar.current.isDateInToday(date)
+        let canSelect = snapshot != nil
         
         return Button {
+            guard canSelect else { return }
             withAnimation(.spring(response: 0.3)) { selectedOccurrenceDate = date }
         } label: {
-            VStack {
-                Text("\(Calendar.current.component(.day, from: date))")
-                    .font(.system(size: 16, weight: isToday ? .black : .medium, design: .rounded))
-                    .foregroundStyle(isSelected ? .white : (isToday ? .red : cellContentColor(snapshot)))
-            }
-            .frame(maxWidth: .infinity).frame(height: 40)
-            .background(RoundedRectangle(cornerRadius: 10).fill(isSelected ? Color.accentColor : cellBackgroundColor(snapshot)))
-        }.buttonStyle(.plain)
+            Text("\(Calendar.current.component(.day, from: date))")
+                .font(.system(size: 16, weight: isToday ? .black : .medium, design: .rounded))
+                .foregroundStyle(isSelected ? .white : cellContentColor(snapshot))
+                .frame(maxWidth: .infinity)
+                .frame(height: 38)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(isSelected ? cellContentColor(snapshot) : cellBackgroundColor(snapshot))
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(!canSelect)
+        .accessibilityLabel(calendarAccessibilityLabel(for: date, snapshot: snapshot))
+        .accessibilityValue(isSelected ? "已选择" : "")
     }
 
     private func cellBackgroundColor(_ snapshot: TaskOccurrenceSnapshot?) -> Color {
         guard let s = snapshot else { return Color(uiColor: .systemGray6).opacity(0.4) }
         if s.isCompleted { return .green.opacity(0.15) }
-        return s.occurrenceDate < TaskExecutionSupport.day(for: .now) ? .orange.opacity(0.15) : .blue.opacity(0.15)
+        if s.occurrenceDate < TaskExecutionSupport.day(for: .now) { return .red.opacity(0.14) }
+        if Calendar.current.isDateInToday(s.occurrenceDate) { return .orange.opacity(0.16) }
+        return .blue.opacity(0.15)
     }
 
     private func cellContentColor(_ snapshot: TaskOccurrenceSnapshot?) -> Color {
         guard let s = snapshot else { return .secondary.opacity(0.4) }
         if s.isCompleted { return .green }
-        return s.occurrenceDate < TaskExecutionSupport.day(for: .now) ? .orange : .blue
+        if s.occurrenceDate < TaskExecutionSupport.day(for: .now) { return .red }
+        if Calendar.current.isDateInToday(s.occurrenceDate) { return .orange }
+        return .blue
+    }
+
+    private func calendarAccessibilityLabel(for date: Date, snapshot: TaskOccurrenceSnapshot?) -> String {
+        let dateText = date.formatted(.dateTime.year().month().day().weekday())
+        guard let snapshot else { return "\(dateText)，没有任务安排" }
+        let status = snapshot.isCompleted ? "已完成" : (isFutureOccurrence(snapshot) ? "未开始" : "待处理")
+        if let progress = snapshot.subtaskProgressText {
+            return "\(dateText)，\(status)，\(progress)"
+        }
+        return "\(dateText)，\(status)"
+    }
+
+    private func selectTodayOrNearestOccurrence() {
+        let today = TaskExecutionSupport.day(for: .now)
+        if let todaySnapshot = timelineSnapshots.first(where: { Calendar.current.isDate($0.occurrenceDate, inSameDayAs: today) }) {
+            selectedOccurrenceDate = todaySnapshot.occurrenceDate
+        } else if let nearest = timelineSnapshots.min(by: {
+            abs($0.occurrenceDate.timeIntervalSince(today)) < abs($1.occurrenceDate.timeIntervalSince(today))
+        }) {
+            selectedOccurrenceDate = nearest.occurrenceDate
+        }
     }
 
     private func currentOccurrenceSection(_ snapshot: TaskOccurrenceSnapshot) -> some View {
@@ -523,16 +658,19 @@ struct TaskDetailView: View {
                     .buttonStyle(.plain)
                 }
 
-                if !currentOccurrenceSubtasks.isEmpty {
-                    Text("共 \(currentOccurrenceSubtasks.count) 个本次子任务")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.blue)
-                }
-
                 if let subtaskProgressText {
-                    Text(subtaskProgressText)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.blue)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(subtaskProgressText)
+                                .font(.caption.weight(.semibold))
+                            Spacer()
+                            Text(subtaskProgressValue == 1 ? "全部完成" : "继续加油")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        ProgressView(value: subtaskProgressValue)
+                            .tint(subtaskProgressValue == 1 ? .green : .blue)
+                    }
                 }
 
                 if isCurrentOccurrenceFuture {
@@ -550,9 +688,11 @@ struct TaskDetailView: View {
         Section("本次子任务") {
             if !isCreatingSubtask {
                 Button { startQuickSubtaskCreation() } label: {
-                    HStack(spacing: 10) {
+                    HStack(spacing: 12) {
                         Image(systemName: "plus.circle.fill")
+                            .font(.title3)
                             .foregroundStyle(.blue)
+                            .frame(width: 40, height: 40)
 
                         VStack(alignment: .leading, spacing: 3) {
                             Text("添加本次子任务")
@@ -567,9 +707,10 @@ struct TaskDetailView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .padding(.vertical, 4)
+                .listRowInsets(subtaskRowInsets)
             } else {
                 quickCreateSubtaskRow
+                    .listRowInsets(subtaskRowInsets)
             }
 
             if currentOccurrenceSubtasks.isEmpty {
@@ -579,27 +720,35 @@ struct TaskDetailView: View {
             } else {
                 ForEach(currentOccurrenceSubtasks) { subtask in
                     subtaskRow(subtask)
+                        .listRowInsets(subtaskRowInsets)
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button(role: .destructive) { deleteSubtask(subtask) } label: { Label("删除", systemImage: "trash") }
+                            Button(role: .destructive) { stageSubtaskDeletion(subtask) } label: { Label("删除", systemImage: "trash") }
                         }
                 }
+                .onMove(perform: moveSubtasks)
             }
         }
     }
 
+    private var subtaskRowInsets: EdgeInsets {
+        EdgeInsets(top: 2, leading: 16, bottom: 2, trailing: 12)
+    }
+
     private func subtaskRow(_ subtask: TaskSubitemProjection) -> some View {
         let isDone = subtask.status == .completed
-        return HStack(alignment: .top, spacing: 12) {
+        return HStack(alignment: .center, spacing: 12) {
             Button {
                 toggleSubtaskCompletion(subtask)
             } label: {
                 Image(systemName: leadingSymbol(for: subtask, isDone: isDone))
                     .font(.title3)
                     .foregroundStyle(leadingColor(for: subtask, isDone: isDone))
-                    .frame(width: 28, height: 28)
+                    .frame(width: 40, height: 40)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(isCurrentOccurrenceFuture)
+            .accessibilityLabel(isDone ? "将“\(subtask.title)”标记为未完成" : "将“\(subtask.title)”标记为已完成")
             .transaction { transaction in
                 transaction.animation = nil
             }
@@ -631,35 +780,49 @@ struct TaskDetailView: View {
             }
             .buttonStyle(.plain)
 
-            HStack(spacing: 10) {
+            Menu {
+                Button {
+                    openEditSubtaskEditor(subtaskID: subtask.id)
+                } label: {
+                    Label("编辑", systemImage: "square.and.pencil")
+                }
+
                 Button {
                     moveSubtaskUp(subtask)
                 } label: {
-                    Image(systemName: "arrow.up")
+                    Label("上移", systemImage: "arrow.up")
                 }
-                .buttonStyle(.plain)
                 .disabled(isFirstSubtask(subtask))
 
                 Button {
                     moveSubtaskDown(subtask)
                 } label: {
-                    Image(systemName: "arrow.down")
+                    Label("下移", systemImage: "arrow.down")
                 }
-                .buttonStyle(.plain)
                 .disabled(isLastSubtask(subtask))
 
-                Image(systemName: "square.and.pencil")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                Divider()
+
+                Button(role: .destructive) {
+                    stageSubtaskDeletion(subtask)
+                } label: {
+                    Label("删除", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 36, height: 40)
+                    .contentShape(Rectangle())
             }
-            .foregroundStyle(.secondary)
-            .padding(.top, 4)
+            .buttonStyle(.plain)
+            .accessibilityLabel("“\(subtask.title)”的更多操作")
         }
-        .padding(.vertical, 2)
     }
 
     private var quickCreateSubtaskRow: some View {
         QuickSubtaskInputView(
+            isSaving: isSavingQuickSubtask,
             onSave: { title in
                 saveQuickSubtask(title: title)
             },
@@ -673,6 +836,29 @@ struct TaskDetailView: View {
         Section(title) {
             ForEach(snapshots) { snapshot in
                 occurrenceSwitcherRow(snapshot)
+            }
+        }
+    }
+
+    private var occurrenceHistorySection: some View {
+        Section {
+            DisclosureGroup(isExpanded: $isHistoryExpanded) {
+                ForEach(occurrenceHistory) { snapshot in
+                    occurrenceSwitcherRow(snapshot)
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Label("已完成历史", systemImage: "clock.arrow.circlepath")
+                        .font(.headline)
+                    Spacer()
+                    Text("\(occurrenceHistory.count) 条")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } footer: {
+            if !isHistoryExpanded {
+                Text("展开后可查看已经完成的执行记录。")
             }
         }
     }
@@ -748,12 +934,19 @@ struct TaskDetailView: View {
                         isEditingParentDetail = false
                         refreshParentDetailDraft()
                     }
+                    .disabled(isSavingParentDetail)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("保存") {
+                    Button {
                         saveParentDetail()
-                        isEditingParentDetail = false
+                    } label: {
+                        if isSavingParentDetail {
+                            ProgressView()
+                        } else {
+                            Text("保存")
+                        }
                     }
+                    .disabled(isSavingParentDetail)
                 }
             }
         }
@@ -794,11 +987,19 @@ struct TaskDetailView: View {
                     Button("取消") {
                         subtaskEditorTarget = nil
                     }
+                    .disabled(isSavingSubtaskEditor)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("保存") {
+                    Button {
                         saveSubtaskEditor(target)
+                    } label: {
+                        if isSavingSubtaskEditor {
+                            ProgressView()
+                        } else {
+                            Text("保存")
+                        }
                     }
+                    .disabled(isSavingSubtaskEditor || subtaskTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }
@@ -922,6 +1123,9 @@ struct TaskDetailView: View {
                 requestDetailRefresh(reason: "scenePhase active")
             }
         } else if phase == .background {
+            flushPendingCompletionMutationsOnExit()
+            flushPendingSubtaskOrderOnExit()
+            commitPendingDeletion()
             isDetailDataActive = false
             occurrenceSnapshotRefreshTask?.cancel()
             isRefreshInFlight = false
@@ -931,11 +1135,9 @@ struct TaskDetailView: View {
 
     private func activateDetailDataAfterNavigationSettles() {
         detailDataActivationTask?.cancel()
-        isDetailDataActive = false
         Self.perfMark("activateDetailDataAfterNavigationSettles requested")
         Self.perfWatchMainThread("activateDetailDataAfterNavigationSettles", threshold: 0.5)
         detailDataActivationTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 100_000_000)
             guard !Task.isCancelled else { return }
             isDetailDataActive = true
             Self.perfMark("activateDetailDataAfterNavigationSettles firing refresh")
@@ -978,6 +1180,7 @@ struct TaskDetailView: View {
         completionPersistenceTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled else { return }
+            guard !isCompletionPersistenceInFlight else { return }
             await persistPendingCompletionMutations()
         }
     }
@@ -1029,6 +1232,7 @@ struct TaskDetailView: View {
 
     @MainActor
     private func persistPendingCompletionMutations(scheduleReconcile: Bool = true) async {
+        guard !isCompletionPersistenceInFlight else { return }
         let subtaskMutations = pendingSubtaskCompletionMutations
         let occurrenceMutations = pendingOccurrenceCompletionMutations
         guard !subtaskMutations.isEmpty || !occurrenceMutations.isEmpty else { return }
@@ -1045,37 +1249,53 @@ struct TaskDetailView: View {
             "completion batch requested id=\(batchID) subtasks=\(subtaskMutations.count) occurrences=\(occurrenceMutations.count)"
         )
 
-        Task.detached(priority: .utility) {
+        let outcome = await Task.detached(priority: .utility) {
             let backgroundStartedAt = CACurrentMediaTime()
             let ctx = ModelContext(container)
             guard let task = (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))?.first else {
-                return
+                return CompletionPersistenceOutcome.failed("任务已不存在")
             }
 
             var executionRecords = (try? ctx.fetch(FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.taskID == tid }))) ?? []
             let subtasks = (try? ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))) ?? []
+            var affectedExecutionIDs: Set<UUID> = []
 
             for (subtaskID, mutation) in subtaskMutations {
-                let record = TaskExecutionSupport.ensureExecutionRecord(
-                    for: task,
-                    occurrenceDate: mutation.occurrenceDate,
-                    existingExecutions: executionRecords,
+                guard let targetSubtask = subtasks.first(where: { $0.id == subtaskID }) else {
+                    continue
+                }
+
+                let record: TaskExecutionRecord
+                if let executionID = targetSubtask.taskExecutionID,
+                   let existingRecord = executionRecords.first(where: { $0.id == executionID }) {
+                    record = existingRecord
+                } else {
+                    record = TaskExecutionSupport.ensureExecutionRecord(
+                        for: task,
+                        occurrenceDate: mutation.occurrenceDate,
+                        existingExecutions: executionRecords,
+                        modelContext: ctx
+                    )
+                    if !executionRecords.contains(where: { $0.id == record.id }) {
+                        executionRecords.append(record)
+                    }
+                    targetSubtask.taskExecutionID = record.id
+                }
+
+                targetSubtask.status = mutation.status
+                targetSubtask.completedAt = mutation.completedAt
+                targetSubtask.updatedAt = .now
+                affectedExecutionIDs.insert(record.id)
+            }
+
+            for executionID in affectedExecutionIDs {
+                guard let record = executionRecords.first(where: { $0.id == executionID }) else { continue }
+                TaskExecutionSupport.syncExecutionStatus(
+                    record: record,
+                    task: task,
+                    subtasks: subtasks,
                     modelContext: ctx
                 )
-                if !executionRecords.contains(where: { $0.id == record.id }) {
-                    executionRecords.append(record)
-                }
-
-                if let targetSubtask = subtasks.first(where: { $0.id == subtaskID }) {
-                    targetSubtask.status = mutation.status
-                    targetSubtask.completedAt = mutation.completedAt
-                    targetSubtask.updatedAt = .now
-                    if targetSubtask.taskExecutionID == nil {
-                        targetSubtask.taskExecutionID = record.id
-                    }
-                }
-
-                TaskExecutionSupport.syncExecutionStatus(record: record, task: task, subtasks: subtasks, modelContext: ctx)
             }
 
             if !occurrenceMutations.isEmpty {
@@ -1100,20 +1320,31 @@ struct TaskDetailView: View {
                 }
             }
 
-            try? ctx.save()
-            Self.perfMark("completion batch bg saved id=\(batchID) elapsed=\(Self.perfMillis(since: backgroundStartedAt))")
-
-            await MainActor.run {
-                Self.perfMark("completion batch main reconcile id=\(batchID) total=\(Self.perfMillis(since: startedAt))")
-                isCompletionPersistenceInFlight = false
-                let hasQueuedMutations = !pendingSubtaskCompletionMutations.isEmpty || !pendingOccurrenceCompletionMutations.isEmpty
-                if hasQueuedMutations {
-                    scheduleCompletionPersistenceFlush(after: 0.2)
-                }
-                if scheduleReconcile && !hasQueuedMutations {
-                    scheduleDeferredDetailRefresh(after: 0.35, reason: "completion batch reconcile")
-                }
+            do {
+                try ctx.save()
+                Self.perfMark("completion batch bg saved id=\(batchID) elapsed=\(Self.perfMillis(since: backgroundStartedAt))")
+                return CompletionPersistenceOutcome.saved
+            } catch {
+                return CompletionPersistenceOutcome.failed(error.localizedDescription)
             }
+        }.value
+
+        Self.perfMark("completion batch main reconcile id=\(batchID) total=\(Self.perfMillis(since: startedAt))")
+        isCompletionPersistenceInFlight = false
+
+        switch outcome {
+        case .saved:
+            WidgetCenter.shared.reloadAllTimelinesInBackground()
+            AppDataChangeCenter.post()
+        case let .failed(message):
+            persistenceErrorMessage = message
+        }
+
+        let hasQueuedMutations = !pendingSubtaskCompletionMutations.isEmpty || !pendingOccurrenceCompletionMutations.isEmpty
+        if hasQueuedMutations {
+            scheduleCompletionPersistenceFlush(after: 0.05)
+        } else if scheduleReconcile {
+            scheduleDeferredDetailRefresh(after: 0.2, reason: "completion batch reconcile")
         }
     }
 
@@ -1203,7 +1434,9 @@ struct TaskDetailView: View {
                     snapshots.append(contentsOf: missingScheduledSnapshots)
                     snapshots.sort { $0.occurrenceDate < $1.occurrenceDate }
                 }
-                let subProjections = subtasks.filter { !$0.isArchived }.map(TaskSubitemProjection.init)
+                let subProjections = TaskExecutionSupport.deduplicatedSubtasks(
+                    subtasks.filter { !$0.isArchived }.map(TaskSubitemProjection.init)
+                )
                 let recProjections = records.map(TaskExecutionRecordProjection.init)
                 
                 let resolvedSelectedDate = Self.resolvedSelectedOccurrenceDate(in: snapshots, requestedDate: requestedSelectedDate)
@@ -1221,12 +1454,10 @@ struct TaskDetailView: View {
                 }
                 
                 let curSubProjections: [TaskSubitemProjection]
-                if let rid = curRec?.id {
-                     curSubProjections = subProjections.filter { $0.taskExecutionID == rid }
-                                                     .sorted { $0.sortOrder < $1.sortOrder }
-                } else {
-                     curSubProjections = []
-                }
+                curSubProjections = TaskExecutionSupport.executionSubtasks(
+                    for: curRec,
+                    in: subProjections
+                )
 
                 let snapshotSummary = snapshots
                     .map { "\(Self.perfDateLabel($0.occurrenceDate)):\($0.isCompleted ? "done" : "pending")" }
@@ -1338,6 +1569,26 @@ struct TaskDetailView: View {
 
     private func refreshParentDetailDraft() { parentDetailDraft = selectedSnapshot?.executionDetail ?? "" }
 
+    @discardableResult
+    private func applyCachedSelection() -> Bool {
+        guard let snapshot = selectedSnapshot else { return false }
+
+        if let executionRecordID = snapshot.executionRecordID {
+            currentExecutionRecord = allExecutionRecords.first { $0.id == executionRecordID }
+        } else {
+            currentExecutionRecord = allExecutionRecords.first {
+                Calendar.current.isDate($0.occurrenceDate, inSameDayAs: snapshot.occurrenceDate)
+            }
+        }
+
+        currentOccurrenceSubtasks = TaskExecutionSupport.executionSubtasks(
+            for: currentExecutionRecord,
+            in: allSubtasks
+        )
+        parentDetailDraft = snapshot.executionDetail
+        return true
+    }
+
     private func applyOptimisticSubtaskProjectionUpdate(
         subtaskID: UUID,
         status: TaskExecutionStatus
@@ -1404,7 +1655,8 @@ struct TaskDetailView: View {
     }
 
     private func saveParentDetail() {
-        guard let date = currentOccurrenceDate else { return }
+        guard !isSavingParentDetail, let date = currentOccurrenceDate else { return }
+        isSavingParentDetail = true
         let tid = taskID
         let container = modelContext.container
         let noteDraft = parentDetailDraft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1415,27 +1667,41 @@ struct TaskDetailView: View {
         Task.detached(priority: .utility) {
             let backgroundStartedAt = CACurrentMediaTime()
             let ctx = ModelContext(container)
-            // 后台获取或创建 record
-            let ed = FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.taskID == tid })
-            let recs = (try? ctx.fetch(ed)) ?? []
-            let record = TaskExecutionSupport.ensureExecutionRecord(for: (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))!.first!, occurrenceDate: date, existingExecutions: recs, modelContext: ctx)
-            
-            record.detail = noteDraft
-            record.updatedAt = .now
-            
-            let allS = (try? ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))) ?? []
-            TaskExecutionSupport.syncExecutionStatus(record: record, task: (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))!.first!, subtasks: allS, modelContext: ctx)
-            
-            try? ctx.save()
+            do {
+                guard let task = try ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })).first else {
+                    throw CocoaError(.fileNoSuchFile)
+                }
+                let records = try ctx.fetch(FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.taskID == tid }))
+                let record = TaskExecutionSupport.ensureExecutionRecord(
+                    for: task,
+                    occurrenceDate: date,
+                    existingExecutions: records,
+                    modelContext: ctx
+                )
+
+                record.detail = noteDraft
+                record.updatedAt = .now
+
+                let subtasks = try ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))
+                TaskExecutionSupport.syncExecutionStatus(record: record, task: task, subtasks: subtasks, modelContext: ctx)
+                try ctx.save()
                 Self.perfMark("saveParentDetail bg end id=\(actionID) elapsed=\(Self.perfMillis(since: backgroundStartedAt))")
                 await MainActor.run {
+                    isSavingParentDetail = false
+                    isEditingParentDetail = false
                     Self.perfMark("saveParentDetail main refresh id=\(actionID) total=\(Self.perfMillis(since: startedAt))")
+                    WidgetCenter.shared.reloadAllTimelinesInBackground()
+                    AppDataChangeCenter.post()
                     requestDetailRefresh(reason: "saveParentDetail")
+                }
+            } catch {
+                await MainActor.run {
+                    isSavingParentDetail = false
+                    persistenceErrorMessage = error.localizedDescription
                 }
             }
         }
-
-
+    }
 
     private func toggleSubtaskCompletion(_ subtask: TaskSubitemProjection) {
         guard !isCurrentOccurrenceFuture, let date = currentOccurrenceDate else { return }
@@ -1460,7 +1726,7 @@ struct TaskDetailView: View {
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         Self.perfMark("subtask toggle optimistic id=\(actionID) elapsed=\(Self.perfMillis(since: startedAt))")
 
-        persistSubtaskCompletionImmediately(
+        queueSubtaskCompletionPersistence(
             subtaskID: targetSID,
             occurrenceDate: date,
             status: targetStatus,
@@ -1468,54 +1734,6 @@ struct TaskDetailView: View {
             actionID: actionID,
             startedAt: startedAt
         )
-    }
-
-    private func persistSubtaskCompletionImmediately(
-        subtaskID: UUID,
-        occurrenceDate: Date,
-        status: TaskExecutionStatus,
-        completedAt: Date?,
-        actionID: String,
-        startedAt: CFTimeInterval
-    ) {
-        let tid = taskID
-        do {
-            guard let task = try modelContext.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })).first else {
-                requestDetailRefresh(reason: "subtask completion missing task")
-                return
-            }
-            guard let subtask = try modelContext.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.id == subtaskID })).first else {
-                requestDetailRefresh(reason: "subtask completion missing subtask")
-                return
-            }
-
-            let existingExecutions = try modelContext.fetch(FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.taskID == tid }))
-            let record = TaskExecutionSupport.ensureExecutionRecord(
-                for: task,
-                occurrenceDate: occurrenceDate,
-                existingExecutions: existingExecutions,
-                modelContext: modelContext
-            )
-
-            if subtask.taskExecutionID == nil {
-                subtask.taskExecutionID = record.id
-            }
-            subtask.status = status
-            subtask.completedAt = completedAt
-            subtask.updatedAt = .now
-
-            let allSubtasks = try modelContext.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))
-            TaskExecutionSupport.syncExecutionStatus(record: record, task: task, subtasks: allSubtasks, modelContext: modelContext)
-
-            try modelContext.save()
-            WidgetCenter.shared.reloadAllTimelinesInBackground()
-            AppDataChangeCenter.post()
-            scheduleDeferredDetailRefresh(after: 0.2, reason: "subtask completion persisted")
-            Self.perfMark("subtask toggle persisted id=\(actionID) total=\(Self.perfMillis(since: startedAt))")
-        } catch {
-            persistenceErrorMessage = error.localizedDescription
-            requestDetailRefresh(reason: "subtask completion error")
-        }
     }
 
     private func startQuickSubtaskCreation() {
@@ -1534,9 +1752,11 @@ struct TaskDetailView: View {
     }
 
     private func saveQuickSubtask(title: String) {
+        guard !isSavingQuickSubtask else { return }
         guard let date = quickSubtaskOccurrenceDate ?? currentOccurrenceDate else { return }
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else { return }
+        isSavingQuickSubtask = true
         let tid = taskID
         let container = modelContext.container
         let actionID = String(UUID().uuidString.prefix(6))
@@ -1547,7 +1767,13 @@ struct TaskDetailView: View {
             let backgroundStartedAt = CACurrentMediaTime()
             let ctx = ModelContext(container)
             // 找当前 task 和 record
-            guard let task = (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))?.first else { return }
+            guard let task = (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))?.first else {
+                await MainActor.run {
+                    isSavingQuickSubtask = false
+                    persistenceErrorMessage = "任务已不存在"
+                }
+                return
+            }
             let ed = FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.taskID == tid })
             let recs = (try? ctx.fetch(ed)) ?? []
             let record = TaskExecutionSupport.ensureExecutionRecord(for: task, occurrenceDate: date, existingExecutions: recs, modelContext: ctx)
@@ -1575,13 +1801,17 @@ struct TaskDetailView: View {
                 try ctx.save()
                 Self.perfMark("quickSubtask bg saved id=\(actionID) elapsed=\(Self.perfMillis(since: backgroundStartedAt))")
                 await MainActor.run {
+                    isSavingQuickSubtask = false
                     selectedOccurrenceDate = date
                     cancelQuickSubtaskCreation()
                     Self.perfMark("quickSubtask main refresh id=\(actionID) total=\(Self.perfMillis(since: startedAt))")
+                    WidgetCenter.shared.reloadAllTimelinesInBackground()
+                    AppDataChangeCenter.post()
                     requestDetailRefresh(reason: "saveQuickSubtask")
                 }
             } catch {
                 await MainActor.run {
+                    isSavingQuickSubtask = false
                     persistenceErrorMessage = error.localizedDescription
                 }
             }
@@ -1600,16 +1830,22 @@ struct TaskDetailView: View {
     }
 
     private func saveSubtaskEditor(_ target: SubtaskEditorTarget) {
-        guard let sid = target.subtaskID else { return }
+        guard !isSavingSubtaskEditor, let sid = target.subtaskID else { return }
+        let trimmedTitle = subtaskTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { return }
+        isSavingSubtaskEditor = true
         let tid = taskID
         let container = modelContext.container
-        let (title, note, detail, isCompleted) = (subtaskTitleDraft, subtaskNoteDraft, subtaskDetailDraft, subtaskCompletedDraft)
+        let (note, detail, isCompleted) = (subtaskNoteDraft, subtaskDetailDraft, subtaskCompletedDraft)
         
         Task.detached(priority: .utility) {
             let ctx = ModelContext(container)
-            let descriptor = FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.id == sid })
-            if let sub = (try? ctx.fetch(descriptor))?.first {
-                sub.title = title
+            do {
+                let descriptor = FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.id == sid })
+                guard let sub = try ctx.fetch(descriptor).first else {
+                    throw CocoaError(.fileNoSuchFile)
+                }
+                sub.title = trimmedTitle
                 sub.note = note
                 sub.detail = detail
                 sub.status = isCompleted ? .completed : .pending
@@ -1618,24 +1854,71 @@ struct TaskDetailView: View {
                 
                 // 给 execution 同步
                 if let rid = sub.taskExecutionID {
-                    let er = (try? ctx.fetch(FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.id == rid })))?.first
-                    let t = (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))?.first
-                    let allS = (try? ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))) ?? []
+                    let er = try ctx.fetch(FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.id == rid })).first
+                    let t = try ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })).first
+                    let allS = try ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))
                     if let er, let t {
                         TaskExecutionSupport.syncExecutionStatus(record: er, task: t, subtasks: allS, modelContext: ctx)
                     }
                 }
                 
-                try? ctx.save()
+                try ctx.save()
                 await MainActor.run {
+                    isSavingSubtaskEditor = false
+                    subtaskEditorTarget = nil
+                    WidgetCenter.shared.reloadAllTimelinesInBackground()
+                    AppDataChangeCenter.post()
                     requestDetailRefresh(reason: "saveSubtaskEditor")
+                }
+            } catch {
+                await MainActor.run {
+                    isSavingSubtaskEditor = false
+                    persistenceErrorMessage = error.localizedDescription
                 }
             }
         }
-        subtaskEditorTarget = nil
     }
 
-    private func deleteSubtask(_ sub: TaskSubitemProjection) {
+    private func stageSubtaskDeletion(_ subtask: TaskSubitemProjection) {
+        if pendingDeletedSubtask != nil {
+            commitPendingDeletion()
+        }
+
+        pendingDeletionTask?.cancel()
+        pendingDeletedSubtask = subtask
+        withAnimation(.easeInOut(duration: 0.2)) {
+            currentOccurrenceSubtasks.removeAll { $0.id == subtask.id }
+            allSubtasks.removeAll { $0.id == subtask.id }
+        }
+        if let date = currentOccurrenceDate {
+            applyOptimisticOccurrenceSnapshotUpdate(for: date)
+        }
+
+        pendingDeletionTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard !Task.isCancelled, pendingDeletedSubtask?.id == subtask.id else { return }
+            pendingDeletedSubtask = nil
+            persistSubtaskDeletion(subtask)
+        }
+    }
+
+    private func undoPendingDeletion() {
+        pendingDeletionTask?.cancel()
+        pendingDeletionTask = nil
+        pendingDeletedSubtask = nil
+        requestDetailRefresh(reason: "undo subtask deletion")
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+
+    private func commitPendingDeletion() {
+        pendingDeletionTask?.cancel()
+        pendingDeletionTask = nil
+        guard let subtask = pendingDeletedSubtask else { return }
+        pendingDeletedSubtask = nil
+        persistSubtaskDeletion(subtask)
+    }
+
+    private func persistSubtaskDeletion(_ sub: TaskSubitemProjection) {
         let sid = sub.id
         let tid = taskID
         let container = modelContext.container
@@ -1646,14 +1929,15 @@ struct TaskDetailView: View {
         Task.detached(priority: .utility) {
             let backgroundStartedAt = CACurrentMediaTime()
             let ctx = ModelContext(container)
-            let descriptor = FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.id == sid })
-            if let target = (try? ctx.fetch(descriptor))?.first {
+            do {
+                let descriptor = FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.id == sid })
+                guard let target = try ctx.fetch(descriptor).first else { return }
                 // 如果有关联的执行记录，同步一下状态
                 let rid = target.taskExecutionID
                 ctx.delete(target)
 
                 if let rid {
-                    let remaining = ((try? ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))) ?? [])
+                    let remaining = try ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))
                         .filter { $0.taskExecutionID == rid && !$0.isArchived }
                         .sorted {
                             if $0.sortOrder == $1.sortOrder {
@@ -1668,19 +1952,26 @@ struct TaskDetailView: View {
                 }
                 
                 if let rid {
-                    let er = (try? ctx.fetch(FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.id == rid })))?.first
-                    let t = (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))?.first
-                    let allS = (try? ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))) ?? []
+                    let er = try ctx.fetch(FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.id == rid })).first
+                    let t = try ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })).first
+                    let allS = try ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))
                     if let er, let t {
                         TaskExecutionSupport.syncExecutionStatus(record: er, task: t, subtasks: allS, modelContext: ctx)
                     }
                 }
                 
-                try? ctx.save()
+                try ctx.save()
                 Self.perfMark("deleteSubtask bg saved id=\(actionID) elapsed=\(Self.perfMillis(since: backgroundStartedAt))")
                 await MainActor.run {
                     Self.perfMark("deleteSubtask main refresh id=\(actionID) total=\(Self.perfMillis(since: startedAt))")
+                    WidgetCenter.shared.reloadAllTimelinesInBackground()
+                    AppDataChangeCenter.post()
                     requestDetailRefresh(reason: "deleteSubtask")
+                }
+            } catch {
+                await MainActor.run {
+                    persistenceErrorMessage = error.localizedDescription
+                    requestDetailRefresh(reason: "deleteSubtask error")
                 }
             }
         }
@@ -1694,7 +1985,7 @@ struct TaskDetailView: View {
             currentOccurrenceSubtasks.insert(moving, at: index - 1)
         }
 
-        persistSubtaskMove(subtaskID: subtask.id, neighborID: currentOccurrenceSubtasks[index].id)
+        queueSubtaskOrderPersistence()
     }
 
     private func moveSubtaskDown(_ subtask: TaskSubitemProjection) {
@@ -1706,44 +1997,90 @@ struct TaskDetailView: View {
             currentOccurrenceSubtasks.insert(moving, at: index + 1)
         }
 
-        persistSubtaskMove(subtaskID: subtask.id, neighborID: currentOccurrenceSubtasks[index].id)
+        queueSubtaskOrderPersistence()
     }
 
-    private func persistSubtaskMove(subtaskID: UUID, neighborID: UUID) {
+    private func moveSubtasks(from source: IndexSet, to destination: Int) {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            currentOccurrenceSubtasks.move(fromOffsets: source, toOffset: destination)
+        }
+        queueSubtaskOrderPersistence()
+    }
+
+    private func queueSubtaskOrderPersistence() {
+        for index in currentOccurrenceSubtasks.indices {
+            currentOccurrenceSubtasks[index].sortOrder = index
+            let itemID = currentOccurrenceSubtasks[index].id
+            if let allIndex = allSubtasks.firstIndex(where: { $0.id == itemID }) {
+                var updated = allSubtasks[allIndex]
+                updated.sortOrder = index
+                allSubtasks[allIndex] = updated
+            }
+        }
+        pendingSubtaskOrder = currentOccurrenceSubtasks.map(\.id)
+        guard !isOrderPersistenceInFlight else { return }
+        orderPersistenceTask?.cancel()
+        orderPersistenceTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 220_000_000)
+            guard !Task.isCancelled else { return }
+            await persistPendingSubtaskOrder()
+        }
+    }
+
+    @MainActor
+    private func flushPendingSubtaskOrderOnExit() {
+        orderPersistenceTask?.cancel()
+        orderPersistenceTask = nil
+        guard pendingSubtaskOrder != nil else { return }
+        Task { @MainActor in
+            await persistPendingSubtaskOrder()
+        }
+    }
+
+    @MainActor
+    private func persistPendingSubtaskOrder() async {
+        guard !isOrderPersistenceInFlight, let orderedIDs = pendingSubtaskOrder else { return }
+        pendingSubtaskOrder = nil
+        isOrderPersistenceInFlight = true
         let tid = taskID
         let container = modelContext.container
         let actionID = String(UUID().uuidString.prefix(6))
         let startedAt = CACurrentMediaTime()
-        Self.perfMark("subtask move requested id=\(actionID) subtaskID=\(subtaskID.uuidString.prefix(6)) neighborID=\(neighborID.uuidString.prefix(6))")
+        Self.perfMark("subtask order requested id=\(actionID) count=\(orderedIDs.count)")
 
-        Task.detached(priority: .utility) {
+        let errorMessage: String? = await Task.detached(priority: .utility) {
             let backgroundStartedAt = CACurrentMediaTime()
             let ctx = ModelContext(container)
             let descriptor = FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid })
-            let allS = (try? ctx.fetch(descriptor)) ?? []
-
-            guard let moving = allS.first(where: { $0.id == subtaskID }),
-                  let neighbor = allS.first(where: { $0.id == neighborID }) else { return }
-
-            let originalSortOrder = moving.sortOrder
-            moving.sortOrder = neighbor.sortOrder
-            neighbor.sortOrder = originalSortOrder
-            moving.updatedAt = .now
-            neighbor.updatedAt = .now
 
             do {
+                let allSubtasks = try ctx.fetch(descriptor)
+                let byID = Dictionary(uniqueKeysWithValues: allSubtasks.map { ($0.id, $0) })
+                for (index, id) in orderedIDs.enumerated() {
+                    guard let item = byID[id] else { continue }
+                    item.sortOrder = index
+                    item.updatedAt = .now
+                }
                 try ctx.save()
-                Self.perfMark("subtask move bg saved id=\(actionID) elapsed=\(Self.perfMillis(since: backgroundStartedAt))")
-                await MainActor.run {
-                    Self.perfMark("subtask move main refresh id=\(actionID) total=\(Self.perfMillis(since: startedAt))")
-                    requestDetailRefresh(reason: "moveSubtask")
-                }
+                Self.perfMark("subtask order bg saved id=\(actionID) elapsed=\(Self.perfMillis(since: backgroundStartedAt))")
+                return nil
             } catch {
-                await MainActor.run {
-                    persistenceErrorMessage = error.localizedDescription
-                    requestDetailRefresh(reason: "moveSubtask error")
-                }
+                return error.localizedDescription
             }
+        }.value
+
+        isOrderPersistenceInFlight = false
+        if let errorMessage {
+            persistenceErrorMessage = errorMessage
+            requestDetailRefresh(reason: "subtask order error")
+        } else {
+            Self.perfMark("subtask order main saved id=\(actionID) total=\(Self.perfMillis(since: startedAt))")
+            WidgetCenter.shared.reloadAllTimelinesInBackground()
+            AppDataChangeCenter.post()
+        }
+
+        if pendingSubtaskOrder != nil {
+            await persistPendingSubtaskOrder()
         }
     }
 
@@ -1837,53 +2174,12 @@ struct TaskDetailView: View {
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         Self.perfMark("occurrence toggle optimistic id=\(actionID) elapsed=\(Self.perfMillis(since: startedAt))")
 
-        persistOccurrenceCompletionImmediately(
+        queueOccurrenceCompletionPersistence(
             occurrenceDate: occurrenceDate,
             isReopening: isReopening,
             actionID: actionID,
             startedAt: startedAt
         )
-    }
-
-    private func persistOccurrenceCompletionImmediately(
-        occurrenceDate: Date,
-        isReopening: Bool,
-        actionID: String,
-        startedAt: CFTimeInterval
-    ) {
-        let tid = taskID
-        do {
-            guard let task = try modelContext.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })).first else {
-                requestDetailRefresh(reason: "occurrence completion missing task")
-                return
-            }
-
-            let existingExecutions = try modelContext.fetch(FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.taskID == tid }))
-            if isReopening {
-                TaskExecutionSupport.reopenTaskCompletion(
-                    task: task,
-                    occurrenceDate: occurrenceDate,
-                    existingExecutions: existingExecutions,
-                    modelContext: modelContext
-                )
-            } else {
-                TaskExecutionSupport.markTaskCompleted(
-                    task: task,
-                    occurrenceDate: occurrenceDate,
-                    existingExecutions: existingExecutions,
-                    modelContext: modelContext
-                )
-            }
-
-            try modelContext.save()
-            WidgetCenter.shared.reloadAllTimelinesInBackground()
-            AppDataChangeCenter.post()
-            scheduleDeferredDetailRefresh(after: 0.2, reason: "occurrence completion persisted")
-            Self.perfMark("occurrence toggle persisted id=\(actionID) total=\(Self.perfMillis(since: startedAt))")
-        } catch {
-            persistenceErrorMessage = error.localizedDescription
-            requestDetailRefresh(reason: "occurrence completion error")
-        }
     }
 
 }
@@ -1963,10 +2259,12 @@ private struct TaskEditorLoaderView: View {
 }
 
 private struct QuickSubtaskInputView: View {
+    let isSaving: Bool
     let onSave: (String) -> Void
     let onCancel: () -> Void
 
     @State private var draft: String = ""
+    @State private var isSubmitting = false
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -1975,7 +2273,7 @@ private struct QuickSubtaskInputView: View {
                 Image(systemName: "square.and.pencil")
                     .font(.title3)
                     .foregroundStyle(.blue)
-                    .frame(width: 28, height: 28)
+                    .frame(width: 40, height: 40)
 
                 TextField("输入子任务标题，输完点下方按钮", text: $draft)
                     .textInputAutocapitalization(.sentences)
@@ -1992,11 +2290,12 @@ private struct QuickSubtaskInputView: View {
                 }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+                .disabled(isSaving || isSubmitting)
 
                 Button {
                     commitIMEAndSave()
                 } label: {
-                    Text("添加子任务")
+                    Text(isSaving ? "正在添加…" : "添加子任务")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 16)
@@ -2007,6 +2306,7 @@ private struct QuickSubtaskInputView: View {
                         )
                 }
                 .buttonStyle(.plain)
+                .disabled(isSaving || isSubmitting || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(.vertical, 4)
@@ -2018,11 +2318,17 @@ private struct QuickSubtaskInputView: View {
         .onSubmit {
             commitIMEAndSave()
         }
+        .onChange(of: isSaving) { wasSaving, isSaving in
+            if wasSaving && !isSaving {
+                isSubmitting = false
+            }
+        }
     }
 
     private func commitIMEAndSave() {
         let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty, !isSaving, !isSubmitting else { return }
+        isSubmitting = true
 
         UIApplication.shared.sendAction(
             #selector(UIResponder.resignFirstResponder),
@@ -2032,7 +2338,7 @@ private struct QuickSubtaskInputView: View {
         )
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            onSave(draft)
+            onSave(trimmed)
             draft = ""
         }
     }
