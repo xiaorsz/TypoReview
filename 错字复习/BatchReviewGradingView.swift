@@ -27,6 +27,7 @@ struct BatchReviewGradingView: View {
     @State private var reviewSessionID = UUID()
     @State private var accuracyBonusAmount = 0
     @State private var saveErrorMessage: String?
+    @State private var skippedSyncedCount = 0
     
     private let scheduler = ReviewScheduler()
 
@@ -235,8 +236,8 @@ struct BatchReviewGradingView: View {
         GeometryReader { proxy in
             let isWide = proxy.size.width >= 700
             
-            let totalCount = entryStates.filter { $0.result != .pending }.count
-            let correctCount = entryStates.filter { $0.result == .correct }.count
+            let totalCount = reviewedSummaries.count
+            let correctCount = reviewedSummaries.filter { $0.result == .correct }.count
             let wrongCount = totalCount - correctCount
             
             let accuracyText: String = {
@@ -246,6 +247,9 @@ struct BatchReviewGradingView: View {
             }()
             
             let summaryText: String = {
+                if totalCount == 0, skippedSyncedCount > 0 {
+                    return "这些题的进度已经更新，当前无需重复复习。"
+                }
                 if wrongCount == 0 {
                     return "这次复习全部答对，系统已经自动安排到下一次复习日期。"
                 }
@@ -265,6 +269,12 @@ struct BatchReviewGradingView: View {
 
                         Text(summaryText)
                             .foregroundStyle(.white.opacity(0.85))
+
+                        if skippedSyncedCount > 0 {
+                            Text("另有 \(skippedSyncedCount) 题的进度已更新，本次无需重复复习。")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.white.opacity(0.9))
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(24)
@@ -349,30 +359,49 @@ struct BatchReviewGradingView: View {
 
     private func submitResults() {
         var summaries: [SessionReviewSummary] = []
+        let now = Date()
         let submittedStates = entryStates.filter { $0.result != .pending }
-        let totalCount = submittedStates.count
-        let correctCount = submittedStates.filter { $0.result == .correct }.count
+        let eligibleStates: [BatchReviewEntryState]
+
+        do {
+            _ = try ReviewScheduler.reconcileStandardReviewProgress(in: modelContext)
+            eligibleStates = submittedStates.filter { state in
+                // ReviewItem is the source of truth for whether work is still due. A
+                // matching record can arrive first or survive an interrupted save; it
+                // must not make a due answer disappear from this submission.
+                ReviewScheduler.isDue(state.item.nextReviewAt, on: now)
+            }
+        } catch {
+            saveErrorMessage = "提交前同步校验失败，请稍后再试一次。\(error.localizedDescription)"
+            return
+        }
+
+        skippedSyncedCount = submittedStates.count - eligibleStates.count
+        let totalCount = eligibleStates.count
+        let correctCount = eligibleStates.filter { $0.result == .correct }.count
         let earnedAccuracyBonusAmount = PointLedgerService.accuracyBonusAmount(
             correctCount: correctCount,
             totalCount: totalCount
         )
         
-        for state in entryStates {
-            guard state.result != .pending else { continue }
+        for state in eligibleStates {
             let reviewResult: ReviewResult = state.result == .correct ? .correct : .wrong
 
             let oldTrack = state.item.reviewTrack
             let oldFollowUpStep = state.item.resolvedDictationFollowUpStep
-            let output = scheduler.handle(item: state.item, result: reviewResult)
+            let output = scheduler.handle(item: state.item, result: reviewResult, now: now)
             let detail = state.item.reviewTransitionDetail(
                 result: reviewResult,
                 oldStage: output.record.oldStage,
                 oldTrack: oldTrack,
                 oldFollowUpStep: oldFollowUpStep
             )
-            output.record.note = ReviewRecord.storedDetailText(detail)
-            modelContext.insert(output.record)
-            PointLedgerService.awardReviewRecord(output.record, in: modelContext)
+            output.record.note = ReviewRecord.storedConfirmedDetailText(detail)
+            let persistedRecord = ReviewScheduler.upsertReviewRecord(
+                output.record,
+                in: modelContext
+            ).record
+            PointLedgerService.awardReviewRecord(persistedRecord, in: modelContext)
 
             summaries.append(
                 SessionReviewSummary(
@@ -383,12 +412,14 @@ struct BatchReviewGradingView: View {
             )
         }
 
-        PointLedgerService.awardReviewAccuracyBonus(
-            sessionID: reviewSessionID,
-            correctCount: correctCount,
-            totalCount: totalCount,
-            in: modelContext
-        )
+        if totalCount > 0 {
+            PointLedgerService.awardReviewAccuracyBonus(
+                sessionID: reviewSessionID,
+                correctCount: correctCount,
+                totalCount: totalCount,
+                in: modelContext
+            )
+        }
         
         do {
             try modelContext.save()

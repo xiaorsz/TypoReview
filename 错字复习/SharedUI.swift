@@ -166,7 +166,7 @@ extension ReviewItem {
             return "听写跟进"
         }
 
-        return "阶段 \(stage)"
+        return stage.reviewStageDisplayText
     }
 
     var stageBadgeColor: Color {
@@ -200,7 +200,7 @@ extension ReviewItem {
             return "听写通过后的跟进复习"
         }
 
-        return "阶段 \(stage)"
+        return stage.reviewStageDisplayText
     }
 
     func reviewTransitionDetail(
@@ -223,7 +223,7 @@ extension ReviewItem {
                 if oldTrack == .dictationFollowUp,
                    reviewTrack == .standard,
                    stage >= ReviewScheduler.dictationFollowUpCompleteStage {
-                    return "已完成听写跟进，已进入阶段 \(stage)"
+                    return "已完成听写跟进，已进入\(stage.reviewStageDisplayText)"
                 }
                 if !oldLabel.isEmpty && !newLabel.isEmpty {
                     return "已从\(oldLabel)进入\(newLabel)"
@@ -244,9 +244,9 @@ extension ReviewItem {
             if oldStage == 0 && stage >= 2 {
                 return "已通过首次复习，下一次会跳过明天再出现"
             }
-            return "已从阶段 \(oldStage) 进入阶段 \(stage)"
+            return "已从\(oldStage.reviewStageDisplayText)进入\(stage.reviewStageDisplayText)"
         }
-        return "本次判错，已调整到阶段 \(stage)"
+        return "本次判错，已调整到\(stage.reviewStageDisplayText)"
     }
 
     private static func followUpLabel(for track: ReviewTrack, step: Int) -> String {
@@ -263,8 +263,6 @@ extension ReviewItem {
 }
 
 extension ReviewRecord {
-    private static let detailNotePrefix = "__detail__:"
-
     var resultDisplayText: String {
         switch result {
         case .correct:
@@ -311,8 +309,9 @@ extension ReviewRecord {
             case "已完成听写跟进，当前标记为已掌握",
                  "已完成本轮听写跟进":
                 return "第7天复习 -> 已掌握"
-            case "已完成听写跟进，已进入阶段 6":
-                return "第7天复习 -> 阶段 6"
+            case "已完成听写跟进，已进入阶段 6",
+                 "已完成听写跟进，已进入30天巩固":
+                return "第7天复习 -> 30天巩固"
             case "已完成听写跟进，已进入阶段 7":
                 return "第7天复习 -> 已掌握"
             case "已完成所有复习，当前标记为已掌握":
@@ -331,6 +330,9 @@ extension ReviewRecord {
 
     var displayDetailText: String {
         if let cachedDetailText {
+            if cachedDetailText == "已完成听写跟进，已进入阶段 6" {
+                return "已完成听写跟进，已进入30天巩固"
+            }
             return cachedDetailText
         }
 
@@ -361,7 +363,8 @@ extension ReviewRecord {
     var userVisibleNoteText: String? {
         let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedNote.isEmpty else { return nil }
-        guard !trimmedNote.hasPrefix(Self.detailNotePrefix) else { return nil }
+        guard !trimmedNote.hasPrefix(Self.detailNotePrefix),
+              !trimmedNote.hasPrefix(Self.confirmedDetailNotePrefix) else { return nil }
         return trimmedNote
     }
 
@@ -369,16 +372,27 @@ extension ReviewRecord {
         detailNotePrefix + detail
     }
 
+    static func storedConfirmedDetailText(_ detail: String) -> String {
+        confirmedDetailNotePrefix + detail
+    }
+
     private var cachedDetailText: String? {
         let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmedNote.hasPrefix(Self.detailNotePrefix) else { return nil }
+        let prefix: String
+        if trimmedNote.hasPrefix(Self.confirmedDetailNotePrefix) {
+            prefix = Self.confirmedDetailNotePrefix
+        } else if trimmedNote.hasPrefix(Self.detailNotePrefix) {
+            prefix = Self.detailNotePrefix
+        } else {
+            return nil
+        }
 
-        let detail = String(trimmedNote.dropFirst(Self.detailNotePrefix.count))
+        let detail = String(trimmedNote.dropFirst(prefix.count))
         return detail.isEmpty ? nil : detail
     }
 
     private static func stageTransitionLabel(for stage: Int) -> String {
-        return "阶段 \(stage)"
+        stage.reviewStageDisplayText
     }
 }
 
@@ -731,6 +745,10 @@ struct StageTimelineView: View {
 // MARK: - Stage Color Helper
 
 extension Int {
+    var reviewStageDisplayText: String {
+        self == ReviewScheduler.dictationFollowUpCompleteStage ? "30天巩固" : "阶段 \(self)"
+    }
+
     var stageColor: Color {
         switch self {
         case 0...2: return .red

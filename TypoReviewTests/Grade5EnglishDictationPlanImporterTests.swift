@@ -88,27 +88,61 @@ final class Grade5EnglishDictationPlanImporterTests: XCTestCase {
     }
 
     @MainActor
-    func testAutomaticImportRunsOnlyOnce() throws {
+    func testDeduplicationRemovesASecondImportedCopyAndPreservesProgress() throws {
         let container = try makeContainer()
         let context = container.mainContext
-        let suiteName = "Grade5EnglishDictationPlanImporterTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        _ = try Grade5EnglishDictationPlanImporter.importPlan(in: context)
 
-        let first = try Grade5EnglishDictationPlanImporter.importIfNeeded(
-            in: context,
-            defaults: defaults
-        )
-        let second = try Grade5EnglishDictationPlanImporter.importIfNeeded(
-            in: context,
-            defaults: defaults
-        )
+        let firstDay = Grade5EnglishDictationPlanImporter.plan[0]
+        let originalSession = try context.fetch(FetchDescriptor<DictationSession>())
+            .first { $0.id == firstDay.id }!
+        let finishedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        originalSession.finishedAt = finishedAt
 
-        XCTAssertEqual(first?.insertedSessions, 40)
-        XCTAssertNil(second)
-        XCTAssertTrue(defaults.bool(forKey: Grade5EnglishDictationPlanImporter.automaticImportKey))
+        let duplicateSession = DictationSession(
+            id: firstDay.id,
+            title: firstDay.title,
+            type: .englishWord,
+            createdAt: originalSession.createdAt.addingTimeInterval(60),
+            updatedAt: originalSession.updatedAt.addingTimeInterval(60),
+            scheduledDate: firstDay.scheduledDate
+        )
+        context.insert(duplicateSession)
+
+        let originalEntry = try context.fetch(FetchDescriptor<DictationEntry>())
+            .first { $0.sessionID == firstDay.id && $0.sortOrder == 0 }!
+        let duplicateEntry = DictationEntry(
+            sessionID: originalEntry.sessionID,
+            sortOrder: originalEntry.sortOrder,
+            type: originalEntry.type,
+            content: originalEntry.content,
+            prompt: originalEntry.prompt,
+            note: originalEntry.note,
+            source: originalEntry.source,
+            result: .wrong,
+            createdAt: originalEntry.createdAt.addingTimeInterval(60),
+            updatedAt: originalEntry.updatedAt.addingTimeInterval(120)
+        )
+        context.insert(duplicateEntry)
+        try context.save()
+
+        let result = try Grade5EnglishDictationPlanImporter.deduplicateImportedPlan(in: context)
+
+        XCTAssertEqual(result.removedSessions, 1)
+        XCTAssertEqual(result.removedEntries, 1)
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<DictationSession>()), 40)
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<DictationEntry>()), 119)
+
+        let survivingSession = try context.fetch(FetchDescriptor<DictationSession>())
+            .first { $0.id == firstDay.id }!
+        XCTAssertEqual(survivingSession.finishedAt, finishedAt)
+
+        let survivingEntry = try context.fetch(FetchDescriptor<DictationEntry>())
+            .first { $0.sessionID == firstDay.id && $0.sortOrder == 0 }!
+        XCTAssertEqual(survivingEntry.result, .wrong)
+
+        let secondPass = try Grade5EnglishDictationPlanImporter.deduplicateImportedPlan(in: context)
+        XCTAssertEqual(secondPass.removedTotal, 0)
     }
 
     @MainActor

@@ -207,8 +207,7 @@ struct DataBackupPayload: Codable {
     }
 
     static func decode(from data: Data) throws -> DataBackupPayload {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        let decoder = JSONDecoder.typoReviewISO8601
 
         let payload = try decoder.decode(DataBackupPayload.self, from: data)
         guard payload.version <= currentVersion else {
@@ -273,6 +272,21 @@ enum DataBackupService {
         into modelContext: ModelContext,
         settingsStore: AppSettingsStore,
         mediaLibraryStore: MediaLibraryStore
+    ) throws {
+        try restoreStructuredData(
+            payload,
+            into: modelContext,
+            settingsStore: settingsStore
+        )
+        try mediaLibraryStore.replaceAll(with: payload.mediaAssets.map { $0.makeModel() })
+    }
+
+    /// Replaces only the structured cache. Media indexes and media files stay local/iCloud-based.
+    @MainActor
+    static func restoreStructuredData(
+        _ payload: DataBackupPayload,
+        into modelContext: ModelContext,
+        settingsStore: AppSettingsStore
     ) throws {
         try deleteAll(ReviewItem.self, in: modelContext)
         try deleteAll(ReviewRecord.self, in: modelContext)
@@ -348,11 +362,131 @@ enum DataBackupService {
             try modelContext.save()
         }
         settingsStore.restore(from: payload.settings, using: modelContext)
-        try mediaLibraryStore.replaceAll(with: payload.mediaAssets.map { $0.makeModel() })
+    }
+
+    /// Server bootstrap path. Keeping the work in small batches prevents a large
+    /// first snapshot from monopolizing the iOS main thread.
+    @MainActor
+    static func restoreStructuredDataInBatches(
+        _ payload: DataBackupPayload,
+        into modelContext: ModelContext,
+        settingsStore: AppSettingsStore
+    ) async throws {
+        try await deleteAllInBatches(ReviewItem.self, in: modelContext)
+        try await deleteAllInBatches(ReviewRecord.self, in: modelContext)
+        try await deleteAllInBatches(ReviewDailyPlan.self, in: modelContext)
+        try await deleteAllInBatches(TaskItem.self, in: modelContext)
+        try await deleteAllInBatches(TaskCompletion.self, in: modelContext)
+        try await deleteAllInBatches(TaskSubitem.self, in: modelContext)
+        try await deleteAllInBatches(TaskExecutionRecord.self, in: modelContext)
+        try await deleteAllInBatches(TaskSubitemExecutionRecord.self, in: modelContext)
+        try await deleteAllInBatches(DictationSession.self, in: modelContext)
+        try await deleteAllInBatches(DictationEntry.self, in: modelContext)
+        try await deleteAllInBatches(ScheduleItem.self, in: modelContext)
+        try await deleteAllInBatches(PointLedgerEntry.self, in: modelContext)
+        try await deleteAllInBatches(PointRewardState.self, in: modelContext)
+
+        await insertInBatches(payload.reviewItems, into: modelContext) { $0.makeModel() }
+        await insertInBatches(payload.reviewRecords, into: modelContext) { $0.makeModel() }
+        await insertInBatches(payload.taskItems, into: modelContext) { $0.makeModel() }
+        await insertInBatches(payload.taskCompletions, into: modelContext) { $0.makeModel() }
+        await insertInBatches(payload.taskSubitems, into: modelContext) { $0.makeModel() }
+
+        let restoredTaskExecutions: [TaskExecutionRecord] = {
+            if payload.taskExecutionRecords.isEmpty {
+                return payload.taskCompletions.map { snapshot in
+                    TaskExecutionRecord(
+                        id: snapshot.id,
+                        taskID: snapshot.taskID,
+                        occurrenceDate: snapshot.completedDate,
+                        detail: "",
+                        status: .completed,
+                        completedAt: snapshot.completedAt,
+                        createdAt: snapshot.completedAt,
+                        updatedAt: snapshot.completedAt
+                    )
+                }
+            }
+            return payload.taskExecutionRecords.map { $0.makeModel() }
+        }()
+        await insertInBatches(restoredTaskExecutions, into: modelContext) { $0 }
+        await insertInBatches(payload.taskSubitemExecutionRecords, into: modelContext) { $0.makeModel() }
+        await insertInBatches(payload.dictationSessions, into: modelContext) { $0.makeModel() }
+        await insertInBatches(payload.dictationEntries, into: modelContext) { $0.makeModel() }
+        await insertInBatches(payload.scheduleItems, into: modelContext) { $0.makeModel() }
+        await insertInBatches(payload.pointLedgerEntries, into: modelContext) { $0.makeModel() }
+        await insertInBatches(payload.pointRewardStates, into: modelContext) { $0.makeModel() }
+
+        TaskExecutionSupport.migrateLegacySubtasksIfNeeded(in: modelContext)
+        await Task.yield()
+        _ = try TaskExecutionSupport.deduplicateSubtasks(in: modelContext)
+        _ = try ReviewScheduler.normalizeStoredReviewDates(in: modelContext)
+
+        if modelContext.hasChanges {
+            try modelContext.save()
+        }
+        settingsStore.restore(from: payload.settings, using: modelContext)
+    }
+
+    @MainActor
+    private static func deleteAllInBatches<Model: PersistentModel>(
+        _ type: Model.Type,
+        in modelContext: ModelContext,
+        batchSize: Int = 100
+    ) async throws {
+        let models = try modelContext.fetch(FetchDescriptor<Model>())
+        for start in stride(from: 0, to: models.count, by: batchSize) {
+            let end = min(start + batchSize, models.count)
+            for model in models[start..<end] {
+                modelContext.delete(model)
+            }
+            await Task.yield()
+        }
+    }
+
+    @MainActor
+    private static func insertInBatches<Snapshot, Model: PersistentModel>(
+        _ snapshots: [Snapshot],
+        into modelContext: ModelContext,
+        batchSize: Int = 100,
+        makeModel: (Snapshot) -> Model
+    ) async {
+        for start in stride(from: 0, to: snapshots.count, by: batchSize) {
+            let end = min(start + batchSize, snapshots.count)
+            for snapshot in snapshots[start..<end] {
+                modelContext.insert(makeModel(snapshot))
+            }
+            await Task.yield()
+        }
     }
 
     private static func deleteAll<Model: PersistentModel>(_ type: Model.Type, in modelContext: ModelContext) throws {
         try modelContext.fetch(FetchDescriptor<Model>()).forEach(modelContext.delete)
+    }
+}
+
+extension JSONDecoder {
+    static var typoReviewISO8601: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+            let fractional = ISO8601DateFormatter()
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = fractional.date(from: value) {
+                return date
+            }
+            let standard = ISO8601DateFormatter()
+            standard.formatOptions = [.withInternetDateTime]
+            if let date = standard.date(from: value) {
+                return date
+            }
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Invalid ISO-8601 date: \(value)"
+            )
+        }
+        return decoder
     }
 }
 

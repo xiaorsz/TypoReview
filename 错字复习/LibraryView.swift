@@ -526,7 +526,7 @@ private enum LibraryStageFilter: Hashable, Identifiable {
         case .all:
             return "全部阶段"
         case let .stage(stage):
-            return "阶段 \(stage)"
+            return stage.reviewStageDisplayText
         case .dictationFollowUp:
             return "听写跟进"
         }

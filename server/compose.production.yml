@@ -1,0 +1,89 @@
+name: typo-review-sync
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - typo_review_postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - typo_review_internal
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      API_TOKEN: ${API_TOKEN}
+      DEFAULT_ACCOUNT_ID: ${DEFAULT_ACCOUNT_ID}
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:18181:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      typo_review_internal:
+      public_gateway:
+        aliases:
+          - typo-review-sync-api
+
+  gateway:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "18443:8443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - typo_review_gateway_data:/data
+      - typo_review_gateway_config:/config
+    networks:
+      - typo_review_internal
+
+  backup:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      TZ: Asia/Shanghai
+    command: ["/bin/sh", "/opt/typo-review/backup-loop.sh"]
+    volumes:
+      - ./scripts/backup-loop.sh:/opt/typo-review/backup-loop.sh:ro
+      - ${BACKUP_DIR:-/opt/typo-review-sync/backups}:/backups
+    networks:
+      - typo_review_internal
+
+volumes:
+  typo_review_postgres_data:
+    name: typo-review-sync-postgres-data
+  typo_review_gateway_data:
+    name: typo-review-sync-gateway-data
+  typo_review_gateway_config:
+    name: typo-review-sync-gateway-config
+
+networks:
+  typo_review_internal:
+    name: typo-review-sync-internal
+  public_gateway:
+    external: true
+    name: luye-content-workbench_frontend

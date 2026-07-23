@@ -105,14 +105,134 @@ struct PointBalanceSnapshot {
     let longestStreak: Int
 }
 
+struct PointStreakSnapshot {
+    let currentStreak: Int
+    let longestStreak: Int
+    let lastActiveDay: Date?
+}
+
 struct AccuracyBonusReward {
     let amount: Int
+}
+
+struct PointRewardReconciliationResult {
+    let reviewRewardsAdded: Int
+    let dictationRewardsAdded: Int
+    let dictationAccuracyBonusesAdded: Int
+
+    var totalAdded: Int {
+        reviewRewardsAdded + dictationRewardsAdded + dictationAccuracyBonusesAdded
+    }
 }
 
 enum PointLedgerService {
     static let reviewRewardAmount = 1
     static let dictationRewardAmount = 1
     static let taskRewardAmount = 5
+
+    static func canonicalEntries(_ entries: [PointLedgerEntry]) -> [PointLedgerEntry] {
+        Dictionary(grouping: entries) { entry in
+            entry.idempotencyKey.isEmpty ? "legacy-\(entry.id.uuidString)" : entry.idempotencyKey
+        }.values.compactMap { duplicates in
+            duplicates.min {
+                if $0.createdAt != $1.createdAt {
+                    return $0.createdAt < $1.createdAt
+                }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+        }
+    }
+
+    static func streakSnapshot(
+        from entries: [PointLedgerEntry],
+        referenceDate: Date = .now,
+        calendar: Calendar = .current
+    ) -> PointStreakSnapshot {
+        let referenceDay = calendar.startOfDay(for: referenceDate)
+        let nextReferenceDay = calendar.date(byAdding: .day, value: 1, to: referenceDay)
+            ?? referenceDate.addingTimeInterval(24 * 60 * 60)
+        let eligibleEntries = canonicalEntries(entries).filter { $0.createdAt < nextReferenceDay }
+        let reversedEntryIDs = Set(eligibleEntries.compactMap { entry in
+            entry.isReversal ? entry.reversesEntryIDRawValue : nil
+        })
+        let activityDates = eligibleEntries.compactMap { entry -> Date? in
+            guard entry.amount > 0,
+                  !entry.isReversal,
+                  !reversedEntryIDs.contains(entry.id.uuidString),
+                  entry.sourceType == .reviewRecord || entry.sourceType == .dictationEntry else {
+                return nil
+            }
+            return entry.createdAt
+        }
+        return streakSnapshot(
+            activityDates: activityDates,
+            referenceDate: referenceDate,
+            calendar: calendar
+        )
+    }
+
+    static func streakSnapshot(
+        reviewRecords: [ReviewRecord],
+        dictationSessions: [DictationSession],
+        referenceDate: Date = .now,
+        calendar: Calendar = .current
+    ) -> PointStreakSnapshot {
+        let reviewDates = ReviewRecord.canonicalRecords(reviewRecords).map(\.reviewedAt)
+        let dictationDates = Dictionary(grouping: dictationSessions, by: \.id).values.flatMap { sessions in
+            [
+                sessions.compactMap(\.finishedAt).max(),
+                sessions.compactMap(\.reviewedAt).max()
+            ].compactMap { $0 }
+        }
+        return streakSnapshot(
+            activityDates: reviewDates + dictationDates,
+            referenceDate: referenceDate,
+            calendar: calendar
+        )
+    }
+
+    static func streakSnapshot(
+        activityDates: [Date],
+        referenceDate: Date = .now,
+        calendar: Calendar = .current
+    ) -> PointStreakSnapshot {
+        let referenceDay = calendar.startOfDay(for: referenceDate)
+        let nextReferenceDay = calendar.date(byAdding: .day, value: 1, to: referenceDay)
+            ?? referenceDate.addingTimeInterval(24 * 60 * 60)
+        let activeDays = Set(activityDates.lazy
+            .filter { $0 < nextReferenceDay }
+            .map { calendar.startOfDay(for: $0) })
+        let orderedDays = activeDays.sorted()
+
+        var longestStreak = 0
+        var runningStreak = 0
+        var previousDay: Date?
+        for day in orderedDays {
+            if let previousDay,
+               let expectedDay = calendar.date(byAdding: .day, value: 1, to: previousDay),
+               calendar.isDate(day, inSameDayAs: expectedDay) {
+                runningStreak += 1
+            } else {
+                runningStreak = 1
+            }
+            longestStreak = max(longestStreak, runningStreak)
+            previousDay = day
+        }
+
+        guard let lastActiveDay = orderedDays.last else {
+            return PointStreakSnapshot(currentStreak: 0, longestStreak: 0, lastActiveDay: nil)
+        }
+
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: referenceDay)
+        let isCurrent = calendar.isDate(lastActiveDay, inSameDayAs: referenceDay)
+            || yesterday.map { calendar.isDate(lastActiveDay, inSameDayAs: $0) } == true
+
+        return PointStreakSnapshot(
+            currentStreak: isCurrent ? streakLength(endingOn: lastActiveDay, activeDays: activeDays, calendar: calendar) : 0,
+            longestStreak: longestStreak,
+            lastActiveDay: lastActiveDay
+        )
+    }
 
     static func accuracyBonusReward(correctCount: Int, totalCount: Int) -> AccuracyBonusReward? {
         guard totalCount > 0, correctCount >= 0, correctCount <= totalCount else { return nil }
@@ -180,12 +300,19 @@ enum PointLedgerService {
     }
 
     static func currentSnapshot(in modelContext: ModelContext) -> PointBalanceSnapshot {
-        let entries = (try? modelContext.fetch(FetchDescriptor<PointLedgerEntry>())) ?? []
-        let state = (try? modelContext.fetch(FetchDescriptor<PointRewardState>()))?.first
+        let entries = canonicalEntries(
+            (try? modelContext.fetch(FetchDescriptor<PointLedgerEntry>())) ?? []
+        )
+        let reviewRecords = (try? modelContext.fetch(FetchDescriptor<ReviewRecord>())) ?? []
+        let dictationSessions = (try? modelContext.fetch(FetchDescriptor<DictationSession>())) ?? []
+        let streak = streakSnapshot(
+            reviewRecords: reviewRecords,
+            dictationSessions: dictationSessions
+        )
         return PointBalanceSnapshot(
             balance: entries.reduce(0) { $0 + $1.amount },
-            currentStreak: state?.currentStreak ?? 0,
-            longestStreak: state?.longestStreak ?? 0
+            currentStreak: streak.currentStreak,
+            longestStreak: streak.longestStreak
         )
     }
 
@@ -230,6 +357,88 @@ enum PointLedgerService {
 
     static func currentBalance(in modelContext: ModelContext) -> Int {
         currentSnapshot(in: modelContext).balance
+    }
+
+    /// Repairs rewards that can be absent when completed activity arrives through
+    /// CloudKit or a backup restore instead of the local grading flow.
+    @discardableResult
+    static func reconcileMissingAutomaticRewards(
+        in modelContext: ModelContext
+    ) throws -> PointRewardReconciliationResult {
+        let existingKeys = Set(
+            try modelContext.fetch(FetchDescriptor<PointLedgerEntry>()).map(\.idempotencyKey)
+        )
+        var knownKeys = existingKeys
+        var reviewRewardsAdded = 0
+        var dictationRewardsAdded = 0
+        var dictationAccuracyBonusesAdded = 0
+
+        let reviewRecords = ReviewRecord.canonicalRecords(
+            try modelContext.fetch(FetchDescriptor<ReviewRecord>())
+        ).sorted { $0.reviewedAt < $1.reviewedAt }
+        for record in reviewRecords {
+            let key = "review-\(record.id.uuidString)"
+            guard !knownKeys.contains(key) else { continue }
+            if awardReviewRecord(record, in: modelContext) != nil {
+                knownKeys.insert(key)
+                reviewRewardsAdded += 1
+            }
+        }
+
+        let fetchedEntries = try modelContext.fetch(FetchDescriptor<DictationEntry>())
+        let dictationEntries = Dictionary(grouping: fetchedEntries, by: \.id).values.compactMap { duplicates in
+            duplicates.max {
+                if $0.updatedAt != $1.updatedAt {
+                    return $0.updatedAt < $1.updatedAt
+                }
+                return $0.createdAt < $1.createdAt
+            }
+        }
+        let judgedEntries = dictationEntries
+            .filter { $0.result != .pending }
+            .sorted { $0.updatedAt < $1.updatedAt }
+        for entry in judgedEntries {
+            let key = "dictation-entry-\(entry.id.uuidString)"
+            guard !knownKeys.contains(key) else { continue }
+            if awardDictationEntry(entry, in: modelContext) != nil {
+                knownKeys.insert(key)
+                dictationRewardsAdded += 1
+            }
+        }
+
+        let entriesBySessionID = Dictionary(grouping: dictationEntries, by: \.sessionID)
+        let sessionsByID = Dictionary(
+            grouping: try modelContext.fetch(FetchDescriptor<DictationSession>()),
+            by: \.id
+        )
+        let reviewedSessions = sessionsByID.compactMap { sessionID, duplicates -> (UUID, Date)? in
+            guard let reviewedAt = duplicates.compactMap(\.reviewedAt).max() else { return nil }
+            return (sessionID, reviewedAt)
+        }.sorted { $0.1 < $1.1 }
+
+        for (sessionID, reviewedAt) in reviewedSessions {
+            let key = "dictation-accuracy-bonus-\(sessionID.uuidString)"
+            guard !knownKeys.contains(key) else { continue }
+            let entries = entriesBySessionID[sessionID] ?? []
+            guard !entries.isEmpty, entries.allSatisfy({ $0.result != .pending }) else { continue }
+            let correctCount = entries.filter { $0.result == .correct }.count
+            if awardDictationAccuracyBonus(
+                sessionID: sessionID,
+                correctCount: correctCount,
+                totalCount: entries.count,
+                createdAt: reviewedAt,
+                in: modelContext
+            ) != nil {
+                knownKeys.insert(key)
+                dictationAccuracyBonusesAdded += 1
+            }
+        }
+
+        return PointRewardReconciliationResult(
+            reviewRewardsAdded: reviewRewardsAdded,
+            dictationRewardsAdded: dictationRewardsAdded,
+            dictationAccuracyBonusesAdded: dictationAccuracyBonusesAdded
+        )
     }
 
     @discardableResult
@@ -421,29 +630,21 @@ enum PointLedgerService {
     private static func applyDailyStreakIfNeeded(on date: Date, in modelContext: ModelContext) {
         let calendar = Calendar.current
         let activeDay = calendar.startOfDay(for: date)
+        let entries = (try? modelContext.fetch(FetchDescriptor<PointLedgerEntry>())) ?? []
+        let currentSnapshot = streakSnapshot(from: entries, referenceDate: .now, calendar: calendar)
+        let activeDaySnapshot = streakSnapshot(from: entries, referenceDate: activeDay, calendar: calendar)
         let state = ensureRewardState(in: modelContext)
 
-        if let lastActiveDay = state.lastActiveDay,
-           calendar.isDate(lastActiveDay, inSameDayAs: activeDay) {
-            return
-        }
-
-        if let lastActiveDay = state.lastActiveDay,
-           let yesterday = calendar.date(byAdding: .day, value: -1, to: activeDay),
-           calendar.isDate(lastActiveDay, inSameDayAs: yesterday) {
-            state.currentStreak += 1
-        } else {
-            state.currentStreak = 1
-        }
-
-        state.lastActiveDay = activeDay
-        state.longestStreak = max(state.longestStreak, state.currentStreak)
+        state.currentStreak = currentSnapshot.currentStreak
+        state.lastActiveDay = currentSnapshot.lastActiveDay
+        state.longestStreak = currentSnapshot.longestStreak
         state.updatedAt = .now
 
+        let streakEndingOnActiveDay = activeDaySnapshot.currentStreak
         let bonusAmount: Int
-        if state.currentStreak == 3 {
+        if streakEndingOnActiveDay == 3 {
             bonusAmount = 5
-        } else if state.currentStreak == 7 || (state.currentStreak > 7 && state.currentStreak % 7 == 0) {
+        } else if streakEndingOnActiveDay == 7 || (streakEndingOnActiveDay > 7 && streakEndingOnActiveDay % 7 == 0) {
             bonusAmount = 15
         } else {
             bonusAmount = 0
@@ -458,7 +659,7 @@ enum PointLedgerService {
             sourceType: .dailyStreak,
             sourceIDRawValue: dayKey,
             idempotencyKey: "daily-streak-\(dayKey)",
-            note: "连续学习 \(state.currentStreak) 天",
+            note: "连续学习 \(streakEndingOnActiveDay) 天",
             createdAt: date,
             countsAsActiveDay: false,
             in: modelContext
@@ -466,7 +667,12 @@ enum PointLedgerService {
     }
 
     private static func ensureRewardState(in modelContext: ModelContext) -> PointRewardState {
-        let states = (try? modelContext.fetch(FetchDescriptor<PointRewardState>())) ?? []
+        let states = ((try? modelContext.fetch(FetchDescriptor<PointRewardState>())) ?? []).sorted {
+            if $0.updatedAt != $1.updatedAt {
+                return $0.updatedAt > $1.updatedAt
+            }
+            return $0.id.uuidString < $1.id.uuidString
+        }
         if let canonical = states.first {
             for duplicate in states.dropFirst() {
                 modelContext.delete(duplicate)
@@ -477,6 +683,23 @@ enum PointLedgerService {
         let state = PointRewardState()
         modelContext.insert(state)
         return state
+    }
+
+    private static func streakLength(
+        endingOn endDay: Date,
+        activeDays: Set<Date>,
+        calendar: Calendar
+    ) -> Int {
+        var length = 0
+        var cursor = calendar.startOfDay(for: endDay)
+        while activeDays.contains(cursor) {
+            length += 1
+            guard let previousDay = calendar.date(byAdding: .day, value: -1, to: cursor) else {
+                break
+            }
+            cursor = previousDay
+        }
+        return length
     }
 
     private static func hasEntry(idempotencyKey: String, in modelContext: ModelContext) -> Bool {
@@ -650,7 +873,8 @@ struct PointsDashboardView: View {
     @Environment(\.modelContext) private var modelContext
 
     @Query(sort: \PointLedgerEntry.createdAt, order: .reverse) private var entries: [PointLedgerEntry]
-    @Query private var rewardStates: [PointRewardState]
+    @Query private var reviewRecords: [ReviewRecord]
+    @Query private var dictationSessions: [DictationSession]
     @Query private var taskExecutions: [TaskExecutionRecord]
     @Query private var taskItems: [TaskItem]
 
@@ -661,15 +885,22 @@ struct PointsDashboardView: View {
     @State private var errorMessage: String?
 
     private var balance: Int {
-        entries.reduce(0) { $0 + $1.amount }
+        canonicalEntries.reduce(0) { $0 + $1.amount }
     }
 
     private var currentStreak: Int {
-        rewardStates.first?.currentStreak ?? 0
+        streakSnapshot.currentStreak
     }
 
     private var longestStreak: Int {
-        rewardStates.first?.longestStreak ?? 0
+        streakSnapshot.longestStreak
+    }
+
+    private var streakSnapshot: PointStreakSnapshot {
+        PointLedgerService.streakSnapshot(
+            reviewRecords: reviewRecords,
+            dictationSessions: dictationSessions
+        )
     }
 
     private var canRedeem: Bool {
@@ -693,9 +924,13 @@ struct PointsDashboardView: View {
 
     private var displayItems: [PointLedgerDisplayItem] {
         PointLedgerDisplayItem.items(
-            from: entries,
+            from: canonicalEntries,
             taskTitleByExecutionID: taskTitleByExecutionID
         )
+    }
+
+    private var canonicalEntries: [PointLedgerEntry] {
+        PointLedgerService.canonicalEntries(entries)
     }
 
     private var recentDisplayItems: [PointLedgerDisplayItem] {
@@ -739,7 +974,7 @@ struct PointsDashboardView: View {
             } header: {
                 Text("积分概览")
             } footer: {
-                Text("连续学习只统计听写判定和错题复习，待办任务完成不计入连续天数。")
+                Text("连续学习统计完成听写、听写判定和错题复习，待办任务完成不计入连续天数。")
             }
 
             Section {
@@ -894,7 +1129,7 @@ private struct PointLedgerHistoryView: View {
 
     private var displayItems: [PointLedgerDisplayItem] {
         PointLedgerDisplayItem.items(
-            from: entries,
+            from: PointLedgerService.canonicalEntries(entries),
             taskTitleByExecutionID: taskTitleByExecutionID
         )
     }

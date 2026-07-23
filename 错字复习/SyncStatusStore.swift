@@ -28,7 +28,7 @@ final class SyncStatusStore {
         let errorDescription: String?
     }
 
-    enum SyncNoticeKind {
+    enum SyncNoticeKind: Equatable {
         case checking
         case ready
         case caution
@@ -112,6 +112,7 @@ final class SyncStatusStore {
     var lastErrorMessage = ""
     var lastTrigger: Trigger = .launch
     var cloudKitEnabled = false
+    var serverSyncEnabled = false
     var containerIdentifier = "iCloud.cc.xiaorsz.typo-review"
     var cloudAccountState: CloudAccountState = .unknown
     var localDataSummary = "尚未检查本地数据"
@@ -123,12 +124,20 @@ final class SyncStatusStore {
     var isTestingCloudKit = false
     private var cloudKitEventObserver: NSObjectProtocol?
 
-    func configure(cloudKitEnabled: Bool, containerIdentifier: String? = nil, initializationError: String = "") {
+    func configure(
+        cloudKitEnabled: Bool,
+        serverSyncEnabled: Bool = false,
+        containerIdentifier: String? = nil,
+        initializationError: String = ""
+    ) {
         self.cloudKitEnabled = cloudKitEnabled
+        self.serverSyncEnabled = serverSyncEnabled
         self.containerIdentifier = containerIdentifier ?? fallbackContainerIdentifier
         self.cloudKitInitializationError = initializationError
         refreshBuildDiagnostics()
-        startMonitoringCloudKitEvents()
+        if cloudKitEnabled {
+            startMonitoringCloudKitEvents()
+        }
     }
 
     func refresh(using modelContext: ModelContext, trigger: Trigger) async {
@@ -197,6 +206,10 @@ final class SyncStatusStore {
     }
 
     private func refreshCloudAccountState() async {
+        if serverSyncEnabled {
+            cloudAccountState = .couldNotDetermine("当前使用上海服务器同步，不依赖 CloudKit 账户状态。")
+            return
+        }
         guard cloudKitEnabled else {
             cloudAccountState = .couldNotDetermine("当前运行的是本地存储模式，CloudKit 没有启用。")
             return
@@ -273,7 +286,10 @@ final class SyncStatusStore {
     }
 
     var cloudKitModeText: String {
-        cloudKitEnabled ? "CloudKit 已启用" : "CloudKit 未启用"
+        if serverSyncEnabled {
+            return "上海服务器同步已启用"
+        }
+        return cloudKitEnabled ? "CloudKit 已启用" : "CloudKit 未启用"
     }
 
     var cloudAccountTitle: String {
@@ -285,14 +301,20 @@ final class SyncStatusStore {
     }
 
     var isUsingLocalFallback: Bool {
-        !cloudKitEnabled
+        !cloudKitEnabled && !serverSyncEnabled
     }
 
     var storageModeTitle: String {
-        isUsingLocalFallback ? "已退回本地存储" : "CloudKit 同步存储"
+        if serverSyncEnabled {
+            return "服务器同步存储"
+        }
+        return isUsingLocalFallback ? "已退回本地存储" : "CloudKit 同步存储"
     }
 
     var storageModeDetail: String {
+        if serverSyncEnabled {
+            return "结构化数据由上海服务器同步；听写音视频资源仍使用原来的存储方式。"
+        }
         if isUsingLocalFallback {
             return "这台设备当前只保存在本机，不会把改动同步到其他设备。"
         }
@@ -300,6 +322,9 @@ final class SyncStatusStore {
     }
 
     var syncNoticeKind: SyncNoticeKind {
+        if serverSyncEnabled {
+            return .ready
+        }
         if isRefreshing || lastRefreshAt == nil {
             return .checking
         }
@@ -319,6 +344,9 @@ final class SyncStatusStore {
     }
 
     var syncNoticeTitle: String {
+        if serverSyncEnabled {
+            return "这台设备已连接上海服务器同步"
+        }
         switch syncNoticeKind {
         case .checking:
             return "这台设备的同步状态还在检查中"
@@ -332,6 +360,9 @@ final class SyncStatusStore {
     }
 
     var syncNoticeMessage: String {
+        if serverSyncEnabled {
+            return "题库、复习记录、任务、听写计划、日程和积分会在家庭账号的设备之间同步。"
+        }
         if !cloudKitEnabled {
             return "当前已经退回本地存储模式。除非 CloudKit 初始化恢复成功，否则这台设备上的改动不会同步到 iPad 或 iPhone。"
         }

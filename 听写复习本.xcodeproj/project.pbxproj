@@ -15,6 +15,7 @@
 		0CF6EA9D83611EC51A035122 /* ReviewRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ACD58BD800639DC62AB3988 /* ReviewRecord.swift */; };
 		0F2CA7D056FF1BE32917CB6D /* HomeDashboardDataLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1AE669F908DAA7398525F62 /* HomeDashboardDataLoader.swift */; };
 		163A4487C87EE2A920542397 /* EnglishGlossService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C15C5653E94F3CC37C6CB72E /* EnglishGlossService.swift */; };
+		1A397CFE644AD2846586635C /* TypoReviewServerCA.crt in Resources */ = {isa = PBXBuildFile; fileRef = 5666CDE286D6F2BD6E13076D /* TypoReviewServerCA.crt */; };
 		1BE60DD7F25B825A3006B512 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 53A5B91D2CA89AF3672C96CD /* Assets.xcassets */; };
 		1F5BBAEFD6C810FCEBCB7CBD /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 835499BE852352E7085C7083 /* LibraryView.swift */; };
 		231AA24240FC6FCBD6A369F2 /* BatchReviewSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA218905C6AD638CB04C774E /* BatchReviewSessionView.swift */; };
@@ -53,8 +54,10 @@
 		7350AF86868396BB77881B4A /* AddReviewItemView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFFC43C9FF7768E732522AE5 /* AddReviewItemView.swift */; };
 		7C846FEEA034B97E5EA18910 /* ScheduleItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0A42DE1DFCACBAA52B4531 /* ScheduleItem.swift */; };
 		7DA63F70908CC43C3F19C94F /* TaskExecutionSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D919BCC4163E4167EBAE825F /* TaskExecutionSupport.swift */; };
+		7E268091C21F211232E36F53 /* ServerAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58DA378CBD575240BAB65E55 /* ServerAPI.swift */; };
 		7E8182BE38D938589C41978D /* Grade5EnglishDictationPlanImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8CF86AA7FC57EDBD7D543EF /* Grade5EnglishDictationPlanImporter.swift */; };
 		8101EFDBFE693CE7C0CEF6CE /* DataBackup.swift in Sources */ = {isa = PBXBuildFile; fileRef = D52668595FD4C40411DDCF20 /* DataBackup.swift */; };
+		8A380A90A6B3085F9EF257D4 /* ServerSyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9ADDAD4F640B449CCCE635E9 /* ServerSyncCoordinator.swift */; };
 		8B58527C28E31748BB6A27C5 /* AddDictationSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35B9623148B3E1F3AF728F7B /* AddDictationSessionView.swift */; };
 		8DD0DB1825D5A2A8FBA4F3AD /* Contents.json in Resources */ = {isa = PBXBuildFile; fileRef = 86837560373D9A64F21BD7FB /* Contents.json */; };
 		932330CC5F580390519EA018 /* BatchReviewGradingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD3384CB49CD514C167C97AA /* BatchReviewGradingView.swift */; };
@@ -80,6 +83,7 @@
 		DDCF8DA830A19662393BA8B3 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E8B64A4B415CF43C0F3EEDD /* AppModel.swift */; };
 		DF19E9BF447813C14B3C0B4A /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E8B64A4B415CF43C0F3EEDD /* AppModel.swift */; };
 		E1FDCFE5F33348BCFA5FBB7F /* ScheduleItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0A42DE1DFCACBAA52B4531 /* ScheduleItem.swift */; };
+		E61FD3E4BC7F8F3DA0286DA1 /* ServerSyncCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED7FA063181E8D04AE43CABA /* ServerSyncCoordinatorTests.swift */; };
 		E7C6F8C6325069B859339C82 /* Points.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DBB2F7F33A81E1F70807E72 /* Points.swift */; };
 		F24EAA2C2EDFBE490535AC3E /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BED107080E55F2BD20BBDA2 /* RootTabView.swift */; };
 		F2639B6BCE88ED5084EADFDB /* AddScheduleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A4D0019865BF5BEADD017D9 /* AddScheduleView.swift */; };
@@ -142,6 +146,8 @@
 		4DAC45C1C6C9D73CED4CF57E /* DashboardBoardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardBoardView.swift; sourceTree = "<group>"; };
 		53A5B91D2CA89AF3672C96CD /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		54E7E4D3A83E8BB53D0F1DBA /* DictationReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationReviewView.swift; sourceTree = "<group>"; };
+		5666CDE286D6F2BD6E13076D /* TypoReviewServerCA.crt */ = {isa = PBXFileReference; path = TypoReviewServerCA.crt; sourceTree = "<group>"; };
+		58DA378CBD575240BAB65E55 /* ServerAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAPI.swift; sourceTree = "<group>"; };
 		639EFA48907D78F1554913B1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		67CBEE4738C53CAF8BFD0E09 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		68697C00FBC6375BFCE2DC7D /* Grade5ChineseDictationPlanImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Grade5ChineseDictationPlanImporter.swift; sourceTree = "<group>"; };
@@ -166,6 +172,7 @@
 		9408EBC5E29D4004352C8DC2 /* DictationSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationSession.swift; sourceTree = "<group>"; };
 		9428563BD9F0F854A49B690F /* AdvancedSyncDiagnosticView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdvancedSyncDiagnosticView.swift; sourceTree = "<group>"; };
 		9902D09D4660DE61317DFEBD /* TypoWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypoWidgetBundle.swift; sourceTree = "<group>"; };
+		9ADDAD4F640B449CCCE635E9 /* ServerSyncCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerSyncCoordinator.swift; sourceTree = "<group>"; };
 		A320D12ED2C802E15DB792C0 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		A3516E8E0523A9A64606E534 /* MediaLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryView.swift; sourceTree = "<group>"; };
 		AFFC43C9FF7768E732522AE5 /* AddReviewItemView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddReviewItemView.swift; sourceTree = "<group>"; };
@@ -189,6 +196,7 @@
 		E8CF86AA7FC57EDBD7D543EF /* Grade5EnglishDictationPlanImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Grade5EnglishDictationPlanImporter.swift; sourceTree = "<group>"; };
 		E981311286FBC45F0EFB2166 /* TypoWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TypoWidget.entitlements; sourceTree = "<group>"; };
 		EC0219F9D579B8E10D54BCAE /* AppIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIntent.swift; sourceTree = "<group>"; };
+		ED7FA063181E8D04AE43CABA /* ServerSyncCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerSyncCoordinatorTests.swift; sourceTree = "<group>"; };
 		F77C7D3F87D5519E83569CA0 /* MediaLibraryStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryStorage.swift; sourceTree = "<group>"; };
 		F8826455F72FA5B533C0554E /* MediaPlaybackCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaPlaybackCoordinator.swift; sourceTree = "<group>"; };
 		FC14A829652113A150E05B1A /* Grade5ChineseDictationPlanImporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Grade5ChineseDictationPlanImporterTests.swift; sourceTree = "<group>"; };
@@ -241,6 +249,8 @@
 				73337980C30B8D19A0BB0A00 /* ReviewSessionView.swift */,
 				6BED107080E55F2BD20BBDA2 /* RootTabView.swift */,
 				2A0A42DE1DFCACBAA52B4531 /* ScheduleItem.swift */,
+				58DA378CBD575240BAB65E55 /* ServerAPI.swift */,
+				9ADDAD4F640B449CCCE635E9 /* ServerSyncCoordinator.swift */,
 				D26E9C053301EB77882FCB38 /* SettingsView.swift */,
 				D475A66F00FA0F89DB5D4410 /* SharedUI.swift */,
 				3B6BED7625915F1CA069DAB6 /* SpeechAudioSession.swift */,
@@ -266,6 +276,7 @@
 				FC14A829652113A150E05B1A /* Grade5ChineseDictationPlanImporterTests.swift */,
 				7D30746825CCB6331C055DBD /* Grade5EnglishDictationPlanImporterTests.swift */,
 				3B5B13F8AB47E2DB03305856 /* ReviewSchedulerTests.swift */,
+				ED7FA063181E8D04AE43CABA /* ServerSyncCoordinatorTests.swift */,
 			);
 			path = TypoReviewTests;
 			sourceTree = "<group>";
@@ -308,6 +319,7 @@
 			children = (
 				D1DDC0F05B6852054C207F83 /* ECDICT_LICENSE.txt */,
 				3E08C31D54C7E1C704BC6C99 /* EnglishDictionary.sqlite */,
+				5666CDE286D6F2BD6E13076D /* TypoReviewServerCA.crt */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -437,6 +449,7 @@
 				2565C3B7A83CAD548F0CEA7C /* ECDICT_LICENSE.txt in Resources */,
 				6B3FFA1CCE02CBA2C80C25A0 /* EnglishDictionary.sqlite in Resources */,
 				AC5DDB6A0F340EAB0D39549B /* Localizable.strings in Resources */,
+				1A397CFE644AD2846586635C /* TypoReviewServerCA.crt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -511,6 +524,8 @@
 				4A62774D722D1EF6EE0B35CB /* ReviewSessionView.swift in Sources */,
 				F24EAA2C2EDFBE490535AC3E /* RootTabView.swift in Sources */,
 				7C846FEEA034B97E5EA18910 /* ScheduleItem.swift in Sources */,
+				7E268091C21F211232E36F53 /* ServerAPI.swift in Sources */,
+				8A380A90A6B3085F9EF257D4 /* ServerSyncCoordinator.swift in Sources */,
 				591AC7542BF73D4D646BF4F6 /* SettingsView.swift in Sources */,
 				49CCE52D144C3A48092DD4FE /* SharedUI.swift in Sources */,
 				B7EB4DA6A822CF40AB65AFB9 /* SpeechAudioSession.swift in Sources */,
@@ -532,6 +547,7 @@
 				F806FCD140EADB3FA9BB9620 /* Grade5ChineseDictationPlanImporterTests.swift in Sources */,
 				0C54AB9F68BF65DBEBD1214A /* Grade5EnglishDictationPlanImporterTests.swift in Sources */,
 				625D57263F5433D997BF62C9 /* ReviewSchedulerTests.swift in Sources */,
+				E61FD3E4BC7F8F3DA0286DA1 /* ServerSyncCoordinatorTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -575,6 +591,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				APS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = "错字复习/错字复习.entitlements";
 				CURRENT_PROJECT_VERSION = 3;
@@ -588,6 +605,7 @@
 					en,
 				);
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_TypoReviewServerURL = "https://111.231.22.148/typo-review-sync";
 				INFOPLIST_KEY_UIBackgroundModes = (
 					"remote-notification",
 				);
@@ -669,6 +687,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				APS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = "错字复习/错字复习.entitlements";
 				CURRENT_PROJECT_VERSION = 3;
@@ -683,6 +702,7 @@
 					en,
 				);
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_TypoReviewServerURL = "https://111.231.22.148/typo-review-sync";
 				INFOPLIST_KEY_UIBackgroundModes = (
 					"remote-notification",
 				);

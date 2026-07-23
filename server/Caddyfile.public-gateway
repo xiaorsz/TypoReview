@@ -1,0 +1,33 @@
+{
+	default_sni 111.231.22.148
+}
+
+111.231.22.148 {
+	tls {
+		issuer acme {
+			dir https://acme-v02.api.letsencrypt.org/directory
+			profile shortlived
+		}
+	}
+
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
+	handle_path /typo-review-sync/* {
+		reverse_proxy typo-review-sync-api:8080
+	}
+
+	handle {
+		reverse_proxy app:3000 {
+			header_up -oai-authenticated-user-email
+			header_up -oai-authenticated-user-full-name
+			header_up -oai-authenticated-user-full-name-encoding
+		}
+	}
+}

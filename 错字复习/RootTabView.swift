@@ -33,6 +33,7 @@ struct RootTabView: View {
     @State private var ios17ShieldStartTask: Task<Void, Never>?
     @State private var remoteChangeDebounceTask: Task<Void, Never>?
     @State private var startupMaintenanceTask: Task<Void, Never>?
+    @State private var serverPullTask: Task<Void, Never>?
     @State private var cloudKitSettleBackgroundTask: AppBackgroundTask?
     @State private var cloudKitSettleEndTask: Task<Void, Never>?
     @State private var hasStartedIOS17BackgroundShield = false
@@ -73,7 +74,9 @@ struct RootTabView: View {
                 AppStorePreviewData.seedIfNeeded(in: modelContext)
                 appSettingsStore.bootstrap(using: modelContext)
                 appSettingsStore.refreshFromSwiftDataIfPossible(using: modelContext)
-                appSettingsStore.refreshFromUbiquitousStoreIfPossible(using: modelContext)
+                if !ServerSyncCoordinator.shared.isEnabled {
+                    appSettingsStore.refreshFromUbiquitousStoreIfPossible(using: modelContext)
+                }
             }
             #endif
             #if DEBUG
@@ -85,6 +88,7 @@ struct RootTabView: View {
             scheduleIOS17BackgroundShieldStartIfNeeded()
             scheduleStartupMaintenanceIfNeeded()
             scheduleAppStateRefresh(trigger: .launch, delay: launchRefreshDelay)
+            scheduleServerSync(delayNanoseconds: 1_500_000_000)
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
@@ -94,11 +98,19 @@ struct RootTabView: View {
                 scheduleIOS17BackgroundShieldStartIfNeeded()
                 scheduleStartupMaintenanceIfNeeded()
                 scheduleAppStateRefresh(trigger: .foreground, delay: foregroundRefreshDelay)
+                scheduleServerSync(delayNanoseconds: 1_500_000_000)
             } else {
+                Task { @MainActor in
+                    await ServerSyncCoordinator.shared.uploadChanges(
+                        from: modelContext,
+                        settingsStore: appSettingsStore
+                    )
+                }
                 refreshAppStateTask?.cancel()
                 ios17ShieldStartTask?.cancel()
                 remoteChangeDebounceTask?.cancel()
                 startupMaintenanceTask?.cancel()
+                serverPullTask?.cancel()
                 beginCloudKitSettleBackgroundTask()
             }
         }
@@ -107,6 +119,7 @@ struct RootTabView: View {
             ios17ShieldStartTask?.cancel()
             remoteChangeDebounceTask?.cancel()
             startupMaintenanceTask?.cancel()
+            serverPullTask?.cancel()
             endCloudKitSettleBackgroundTask()
         }
         .onReceive(NotificationCenter.default.publisher(for: .NSPersistentStoreRemoteChange)) { _ in
@@ -119,8 +132,12 @@ struct RootTabView: View {
                 guard !Task.isCancelled else { return }
                 guard canRefreshLiveAppState else { return }
                 do {
+                    _ = try Grade5EnglishDictationPlanImporter.deduplicateImportedPlan(
+                        in: modelContext
+                    )
                     _ = try ReviewScheduler.reconcileStandardReviewProgress(in: modelContext)
                     _ = try ReviewScheduler.deduplicateDailyReviewPlans(in: modelContext)
+                    _ = try PointLedgerService.reconcileMissingAutomaticRewards(in: modelContext)
                     if modelContext.hasChanges {
                         try modelContext.save()
                     }
@@ -130,7 +147,9 @@ struct RootTabView: View {
                     #endif
                 }
                 appSettingsStore.refreshFromSwiftDataIfPossible(using: modelContext)
-                appSettingsStore.refreshFromUbiquitousStoreIfPossible(using: modelContext)
+                if !ServerSyncCoordinator.shared.isEnabled {
+                    appSettingsStore.refreshFromUbiquitousStoreIfPossible(using: modelContext)
+                }
                 #if DEBUG
                 DebugPerf.mark("RootTabView posting appDataDidMutate from remote change")
                 #endif
@@ -139,8 +158,16 @@ struct RootTabView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSUbiquitousKeyValueStore.didChangeExternallyNotification)) { _ in
             guard canRefreshLiveAppState else { return }
+            guard !ServerSyncCoordinator.shared.isEnabled else { return }
             appSettingsStore.refreshFromUbiquitousStoreIfPossible(using: modelContext)
             AppDataChangeCenter.post()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .appDataDidChange)) { _ in
+            guard canRefreshLiveAppState else { return }
+            ServerSyncCoordinator.shared.scheduleUpload(
+                from: modelContext,
+                settingsStore: appSettingsStore
+            )
         }
     }
 
@@ -155,12 +182,7 @@ struct RootTabView: View {
 
             Tab("题库", systemImage: "square.grid.2x2.fill", value: LegacyTab.library) {
                 tabRoot(for: .library) {
-                    DeferredTabContent(
-                        title: "题库",
-                        loadingMessage: "正在打开题库..."
-                    ) {
-                        LibraryView()
-                    }
+                    LibraryView()
                 }
             }
 
@@ -172,7 +194,7 @@ struct RootTabView: View {
 
             Tab("待办", systemImage: "checklist", value: LegacyTab.tasks) {
                 tabRoot(for: .tasks) {
-                    DeferredTasksHomeView()
+                    TasksView()
                 }
             }
 
@@ -202,12 +224,7 @@ struct RootTabView: View {
             .tag(LegacyTab.home)
 
             tabRoot(for: .library) {
-                DeferredTabContent(
-                    title: "题库",
-                    loadingMessage: "正在打开题库..."
-                ) {
-                    LibraryView()
-                }
+                LibraryView()
             }
             .tabItem {
                 Label("题库", systemImage: "square.grid.2x2.fill")
@@ -223,7 +240,7 @@ struct RootTabView: View {
             .tag(LegacyTab.dictation)
 
             tabRoot(for: .tasks) {
-                DeferredTasksHomeView()
+                TasksView()
             }
             .tabItem {
                 Label("待办", systemImage: "checklist")
@@ -296,6 +313,18 @@ struct RootTabView: View {
         }
     }
 
+    private func scheduleServerSync(delayNanoseconds: UInt64) {
+        serverPullTask?.cancel()
+        serverPullTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            guard !Task.isCancelled, canRefreshLiveAppState else { return }
+            await ServerSyncCoordinator.shared.synchronize(
+                modelContext: modelContext,
+                settingsStore: appSettingsStore
+            )
+        }
+    }
+
     private func shouldRefreshAppState(for trigger: SyncStatusStore.Trigger) -> Bool {
         guard !syncStatusStore.isRefreshing else { return false }
 
@@ -315,7 +344,9 @@ struct RootTabView: View {
         mediaLibraryStore.reload()
         appSettingsStore.bootstrap(using: modelContext)
         appSettingsStore.refreshFromSwiftDataIfPossible(using: modelContext)
-        appSettingsStore.refreshFromUbiquitousStoreIfPossible(using: modelContext)
+        if !ServerSyncCoordinator.shared.isEnabled {
+            appSettingsStore.refreshFromUbiquitousStoreIfPossible(using: modelContext)
+        }
         await syncStatusStore.refresh(using: modelContext, trigger: trigger)
     }
 
@@ -353,7 +384,9 @@ struct RootTabView: View {
             guard didRun else { return }
 
             appSettingsStore.refreshFromSwiftDataIfPossible(using: modelContext)
-            appSettingsStore.refreshFromUbiquitousStoreIfPossible(using: modelContext)
+            if !ServerSyncCoordinator.shared.isEnabled {
+                appSettingsStore.refreshFromUbiquitousStoreIfPossible(using: modelContext)
+            }
             AppDataChangeCenter.post()
         }
     }

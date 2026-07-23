@@ -39,16 +39,50 @@ struct HomeReviewItemProjection: Identifiable, Hashable {
 }
 
 struct HomeReviewRecordProjection {
+    let id: UUID
     let itemID: UUID
     let reviewedAt: Date
     let result: ReviewResult
     let mode: ReviewMode
+    let oldStage: Int
+    let newStage: Int
 
     init(_ record: ReviewRecord) {
+        id = record.id
         itemID = record.itemID
         reviewedAt = record.reviewedAt
         result = record.result
         mode = record.mode
+        oldStage = record.oldStage
+        newStage = record.newStage
+    }
+
+    static func canonicalRecords(_ records: [HomeReviewRecordProjection]) -> [HomeReviewRecordProjection] {
+        Dictionary(grouping: records, by: \.itemID).values
+            .flatMap { itemRecords -> [HomeReviewRecordProjection] in
+                let ordered = itemRecords.sorted {
+                    if $0.reviewedAt != $1.reviewedAt {
+                        return $0.reviewedAt < $1.reviewedAt
+                    }
+                    return $0.id.uuidString < $1.id.uuidString
+                }
+                var seenCycleIDs = Set<UUID>()
+                var resolvedStage: Int?
+                var result: [HomeReviewRecordProjection] = []
+
+                for record in ordered {
+                    guard seenCycleIDs.insert(record.id).inserted else { continue }
+                    if let resolvedStage,
+                       record.result == .correct,
+                       record.oldStage < resolvedStage,
+                       record.newStage <= resolvedStage {
+                        continue
+                    }
+                    result.append(record)
+                    resolvedStage = record.newStage
+                }
+                return result
+            }
     }
 }
 
@@ -570,6 +604,7 @@ struct HomeView: View {
             let name = childName.isEmpty ? "小朋友" : childName
             let calendar = Calendar.current
             let todayStart = calendar.startOfDay(for: referenceDate)
+            let reviewRecords = HomeReviewRecordProjection.canonicalRecords(reviewRecords)
 
             let canonicalReviewItems = canonicalItems(from: reviewItems)
             let sortedDue = canonicalReviewItems
@@ -587,11 +622,19 @@ struct HomeView: View {
                     return lhs.id.uuidString < rhs.id.uuidString
                 }
             let todayRecs = reviewRecords.filter { calendar.isDate($0.reviewedAt, inSameDayAs: referenceDate) }
-            let reviewedTodayItemIDs = Set(
-                todayRecs
-                    .filter { $0.mode != .dictation }
-                    .map(\.itemID)
-            )
+            var seenReviewedTodayItemIDs = Set<UUID>()
+            let reviewedTodayItemIDsInOrder = todayRecs
+                .filter { $0.mode != .dictation }
+                .sorted {
+                    if $0.reviewedAt != $1.reviewedAt {
+                        return $0.reviewedAt < $1.reviewedAt
+                    }
+                    return $0.id.uuidString < $1.id.uuidString
+                }
+                .compactMap { record in
+                    seenReviewedTodayItemIDs.insert(record.itemID).inserted ? record.itemID : nil
+                }
+            let reviewedTodayItemIDs = Set(reviewedTodayItemIDsInOrder)
             var seenDueItemIDs = Set<UUID>()
             let allDue = sortedDue.filter { item in
                 guard !reviewedTodayItemIDs.contains(item.id) else { return false }
@@ -599,13 +642,19 @@ struct HomeView: View {
             }
             let plannedItemIDs: [UUID]
             if let dailyPlanItemIDs {
-                plannedItemIDs = ReviewDailyPlan.expandedItemIDs(
+                plannedItemIDs = ReviewDailyPlan.reconciledItemIDs(
                     existingItemIDs: dailyPlanItemIDs,
+                    reviewedTodayItemIDs: reviewedTodayItemIDsInOrder,
                     availableDueItemIDs: allDue.map(\.id),
                     dailyLimit: dailyLimit
                 )
             } else {
-                plannedItemIDs = Array(allDue.prefix(dailyLimit)).map(\.id)
+                plannedItemIDs = ReviewDailyPlan.reconciledItemIDs(
+                    existingItemIDs: [],
+                    reviewedTodayItemIDs: reviewedTodayItemIDsInOrder,
+                    availableDueItemIDs: allDue.map(\.id),
+                    dailyLimit: dailyLimit
+                )
             }
             let dueByID = Dictionary(uniqueKeysWithValues: allDue.map { ($0.id, $0) })
             let cappedDueContent: [HomeReviewItemProjection] = plannedItemIDs.compactMap { itemID in
@@ -2186,21 +2235,24 @@ struct HomeView: View {
     }
 
     private var quickEntryCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
                 Image(systemName: "pencil.tip.crop.circle.badge.plus")
-                    .font(.title3)
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.blue)
-                    .frame(width: 34, height: 34)
+                    .frame(width: 28, height: 28)
                     .background(Color.blue.opacity(0.09), in: Circle())
                 Text("快速录入")
-                    .font(.headline)
+                    .font(isPad ? .title3.weight(.bold) : .headline)
                 Spacer()
                 Button {
                     showQuickEntryHint = true
                 } label: {
                     Image(systemName: "info.circle")
+                        .font(.subheadline)
                         .foregroundStyle(.blue)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
             }
             .alert("提示", isPresented: $showQuickEntryHint) {
@@ -2236,7 +2288,7 @@ struct HomeView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .homeCardSurface()
+        .homeCardSurface(padding: 12)
     }
 
     private func quickEntryActionLabel(
@@ -2245,35 +2297,35 @@ struct HomeView: View {
         icon: String,
         tint: Color
     ) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(tint)
-                    .frame(width: 28, height: 28)
-                    .background(tint.opacity(0.1), in: Circle())
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(tint)
+                .frame(width: 28, height: 28)
+                .background(tint.opacity(0.1), in: Circle())
 
+            VStack(alignment: .leading, spacing: 1) {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.78)
-            }
 
-            Text(subtitle)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .padding(.leading, 36)
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
-        .frame(maxWidth: .infinity, minHeight: 68, alignment: .leading)
-        .padding(12)
-        .background(tint.opacity(0.055), in: RoundedRectangle(cornerRadius: 14))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(tint.opacity(0.055), in: RoundedRectangle(cornerRadius: 12))
         .overlay(
-            RoundedRectangle(cornerRadius: 14)
+            RoundedRectangle(cornerRadius: 12)
                 .stroke(tint.opacity(0.1), lineWidth: 1)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 14))
+        .contentShape(RoundedRectangle(cornerRadius: 12))
     }
 
     private func reviewEntryButton(_ snapshot: DashboardSnapshot) -> some View {
@@ -3411,7 +3463,7 @@ private enum DailyReviewRecordBuilder {
 
     static func sections(reviewRecords: [ReviewRecord], reviewItems: [ReviewItem]) -> [DailyReviewRecordSection] {
         let itemsByID = itemsByID(from: reviewItems)
-        let snapshots = reviewRecords.map { record in
+        let snapshots = ReviewScheduler.canonicalReviewRecords(reviewRecords).map { record in
             DailyReviewRecordSnapshot(record: record, item: itemsByID[record.itemID])
         }
 

@@ -445,7 +445,8 @@ struct AddReviewItemView: View {
     }
 
     private var reviewRecordSnapshots: [ReviewRecordDisplaySnapshot] {
-        reviewRecords.map(ReviewRecordDisplaySnapshot.init)
+        ReviewScheduler.canonicalReviewRecords(reviewRecords)
+            .map(ReviewRecordDisplaySnapshot.init)
     }
 
     private var contentLabel: String {

@@ -187,6 +187,27 @@ private struct TasksPageSnapshot {
     )
 }
 
+@MainActor
+private enum TasksPageSnapshotMemoryCache {
+    private static var snapshot: TasksPageSnapshot?
+    private static var storedAt: Date?
+
+    static func current(referenceDate: Date = .now) -> TasksPageSnapshot? {
+        guard let snapshot, let storedAt else { return nil }
+        guard Calendar.current.isDate(storedAt, inSameDayAs: referenceDate) else {
+            self.snapshot = nil
+            self.storedAt = nil
+            return nil
+        }
+        return snapshot
+    }
+
+    static func store(_ snapshot: TasksPageSnapshot, at date: Date = .now) {
+        self.snapshot = snapshot
+        storedAt = date
+    }
+}
+
 struct DeferredTasksHomeView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var isReady = false
@@ -284,6 +305,12 @@ struct TasksView: View {
     @State private var isSnapshotRefreshInFlight = false
     @State private var needsSnapshotRefreshAfterCurrent = false
     @State private var activeAddRoute: AddRoute?
+
+    init() {
+        let cachedSnapshot = TasksPageSnapshotMemoryCache.current()
+        _pageSnapshot = State(initialValue: cachedSnapshot ?? .empty)
+        _isSnapshotLoaded = State(initialValue: cachedSnapshot != nil)
+    }
 
     private struct TaskDetailRoute: Hashable {
         let taskID: UUID
@@ -831,6 +858,7 @@ struct TasksView: View {
             }
             pageSnapshot = refreshedSnapshot
             isSnapshotLoaded = true
+            TasksPageSnapshotMemoryCache.store(refreshedSnapshot, at: referenceDate)
             #if DEBUG
             DebugPerf.mark("TasksView snapshot applied items=\(refreshedSnapshot.displayItems.count) empty=\(refreshedSnapshot.isEmpty)")
             #endif

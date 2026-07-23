@@ -20,6 +20,7 @@ struct ReviewSessionView: View {
     @State private var reviewSessionID = UUID()
     @State private var accuracyBonusAmount = 0
     @State private var saveErrorMessage: String?
+    @State private var syncNoticeMessage: String?
     @State private var learningSessionSummary: LearningSessionSummaryResult?
     @State private var learningSessionSummaryInputHash = ""
     @State private var isLearningSessionSummaryAIResult = false
@@ -230,6 +231,13 @@ struct ReviewSessionView: View {
         } message: {
             Text(saveErrorMessage ?? "这次复习记录没有保存成功，请再试一次。")
         }
+        .alert("同步提示", isPresented: syncNoticeBinding) {
+            Button("知道了", role: .cancel) {
+                syncNoticeMessage = nil
+            }
+        } message: {
+            Text(syncNoticeMessage ?? "这题的进度已经更新。")
+        }
     }
 
     private var completionView: some View {
@@ -331,6 +339,9 @@ struct ReviewSessionView: View {
     private func submit(_ result: ReviewResult, for item: ReviewItem) {
         speaker.stop()
 
+        let now = Date()
+        guard prepareForSubmission(item, now: now) else { return }
+
         // Save undo info before modifying
         let undoEntry = UndoEntry(
             itemIndex: currentIndex,
@@ -348,16 +359,22 @@ struct ReviewSessionView: View {
 
         let oldTrack = item.reviewTrack
         let oldFollowUpStep = item.resolvedDictationFollowUpStep
-        let output = scheduler.handle(item: item, result: result)
+        let output = scheduler.handle(item: item, result: result, now: now)
         let detail = item.reviewTransitionDetail(
             result: result,
             oldStage: output.record.oldStage,
             oldTrack: oldTrack,
             oldFollowUpStep: oldFollowUpStep
         )
-        output.record.note = ReviewRecord.storedDetailText(detail)
-        modelContext.insert(output.record)
-        PointLedgerService.awardReviewRecord(output.record, in: modelContext)
+        output.record.note = ReviewRecord.storedConfirmedDetailText(detail)
+        let upsertResult = ReviewScheduler.upsertReviewRecord(
+            output.record,
+            in: modelContext
+        )
+        let pointEntryWasCreated = PointLedgerService.awardReviewRecord(
+            upsertResult.record,
+            in: modelContext
+        ) != nil
 
         let finalCompletedCount = completedCount + 1
         let finalWrongCount = wrongCount + (result == .wrong ? 1 : 0)
@@ -391,7 +408,9 @@ struct ReviewSessionView: View {
             )
         )
 
-        undoEntry.recordID = output.record.id
+        undoEntry.recordID = upsertResult.record.id
+        undoEntry.previousRecordStates = upsertResult.previousStates
+        undoEntry.pointEntryWasCreated = pointEntryWasCreated
         undoStack.append(undoEntry)
 
         completedCount += 1
@@ -437,16 +456,25 @@ struct ReviewSessionView: View {
 
         // Delete the record
         if let recordID = entry.recordID {
-            PointLedgerService.reverseEntries(
-                sourceType: .reviewRecord,
-                sourceID: recordID,
-                in: modelContext
-            )
-            let descriptor = FetchDescriptor<ReviewRecord>(
-                predicate: #Predicate { $0.id == recordID }
-            )
-            if let records = try? modelContext.fetch(descriptor), let record = records.first {
-                modelContext.delete(record)
+            if entry.pointEntryWasCreated {
+                PointLedgerService.reverseEntries(
+                    sourceType: .reviewRecord,
+                    sourceID: recordID,
+                    in: modelContext
+                )
+            }
+
+            if entry.previousRecordStates.isEmpty {
+                let descriptor = FetchDescriptor<ReviewRecord>(
+                    predicate: #Predicate { $0.id == recordID }
+                )
+                if let records = try? modelContext.fetch(descriptor) {
+                    for record in records {
+                        modelContext.delete(record)
+                    }
+                }
+            } else {
+                entry.previousRecordStates.forEach { $0.restore() }
             }
         }
 
@@ -746,6 +774,44 @@ struct ReviewSessionView: View {
         )
     }
 
+    private var syncNoticeBinding: Binding<Bool> {
+        Binding(
+            get: { syncNoticeMessage != nil },
+            set: { newValue in
+                if !newValue {
+                    syncNoticeMessage = nil
+                }
+            }
+        )
+    }
+
+    private func prepareForSubmission(_ item: ReviewItem, now: Date) -> Bool {
+        do {
+            _ = try ReviewScheduler.reconcileStandardReviewProgress(in: modelContext)
+
+            guard ReviewScheduler.isDue(item.nextReviewAt, on: now) else {
+                if modelContext.hasChanges {
+                    try modelContext.save()
+                    AppDataChangeCenter.post()
+                }
+                syncNoticeMessage = "这题的进度已经更新，当前无需重复复习。"
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    currentIndex += 1
+                }
+                return false
+            }
+
+            if modelContext.hasChanges {
+                try modelContext.save()
+                AppDataChangeCenter.post()
+            }
+            return true
+        } catch {
+            saveErrorMessage = "提交前同步校验失败，请稍后再试一次。\n\(error.localizedDescription)"
+            return false
+        }
+    }
+
     @discardableResult
     private func persistChanges(message: String) -> Bool {
         do {
@@ -781,6 +847,8 @@ private class UndoEntry {
     let oldIsDictationPass: Bool
     let result: ReviewResult
     var recordID: UUID?
+    var previousRecordStates: [ReviewScheduler.StoredReviewRecordState] = []
+    var pointEntryWasCreated = false
 
     init(
         itemIndex: Int,

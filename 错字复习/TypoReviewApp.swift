@@ -79,6 +79,7 @@ struct TypoReviewApp: App {
         let fileManager = FileManager.default
         let appSupportDir = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? fileManager.temporaryDirectory
         let defaultStoreURL = appSupportDir.appendingPathComponent("default.store")
+        let serverSyncEnabled = ServerAPIConfiguration.current != nil
         let cloudConfiguration: ModelConfiguration
         let fallbackConfiguration: ModelConfiguration
         let pendingExecutionTableRepairStoreURL: URL?
@@ -88,7 +89,7 @@ struct TypoReviewApp: App {
             cloudConfiguration = ModelConfiguration(
                 schema: schema,
                 groupContainer: .identifier(Self.appGroupIdentifierValue),
-                cloudKitDatabase: .automatic
+                cloudKitDatabase: serverSyncEnabled ? .none : .automatic
             )
             fallbackConfiguration = ModelConfiguration(
                 schema: schema,
@@ -116,7 +117,7 @@ struct TypoReviewApp: App {
             cloudConfiguration = ModelConfiguration(
                 schema: schema,
                 url: defaultStoreURL,
-                cloudKitDatabase: .automatic
+                cloudKitDatabase: serverSyncEnabled ? .none : .automatic
             )
             fallbackConfiguration = ModelConfiguration(
                 schema: schema,
@@ -148,7 +149,8 @@ struct TypoReviewApp: App {
             _syncStatusStore = State(initialValue: {
                 let store = SyncStatusStore()
                 store.configure(
-                    cloudKitEnabled: true,
+                    cloudKitEnabled: !serverSyncEnabled,
+                    serverSyncEnabled: serverSyncEnabled,
                     containerIdentifier: Self.cloudKitContainerIdentifierValue
                 )
                 return store
@@ -198,6 +200,7 @@ struct TypoReviewApp: App {
                 let store = SyncStatusStore()
                 store.configure(
                     cloudKitEnabled: false,
+                    serverSyncEnabled: serverSyncEnabled,
                     containerIdentifier: Self.cloudKitContainerIdentifierValue,
                     initializationError: detailedError
                 )
@@ -295,23 +298,24 @@ struct TypoReviewApp: App {
         }
 
         do {
-            let importDefaults = appGroupIdentifier.flatMap { UserDefaults(suiteName: $0) } ?? .standard
-            if let result = try Grade5EnglishDictationPlanImporter.importIfNeeded(
-                in: modelContext,
-                defaults: importDefaults
-            ) {
-                #if DEBUG
+            let result = try Grade5EnglishDictationPlanImporter.deduplicateImportedPlan(
+                in: modelContext
+            )
+            #if DEBUG
+            if result.removedTotal > 0 {
                 DebugPerf.mark(
-                    "Grade 5 English plan import insertedSessions=\(result.insertedSessions) refreshedSessions=\(result.refreshedSessions) entries=\(result.insertedEntries)"
+                    "Grade 5 English plan deduplicated sessions=\(result.removedSessions) entries=\(result.removedEntries)"
                 )
-                #endif
             }
+            #endif
         } catch {
             #if DEBUG
-            DebugPerf.mark("Grade 5 English plan import failed error=\(error.localizedDescription)")
+            DebugPerf.mark("Grade 5 English plan deduplication failed error=\(error.localizedDescription)")
             #endif
-            print("Grade 5 English plan import failed: \(error)")
+            print("Grade 5 English plan deduplication failed: \(error)")
         }
+
+        Self.reconcilePointRewardsIfNeeded(in: modelContext)
 
         #if DEBUG
         DebugPerf.mark("TypoReviewApp deferred startup maintenance end")
@@ -874,6 +878,27 @@ struct TypoReviewApp: App {
             DebugPerf.mark("TypoReviewApp daily review plan deduplication failed error=\(error.localizedDescription)")
             #endif
             print("Daily review plan deduplication failed: \(error)")
+        }
+    }
+
+    private static func reconcilePointRewardsIfNeeded(in modelContext: ModelContext) {
+        do {
+            let result = try PointLedgerService.reconcileMissingAutomaticRewards(in: modelContext)
+            if modelContext.hasChanges {
+                try modelContext.save()
+            }
+            #if DEBUG
+            if result.totalAdded > 0 {
+                DebugPerf.mark(
+                    "TypoReviewApp reconciled point rewards reviews=\(result.reviewRewardsAdded) dictation=\(result.dictationRewardsAdded) accuracy=\(result.dictationAccuracyBonusesAdded)"
+                )
+            }
+            #endif
+        } catch {
+            #if DEBUG
+            DebugPerf.mark("TypoReviewApp point reward reconciliation failed error=\(error.localizedDescription)")
+            #endif
+            print("Point reward reconciliation failed: \(error)")
         }
     }
 

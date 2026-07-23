@@ -7,8 +7,16 @@ struct Grade5EnglishDictationPlanImportResult: Equatable {
     let insertedEntries: Int
 }
 
+struct Grade5EnglishDictationPlanDeduplicationResult: Equatable {
+    let removedSessions: Int
+    let removedEntries: Int
+
+    var removedTotal: Int {
+        removedSessions + removedEntries
+    }
+}
+
 enum Grade5EnglishDictationPlanImporter {
-    static let automaticImportKey = "grade5_english_dictation_plan_20260715_v1"
     static let planSource = "2026秋新人教版五年级英语上册·单元词汇表"
 
     struct VocabularyEntry: Equatable {
@@ -189,19 +197,6 @@ enum Grade5EnglishDictationPlanImporter {
     static let plan: [PlanDay] = makePlan()
 
     @MainActor
-    static func importIfNeeded(
-        in modelContext: ModelContext,
-        defaults: UserDefaults,
-        now: Date = .now
-    ) throws -> Grade5EnglishDictationPlanImportResult? {
-        guard !defaults.bool(forKey: automaticImportKey) else { return nil }
-
-        let result = try importPlan(in: modelContext, now: now)
-        defaults.set(true, forKey: automaticImportKey)
-        return result
-    }
-
-    @MainActor
     static func importPlan(
         in modelContext: ModelContext,
         now: Date = .now
@@ -277,6 +272,99 @@ enum Grade5EnglishDictationPlanImporter {
             refreshedSessions: refreshedSessions,
             insertedEntries: insertedEntries
         )
+    }
+
+    /// Repairs duplicate plan records created when another device launched before its
+    /// initial CloudKit download completed. This can safely run after every remote change.
+    @MainActor
+    @discardableResult
+    static func deduplicateImportedPlan(
+        in modelContext: ModelContext
+    ) throws -> Grade5EnglishDictationPlanDeduplicationResult {
+        let planIDs = Set(plan.map(\.id))
+        let sessions = try modelContext.fetch(FetchDescriptor<DictationSession>())
+            .filter { planIDs.contains($0.id) }
+        let entries = try modelContext.fetch(FetchDescriptor<DictationEntry>())
+            .filter { planIDs.contains($0.sessionID) && $0.source == planSource }
+
+        var removedSessions = 0
+        var removedEntries = 0
+
+        for duplicates in Dictionary(grouping: sessions, by: \.id).values where duplicates.count > 1 {
+            let keeper = duplicates.sorted(by: sessionIsPreferred).first!
+            mergeSessionProgress(from: duplicates, into: keeper)
+
+            for duplicate in duplicates where duplicate !== keeper {
+                modelContext.delete(duplicate)
+                removedSessions += 1
+            }
+        }
+
+        for duplicates in Dictionary(grouping: entries, by: EntryDeduplicationKey.init).values
+            where duplicates.count > 1 {
+            let keeper = duplicates.sorted(by: entryIsPreferred).first!
+
+            for duplicate in duplicates where duplicate !== keeper {
+                modelContext.delete(duplicate)
+                removedEntries += 1
+            }
+        }
+
+        if removedSessions > 0 || removedEntries > 0 {
+            try modelContext.save()
+            AppDataChangeCenter.post()
+        }
+
+        return Grade5EnglishDictationPlanDeduplicationResult(
+            removedSessions: removedSessions,
+            removedEntries: removedEntries
+        )
+    }
+
+    private struct EntryDeduplicationKey: Hashable {
+        let sessionID: UUID
+        let sortOrder: Int
+        let content: String
+
+        init(_ entry: DictationEntry) {
+            sessionID = entry.sessionID
+            sortOrder = entry.sortOrder
+            content = entry.content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+    }
+
+    private static func sessionIsPreferred(_ lhs: DictationSession, _ rhs: DictationSession) -> Bool {
+        let lhsProgress = sessionProgressRank(lhs)
+        let rhsProgress = sessionProgressRank(rhs)
+        if lhsProgress != rhsProgress { return lhsProgress > rhsProgress }
+        if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+        if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+        return lhs.title < rhs.title
+    }
+
+    private static func sessionProgressRank(_ session: DictationSession) -> Int {
+        if session.reviewedAt != nil { return 2 }
+        if session.finishedAt != nil { return 1 }
+        return 0
+    }
+
+    private static func mergeSessionProgress(
+        from sessions: [DictationSession],
+        into keeper: DictationSession
+    ) {
+        keeper.createdAt = sessions.map(\.createdAt).min() ?? keeper.createdAt
+        keeper.updatedAt = sessions.map(\.updatedAt).max() ?? keeper.updatedAt
+        keeper.finishedAt = sessions.compactMap(\.finishedAt).max()
+        keeper.reviewedAt = sessions.compactMap(\.reviewedAt).max()
+    }
+
+    private static func entryIsPreferred(_ lhs: DictationEntry, _ rhs: DictationEntry) -> Bool {
+        let lhsHasResult = lhs.result != .pending
+        let rhsHasResult = rhs.result != .pending
+        if lhsHasResult != rhsHasResult { return lhsHasResult }
+        if lhsHasResult, lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+        if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+        return lhs.id.uuidString < rhs.id.uuidString
     }
 
     private static func makePlan() -> [PlanDay] {

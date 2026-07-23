@@ -1,0 +1,764 @@
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import os
+import secrets
+from contextlib import asynccontextmanager
+from datetime import date, datetime, timezone
+from typing import Any, Literal
+from uuid import UUID, uuid4
+
+import asyncpg
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from pydantic import BaseModel, Field
+
+from .db import Database, tombstone_record, upsert_record
+from .domain import (
+    ENTITY_KEYS,
+    SHANGHAI,
+    apply_review_result,
+    is_due,
+    isoformat,
+    parse_datetime,
+    unique_ids,
+)
+
+database = Database()
+DEFAULT_ACCOUNT_ID = UUID(os.environ.get("DEFAULT_ACCOUNT_ID", "00000000-0000-0000-0000-000000000001"))
+
+UPDATED_AT_FIELD = {
+    "reviewItems": "updatedAt",
+    "reviewRecords": "reviewedAt",
+    "taskItems": "updatedAt",
+    "taskCompletions": "completedAt",
+    "taskSubitems": "updatedAt",
+    "taskExecutionRecords": "updatedAt",
+    "taskSubitemExecutionRecords": "updatedAt",
+    "dictationSessions": "updatedAt",
+    "dictationEntries": "updatedAt",
+    "scheduleItems": "updatedAt",
+    "pointLedgerEntries": "createdAt",
+    "pointRewardStates": "updatedAt",
+}
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await database.connect()
+    yield
+    await database.close()
+
+
+app = FastAPI(
+    title="TypoReview Sync API",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+)
+
+
+async def require_account(authorization: str | None = Header(default=None)) -> UUID:
+    expected = os.environ.get("API_TOKEN", "")
+    if not expected:
+        raise HTTPException(status_code=503, detail="API token is not configured")
+    supplied = ""
+    if authorization and authorization.startswith("Bearer "):
+        supplied = authorization[7:]
+    if hmac.compare_digest(supplied.encode(), expected.encode()):
+        return DEFAULT_ACCOUNT_ID
+    if supplied:
+        token_hash = hashlib.sha256(supplied.encode()).hexdigest()
+        pool = database.require_pool()
+        async with pool.acquire() as connection:
+            account_id = await connection.fetchval(
+                """
+                UPDATE device_tokens
+                SET last_used_at=now()
+                WHERE token_hash=$1 AND revoked_at IS NULL
+                RETURNING account_id
+                """,
+                token_hash,
+            )
+        if account_id is not None:
+            return account_id
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid API token")
+
+
+async def require_master_token(authorization: str | None = Header(default=None)) -> UUID:
+    expected = os.environ.get("API_TOKEN", "")
+    supplied = authorization[7:] if authorization and authorization.startswith("Bearer ") else ""
+    if not expected or not hmac.compare_digest(supplied.encode(), expected.encode()):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="master token required")
+    return DEFAULT_ACCOUNT_ID
+
+
+def pairing_code_hash(value: str) -> str:
+    normalized = "".join(character for character in value.upper() if character.isalnum())
+    return hashlib.sha256(normalized.encode()).hexdigest()
+
+
+class SnapshotImport(BaseModel):
+    version: int = 4
+    exportedAt: datetime
+    appVersion: str = "unknown"
+    settings: dict[str, Any] | None = None
+    reviewItems: list[dict[str, Any]] = Field(default_factory=list)
+    reviewRecords: list[dict[str, Any]] = Field(default_factory=list)
+    taskItems: list[dict[str, Any]] = Field(default_factory=list)
+    taskCompletions: list[dict[str, Any]] = Field(default_factory=list)
+    taskSubitems: list[dict[str, Any]] = Field(default_factory=list)
+    taskExecutionRecords: list[dict[str, Any]] = Field(default_factory=list)
+    taskSubitemExecutionRecords: list[dict[str, Any]] = Field(default_factory=list)
+    dictationSessions: list[dict[str, Any]] = Field(default_factory=list)
+    dictationEntries: list[dict[str, Any]] = Field(default_factory=list)
+    scheduleItems: list[dict[str, Any]] = Field(default_factory=list)
+    mediaAssets: list[dict[str, Any]] = Field(default_factory=list)
+    pointLedgerEntries: list[dict[str, Any]] = Field(default_factory=list)
+    pointRewardStates: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class Mutation(BaseModel):
+    mutationID: UUID
+    entityType: Literal[
+        "reviewItems", "reviewRecords", "taskItems", "taskCompletions",
+        "taskSubitems", "taskExecutionRecords", "taskSubitemExecutionRecords",
+        "dictationSessions", "dictationEntries", "scheduleItems",
+        "pointLedgerEntries", "pointRewardStates", "settings",
+    ]
+    recordID: UUID
+    operation: Literal["upsert", "delete"]
+    updatedAt: datetime
+    payload: dict[str, Any] | None = None
+
+
+class MutationBatch(BaseModel):
+    mutations: list[Mutation] = Field(max_length=1000)
+
+
+class DailyPlanRequest(BaseModel):
+    day: date
+    dailyLimit: int | None = Field(default=None, ge=0, le=1000)
+
+
+class ReviewSubmission(BaseModel):
+    eventID: UUID
+    itemID: UUID
+    result: Literal["correct", "wrong"]
+    modeRawValue: str = "scheduled"
+    reviewedAt: datetime
+    note: str = ""
+
+
+class PairingRequest(BaseModel):
+    code: str = Field(min_length=4, max_length=4, pattern=r"^\d{4}$")
+    deviceName: str = Field(default="Apple device", max_length=120)
+
+
+class PairingCodeCreation(BaseModel):
+    # Kept for compatibility with the first deployed client/tooling. Pairing
+    # codes are now persistent and reusable, so these values are ignored.
+    expiresMinutes: int | None = None
+    uses: int | None = None
+
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    pool = database.require_pool()
+    async with pool.acquire() as connection:
+        await connection.fetchval("SELECT 1")
+    return {"status": "ok", "service": "typo-review-sync"}
+
+
+@app.post("/v1/auth/pairing-code")
+async def create_pairing_code(
+    request: PairingCodeCreation,
+    account_id: UUID = Depends(require_master_token),
+) -> dict[str, Any]:
+    display_code = f"{secrets.randbelow(10_000):04d}"
+    pool = database.require_pool()
+    async with pool.acquire() as connection, connection.transaction():
+        # A family only needs one active invitation. Removing older codes also
+        # prevents a four-digit code from remaining useful after regeneration.
+        await connection.execute("DELETE FROM pairing_codes WHERE account_id=$1", account_id)
+        await connection.execute("DELETE FROM pairing_attempts")
+        await connection.execute(
+            """
+            INSERT INTO pairing_codes(id, account_id, code_hash, remaining_uses, expires_at, display_code)
+            VALUES($1,$2,$3,$4,$5,$6)
+            """,
+            uuid4(),
+            account_id,
+            pairing_code_hash(display_code),
+            1,
+            None,
+            display_code,
+        )
+    return {"code": display_code, "expiresAt": None, "uses": None, "persistent": True}
+
+
+@app.get("/v1/auth/pairing-code")
+async def get_pairing_code(
+    account_id: UUID = Depends(require_account),
+) -> dict[str, Any]:
+    pool = database.require_pool()
+    async with pool.acquire() as connection:
+        code = await connection.fetchval(
+            """
+            SELECT display_code
+            FROM pairing_codes
+            WHERE account_id=$1
+              AND display_code IS NOT NULL
+              AND (expires_at IS NULL OR expires_at>now())
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            account_id,
+        )
+    if code is None:
+        raise HTTPException(status_code=404, detail="pairing code is not available")
+    return {"code": code, "persistent": True}
+
+
+@app.post("/v1/auth/pair")
+async def pair_device(request: PairingRequest) -> dict[str, Any]:
+    pool = database.require_pool()
+    error: HTTPException | None = None
+    token = ""
+    device_id: UUID | None = None
+    account_id: UUID | None = None
+    async with pool.acquire() as connection, connection.transaction():
+        # The service currently has one family account, so a small global rate
+        # limit is both simple and effective against scanning all 10,000 codes.
+        await connection.execute("SELECT pg_advisory_xact_lock(9120260723)")
+        await connection.execute(
+            "DELETE FROM pairing_attempts WHERE attempted_at < now() - interval '24 hours'"
+        )
+        recent_attempts = await connection.fetchval("SELECT count(*) FROM pairing_attempts")
+        if recent_attempts >= 10:
+            error = HTTPException(
+                status_code=429,
+                detail="too many invalid pairing attempts; try again later",
+            )
+        else:
+            row = await connection.fetchrow(
+                """
+                SELECT id, account_id
+                FROM pairing_codes
+                WHERE code_hash=$1 AND (expires_at IS NULL OR expires_at>now())
+                FOR UPDATE
+                """,
+                pairing_code_hash(request.code),
+            )
+            if row is None:
+                await connection.execute("INSERT INTO pairing_attempts DEFAULT VALUES")
+                error = HTTPException(status_code=401, detail="invalid or expired pairing code")
+            else:
+                device_id = uuid4()
+                account_id = row["account_id"]
+                token = secrets.token_urlsafe(48)
+                await connection.execute(
+                    """
+                    INSERT INTO device_tokens(id, account_id, token_hash, device_name)
+                    VALUES($1,$2,$3,$4)
+                    """,
+                    device_id,
+                    account_id,
+                    hashlib.sha256(token.encode()).hexdigest(),
+                    request.deviceName.strip(),
+                )
+    if error is not None:
+        raise error
+    if device_id is None or account_id is None:
+        raise HTTPException(status_code=500, detail="pairing failed")
+    return {"token": token, "accountID": str(account_id), "deviceID": str(device_id)}
+
+
+@app.delete("/v1/auth/devices/{device_id}")
+async def revoke_device(
+    device_id: UUID,
+    account_id: UUID = Depends(require_master_token),
+) -> dict[str, bool]:
+    pool = database.require_pool()
+    async with pool.acquire() as connection:
+        status_value = await connection.execute(
+            "UPDATE device_tokens SET revoked_at=now() WHERE id=$1 AND account_id=$2 AND revoked_at IS NULL",
+            device_id,
+            account_id,
+        )
+    return {"revoked": status_value.endswith("1")}
+
+
+def record_timestamp(entity_type: str, payload: dict[str, Any], fallback: datetime) -> datetime:
+    field = UPDATED_AT_FIELD.get(entity_type)
+    value = payload.get(field) if field else None
+    return parse_datetime(value) or fallback
+
+
+@app.post("/v1/migration/import")
+async def import_snapshot(
+    snapshot: SnapshotImport,
+    account_id: UUID = Depends(require_account),
+) -> dict[str, Any]:
+    if snapshot.version > 4:
+        raise HTTPException(status_code=422, detail="unsupported backup version")
+    pool = database.require_pool()
+    inserted_or_updated: dict[str, int] = {}
+    exported_at = snapshot.exportedAt.astimezone(timezone.utc)
+    async with pool.acquire() as connection, connection.transaction():
+        if snapshot.settings is not None:
+            settings_id = UUID(str(snapshot.settings["id"]))
+            changed = await upsert_record(
+                connection,
+                account_id=account_id,
+                entity_type="settings",
+                record_id=settings_id,
+                payload=snapshot.settings,
+                client_updated_at=exported_at,
+            )
+            inserted_or_updated["settings"] = int(changed)
+
+        raw = snapshot.model_dump(mode="json")
+        canonical_points: dict[str, dict[str, Any]] = {}
+        for payload in sorted(
+            raw["pointLedgerEntries"],
+            key=lambda value: (value.get("createdAt", ""), value.get("id", "")),
+        ):
+            key = payload.get("idempotencyKey") or f"legacy-{payload['id']}"
+            canonical_points.setdefault(key, payload)
+        ignored_point_duplicates = len(raw["pointLedgerEntries"]) - len(canonical_points)
+        raw["pointLedgerEntries"] = list(canonical_points.values())
+        for entity_type in ENTITY_KEYS:
+            changed_count = 0
+            for payload in raw[entity_type]:
+                changed = await upsert_record(
+                    connection,
+                    account_id=account_id,
+                    entity_type=entity_type,
+                    record_id=UUID(str(payload["id"])),
+                    payload=payload,
+                    client_updated_at=record_timestamp(entity_type, payload, exported_at),
+                )
+                changed_count += int(changed)
+            inserted_or_updated[entity_type] = changed_count
+
+    return {
+        "ok": True,
+        "changed": inserted_or_updated,
+        "ignoredMediaAssets": len(snapshot.mediaAssets),
+        "ignoredDuplicatePointEntries": ignored_point_duplicates,
+    }
+
+
+@app.get("/v1/migration/export")
+async def export_snapshot(account_id: UUID = Depends(require_account)) -> dict[str, Any]:
+    pool = database.require_pool()
+    async with pool.acquire() as connection:
+        rows = await connection.fetch(
+            """
+            SELECT entity_type, payload
+            FROM records
+            WHERE account_id = $1 AND deleted_at IS NULL
+            ORDER BY entity_type, record_id
+            """,
+            account_id,
+        )
+    result: dict[str, Any] = {
+        "version": 4,
+        "exportedAt": isoformat(datetime.now(timezone.utc)),
+        "appVersion": "server-1.0",
+        "settings": None,
+        **{key: [] for key in ENTITY_KEYS},
+        "mediaAssets": [],
+    }
+    for row in rows:
+        payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
+        if row["entity_type"] == "settings":
+            result["settings"] = payload
+        elif row["entity_type"] in ENTITY_KEYS:
+            result[row["entity_type"]].append(payload)
+    return result
+
+
+@app.get("/v1/sync/changes")
+async def changes(
+    after: int = Query(default=0, ge=0),
+    limit: int = Query(default=1000, ge=1, le=5000),
+    account_id: UUID = Depends(require_account),
+) -> dict[str, Any]:
+    pool = database.require_pool()
+    async with pool.acquire() as connection:
+        rows = await connection.fetch(
+            """
+            SELECT entity_type, record_id, payload, client_updated_at,
+                   server_version, deleted_at
+            FROM records
+            WHERE account_id = $1 AND server_version > $2
+            ORDER BY server_version
+            LIMIT $3
+            """,
+            account_id,
+            after,
+            limit,
+        )
+    values = []
+    for row in rows:
+        values.append({
+            "entityType": row["entity_type"],
+            "recordID": str(row["record_id"]),
+            "payload": row["payload"],
+            "updatedAt": isoformat(row["client_updated_at"]),
+            "serverVersion": row["server_version"],
+            "deletedAt": isoformat(row["deleted_at"]) if row["deleted_at"] else None,
+        })
+    return {"changes": values, "cursor": values[-1]["serverVersion"] if values else after}
+
+
+@app.post("/v1/sync/push")
+async def push_mutations(
+    batch: MutationBatch,
+    account_id: UUID = Depends(require_account),
+) -> dict[str, Any]:
+    pool = database.require_pool()
+    applied: list[str] = []
+    server_scheduled_item_ids: set[UUID] = set()
+    async with pool.acquire() as connection, connection.transaction():
+        for mutation in batch.mutations:
+            claimed = await connection.fetchval(
+                """
+                INSERT INTO processed_mutations(account_id, mutation_id)
+                VALUES($1, $2)
+                ON CONFLICT DO NOTHING
+                RETURNING mutation_id
+                """,
+                account_id,
+                mutation.mutationID,
+            )
+            if claimed is None:
+                continue
+            if mutation.operation == "delete":
+                await tombstone_record(
+                    connection,
+                    account_id=account_id,
+                    entity_type=mutation.entityType,
+                    record_id=mutation.recordID,
+                    deleted_at=mutation.updatedAt,
+                )
+            else:
+                if mutation.payload is None:
+                    raise HTTPException(status_code=422, detail="upsert payload is required")
+                if mutation.entityType == "reviewRecords" and mutation.payload.get("modeRawValue") != "dictation":
+                    reviewed_at = parse_datetime(mutation.payload.get("reviewedAt"))
+                    item_id_value = mutation.payload.get("itemID")
+                    result = mutation.payload.get("resultRawValue")
+                    if reviewed_at is None or item_id_value is None or result not in {"correct", "wrong"}:
+                        raise HTTPException(status_code=422, detail="invalid scheduled review mutation")
+                    item_id = UUID(str(item_id_value))
+                    prior = await connection.fetchval(
+                        "SELECT payload FROM records WHERE account_id=$1 AND entity_type='reviewRecords' AND record_id=$2 AND deleted_at IS NULL",
+                        account_id,
+                        mutation.recordID,
+                    )
+                    if prior is None:
+                        same_day_record = await connection.fetchval(
+                            """
+                            SELECT record_id FROM records
+                            WHERE account_id=$1
+                              AND entity_type='reviewRecords'
+                              AND deleted_at IS NULL
+                              AND payload->>'itemID'=$2
+                              AND COALESCE(payload->>'modeRawValue', '') <> 'dictation'
+                              AND ((payload->>'reviewedAt')::timestamptz AT TIME ZONE 'Asia/Shanghai')::date=$3
+                            LIMIT 1
+                            """,
+                            account_id,
+                            str(item_id),
+                            reviewed_at.astimezone(SHANGHAI).date(),
+                        )
+                        if same_day_record is not None:
+                            raise HTTPException(
+                                status_code=409,
+                                detail={"reason": "item_already_reviewed_today", "itemID": str(item_id)},
+                            )
+                        row = await connection.fetchrow(
+                            """
+                            SELECT payload FROM records
+                            WHERE account_id=$1 AND entity_type='reviewItems' AND record_id=$2 AND deleted_at IS NULL
+                            FOR UPDATE
+                            """,
+                            account_id,
+                            item_id,
+                        )
+                        if row is None:
+                            raise HTTPException(status_code=404, detail="review item not found")
+                        item = row["payload"]
+                        if not is_due(item, reviewed_at.astimezone(SHANGHAI).date()):
+                            raise HTTPException(
+                                status_code=409,
+                                detail={"reason": "item_already_reviewed", "itemID": str(item_id)},
+                            )
+                        updated_item, old_stage, new_stage = apply_review_result(
+                            item,
+                            result=result,
+                            reviewed_at=reviewed_at,
+                        )
+                        canonical_record = {
+                            **mutation.payload,
+                            "id": str(mutation.recordID),
+                            "itemID": str(item_id),
+                            "reviewedAt": isoformat(reviewed_at),
+                            "oldStage": old_stage,
+                            "newStage": new_stage,
+                        }
+                        await upsert_record(
+                            connection,
+                            account_id=account_id,
+                            entity_type="reviewItems",
+                            record_id=item_id,
+                            payload=updated_item,
+                            client_updated_at=max(reviewed_at, mutation.updatedAt),
+                        )
+                        await upsert_record(
+                            connection,
+                            account_id=account_id,
+                            entity_type="reviewRecords",
+                            record_id=mutation.recordID,
+                            payload=canonical_record,
+                            client_updated_at=max(reviewed_at, mutation.updatedAt),
+                        )
+                        await connection.execute(
+                            """
+                            UPDATE daily_review_plan_items i
+                            SET completed_event_id=$3, completed_at=$4
+                            FROM daily_review_plans p
+                            WHERE i.plan_id=p.id AND p.account_id=$1 AND p.plan_day=$2 AND i.item_id=$5
+                            """,
+                            account_id,
+                            reviewed_at.astimezone(SHANGHAI).date(),
+                            mutation.recordID,
+                            reviewed_at,
+                            item_id,
+                        )
+                    server_scheduled_item_ids.add(item_id)
+                    applied.append(str(mutation.mutationID))
+                    continue
+                if mutation.entityType == "reviewItems" and mutation.recordID in server_scheduled_item_ids:
+                    applied.append(str(mutation.mutationID))
+                    continue
+                await upsert_record(
+                    connection,
+                    account_id=account_id,
+                    entity_type=mutation.entityType,
+                    record_id=mutation.recordID,
+                    payload=mutation.payload,
+                    client_updated_at=mutation.updatedAt,
+                )
+            applied.append(str(mutation.mutationID))
+    return {"appliedMutationIDs": applied}
+
+
+async def load_plan(connection: asyncpg.Connection, account_id: UUID, plan_day: date) -> dict[str, Any] | None:
+    plan = await connection.fetchrow(
+        "SELECT id, plan_day, daily_limit, created_at, updated_at FROM daily_review_plans WHERE account_id=$1 AND plan_day=$2",
+        account_id,
+        plan_day,
+    )
+    if plan is None:
+        return None
+    items = await connection.fetch(
+        """
+        SELECT item_id, position, completed_event_id, completed_at
+        FROM daily_review_plan_items
+        WHERE plan_id=$1 ORDER BY position
+        """,
+        plan["id"],
+    )
+    return {
+        "id": str(plan["id"]),
+        "day": plan["plan_day"].isoformat(),
+        "dailyLimit": plan["daily_limit"],
+        "createdAt": isoformat(plan["created_at"]),
+        "updatedAt": isoformat(plan["updated_at"]),
+        "items": [
+            {
+                "itemID": str(item["item_id"]),
+                "position": item["position"],
+                "completedEventID": str(item["completed_event_id"]) if item["completed_event_id"] else None,
+                "completedAt": isoformat(item["completed_at"]) if item["completed_at"] else None,
+            }
+            for item in items
+        ],
+    }
+
+
+@app.post("/v1/review/daily-plan")
+async def daily_plan(
+    request: DailyPlanRequest,
+    account_id: UUID = Depends(require_account),
+) -> dict[str, Any]:
+    pool = database.require_pool()
+    async with pool.acquire() as connection, connection.transaction():
+        await connection.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"{account_id}:{request.day}")
+        existing = await load_plan(connection, account_id, request.day)
+        if existing is not None:
+            return existing
+
+        daily_limit = request.dailyLimit
+        if daily_limit is None:
+            settings = await connection.fetchval(
+                "SELECT payload FROM records WHERE account_id=$1 AND entity_type='settings' AND deleted_at IS NULL ORDER BY client_updated_at DESC LIMIT 1",
+                account_id,
+            )
+            daily_limit = int((settings or {}).get("dailyLimit", 50))
+        daily_limit = max(0, min(daily_limit, 1000))
+
+        review_rows = await connection.fetch(
+            "SELECT payload FROM records WHERE account_id=$1 AND entity_type='reviewRecords' AND deleted_at IS NULL",
+            account_id,
+        )
+        reviewed_pairs: list[tuple[datetime, UUID]] = []
+        for row in review_rows:
+            payload = row["payload"]
+            reviewed_at = parse_datetime(payload.get("reviewedAt"))
+            if reviewed_at is None or reviewed_at.astimezone(SHANGHAI).date() != request.day:
+                continue
+            if payload.get("modeRawValue") == "dictation":
+                continue
+            reviewed_pairs.append((reviewed_at, UUID(str(payload["itemID"]))))
+        reviewed_pairs.sort(key=lambda pair: (pair[0], str(pair[1])))
+        reviewed_ids = unique_ids(item_id for _, item_id in reviewed_pairs)
+
+        item_rows = await connection.fetch(
+            "SELECT record_id, payload FROM records WHERE account_id=$1 AND entity_type='reviewItems' AND deleted_at IS NULL",
+            account_id,
+        )
+        due = []
+        reviewed_set = set(reviewed_ids)
+        for row in item_rows:
+            item_id = row["record_id"]
+            payload = row["payload"]
+            if item_id in reviewed_set or not is_due(payload, request.day):
+                continue
+            due.append((parse_datetime(payload.get("nextReviewAt")), parse_datetime(payload.get("createdAt")), str(item_id), item_id))
+        due.sort(key=lambda value: (value[0], value[1], value[2]))
+        selected = unique_ids([*reviewed_ids, *(value[3] for value in due)])[:daily_limit]
+
+        plan_id = uuid4()
+        await connection.execute(
+            "INSERT INTO daily_review_plans(id, account_id, plan_day, daily_limit) VALUES($1,$2,$3,$4)",
+            plan_id,
+            account_id,
+            request.day,
+            daily_limit,
+        )
+        for position, item_id in enumerate(selected):
+            completed_at = next((when for when, candidate in reviewed_pairs if candidate == item_id), None)
+            await connection.execute(
+                "INSERT INTO daily_review_plan_items(plan_id,item_id,position,completed_at) VALUES($1,$2,$3,$4)",
+                plan_id,
+                item_id,
+                position,
+                completed_at,
+            )
+        return (await load_plan(connection, account_id, request.day)) or {}
+
+
+@app.post("/v1/review/submit")
+async def submit_review(
+    submission: ReviewSubmission,
+    account_id: UUID = Depends(require_account),
+) -> dict[str, Any]:
+    reviewed_at = submission.reviewedAt.astimezone(timezone.utc)
+    pool = database.require_pool()
+    async with pool.acquire() as connection, connection.transaction():
+        prior = await connection.fetchval(
+            "SELECT payload FROM records WHERE account_id=$1 AND entity_type='reviewRecords' AND record_id=$2 AND deleted_at IS NULL",
+            account_id,
+            submission.eventID,
+        )
+        if prior is not None:
+            return {"accepted": True, "idempotent": True, "record": prior}
+
+        same_day_record = await connection.fetchval(
+            """
+            SELECT record_id FROM records
+            WHERE account_id=$1
+              AND entity_type='reviewRecords'
+              AND deleted_at IS NULL
+              AND payload->>'itemID'=$2
+              AND COALESCE(payload->>'modeRawValue', '') <> 'dictation'
+              AND ((payload->>'reviewedAt')::timestamptz AT TIME ZONE 'Asia/Shanghai')::date=$3
+            LIMIT 1
+            """,
+            account_id,
+            str(submission.itemID),
+            reviewed_at.astimezone(SHANGHAI).date(),
+        )
+        if same_day_record is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={"reason": "item_already_reviewed_today", "itemID": str(submission.itemID)},
+            )
+
+        row = await connection.fetchrow(
+            """
+            SELECT payload FROM records
+            WHERE account_id=$1 AND entity_type='reviewItems' AND record_id=$2 AND deleted_at IS NULL
+            FOR UPDATE
+            """,
+            account_id,
+            submission.itemID,
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="review item not found")
+        item = row["payload"]
+        if not is_due(item, reviewed_at.astimezone(SHANGHAI).date()):
+            raise HTTPException(status_code=409, detail={"reason": "item_not_due", "item": item})
+
+        updated_item, old_stage, new_stage = apply_review_result(
+            item,
+            result=submission.result,
+            reviewed_at=reviewed_at,
+        )
+        record = {
+            "id": str(submission.eventID),
+            "itemID": str(submission.itemID),
+            "reviewedAt": isoformat(reviewed_at),
+            "resultRawValue": submission.result,
+            "modeRawValue": submission.modeRawValue,
+            "oldStage": old_stage,
+            "newStage": new_stage,
+            "note": submission.note,
+        }
+        await upsert_record(
+            connection,
+            account_id=account_id,
+            entity_type="reviewItems",
+            record_id=submission.itemID,
+            payload=updated_item,
+            client_updated_at=reviewed_at,
+        )
+        await upsert_record(
+            connection,
+            account_id=account_id,
+            entity_type="reviewRecords",
+            record_id=submission.eventID,
+            payload=record,
+            client_updated_at=reviewed_at,
+        )
+        await connection.execute(
+            """
+            UPDATE daily_review_plan_items i
+            SET completed_event_id=$3, completed_at=$4
+            FROM daily_review_plans p
+            WHERE i.plan_id=p.id AND p.account_id=$1 AND p.plan_day=$2 AND i.item_id=$5
+            """,
+            account_id,
+            reviewed_at.astimezone(SHANGHAI).date(),
+            submission.eventID,
+            reviewed_at,
+            submission.itemID,
+        )
+        return {"accepted": True, "idempotent": False, "item": updated_item, "record": record}

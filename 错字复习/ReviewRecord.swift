@@ -3,6 +3,9 @@ import SwiftData
 
 @Model
 final class ReviewRecord {
+    static let detailNotePrefix = "__detail__:"
+    static let confirmedDetailNotePrefix = "__confirmed_detail__:"
+
     var id: UUID = UUID()
     var itemID: UUID = UUID()
     var reviewedAt: Date = Date()
@@ -40,6 +43,62 @@ final class ReviewRecord {
     var mode: ReviewMode {
         get { ReviewMode(rawValue: modeRawValue) ?? .scheduled }
         set { modeRawValue = newValue.rawValue }
+    }
+
+    var isExplicitlyConfirmedSubmission: Bool {
+        note.trimmingCharacters(in: .whitespacesAndNewlines)
+            .hasPrefix(Self.confirmedDetailNotePrefix)
+    }
+
+    func markAsExplicitlyConfirmedSubmission() {
+        let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedNote.hasPrefix(Self.confirmedDetailNotePrefix) else { return }
+
+        let detail: String
+        if trimmedNote.hasPrefix(Self.detailNotePrefix) {
+            detail = String(trimmedNote.dropFirst(Self.detailNotePrefix.count))
+        } else {
+            detail = trimmedNote
+        }
+        note = Self.confirmedDetailNotePrefix + detail
+    }
+
+    static func canonicalRecords(_ records: [ReviewRecord]) -> [ReviewRecord] {
+        Dictionary(grouping: records, by: \.itemID).values
+            .flatMap { itemRecords -> [ReviewRecord] in
+                let ordered = itemRecords.sorted {
+                    if $0.reviewedAt != $1.reviewedAt {
+                        return $0.reviewedAt < $1.reviewedAt
+                    }
+                    return $0.id.uuidString < $1.id.uuidString
+                }
+                var seenCycleIDs = Set<UUID>()
+                var resolvedStage: Int?
+                var result: [ReviewRecord] = []
+
+                for record in ordered {
+                    guard seenCycleIDs.insert(record.id).inserted else { continue }
+
+                    if let resolvedStage,
+                       record.result == .correct,
+                       record.oldStage < resolvedStage,
+                       record.newStage <= resolvedStage,
+                       !record.isExplicitlyConfirmedSubmission {
+                        continue
+                    }
+
+                    result.append(record)
+                    resolvedStage = record.newStage
+                }
+
+                return result
+            }
+            .sorted {
+                if $0.reviewedAt != $1.reviewedAt {
+                    return $0.reviewedAt > $1.reviewedAt
+                }
+                return $0.id.uuidString < $1.id.uuidString
+            }
     }
 }
 
@@ -110,6 +169,34 @@ final class ReviewDailyPlan {
             }
         }
 
+        return result
+    }
+
+    /// Makes independently-created plans converge after CloudKit delivers today's
+    /// review records. Completed items take precedence over a stale local plan, so
+    /// another device cannot schedule a second batch after the daily quota is done.
+    static func reconciledItemIDs(
+        existingItemIDs: [UUID],
+        reviewedTodayItemIDs: [UUID],
+        availableDueItemIDs: [UUID],
+        dailyLimit: Int
+    ) -> [UUID] {
+        var seen = Set<UUID>()
+        var result: [UUID] = []
+        let uniqueReviewedCount = Set(reviewedTodayItemIDs).count
+        let targetCount = max(max(dailyLimit, 0), uniqueReviewedCount)
+
+        func appendUntilFull(_ itemIDs: [UUID]) {
+            guard result.count < targetCount else { return }
+            for itemID in itemIDs where seen.insert(itemID).inserted {
+                result.append(itemID)
+                if result.count >= targetCount { return }
+            }
+        }
+
+        appendUntilFull(reviewedTodayItemIDs)
+        appendUntilFull(existingItemIDs)
+        appendUntilFull(availableDueItemIDs)
         return result
     }
 

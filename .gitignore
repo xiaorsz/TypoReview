@@ -2,6 +2,11 @@
 DerivedData/
 .derived-data/
 .derived-data-device/
+.derived-data-tests/
 build/
 xcuserdata/
 *.xcuserstate
+server/.env.production
+server/__pycache__/
+server/**/__pycache__/
+server/**/*.pyc

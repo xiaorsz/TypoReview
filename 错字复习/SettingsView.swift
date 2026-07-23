@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UIKit
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
@@ -20,6 +21,12 @@ struct SettingsView: View {
     @State private var isConfirmingEnglishGlossUpdate = false
     @State private var deepSeekAPIKey = ""
     @State private var isTestingDeepSeekConnection = false
+    @State private var pairingCode = ""
+    @State private var savedPairingCode = (try? ServerCredentialStore.loadPairingCode()) ?? ""
+    @State private var isPairingCodeVisible = false
+    @State private var isLoadingPairingCode = false
+    @State private var isPairingServer = false
+    @State private var hasServerCredential = ServerAPIConfiguration.current != nil
 
     private var reviewStyle: Binding<ReviewInteractionStyle> {
         Binding(
@@ -319,21 +326,103 @@ struct SettingsView: View {
 
             Section {
                 HStack {
-                    SettingsIcon(name: "icloud.fill", color: .blue)
+                    SettingsIcon(
+                        name: hasServerCredential ? "server.rack" : "icloud.fill",
+                        color: .blue
+                    )
                     Text("同步状态")
                     Spacer()
-                    Text(syncStatusStore.statusText)
-                        .foregroundStyle(syncStatusStore.syncNoticeKind == .ready ? .green : .secondary)
+                    if hasServerCredential {
+                        Text(ServerSyncCoordinator.shared.lastErrorDescription == nil ? "家庭账号已同步" : "等待重试")
+                            .foregroundStyle(ServerSyncCoordinator.shared.lastErrorDescription == nil ? .green : .orange)
+                    } else {
+                        Text(syncStatusStore.statusText)
+                            .foregroundStyle(syncStatusStore.syncNoticeKind == .ready ? .green : .secondary)
+                    }
                 }
                 
                 HStack {
                     SettingsIcon(name: "externaldrive.fill", color: .green)
                     Text("数据存储")
                     Spacer()
-                    Image(systemName: syncStatusStore.isUsingLocalFallback ? "externaldrive.fill.badge.xmark" : "externaldrive.fill.badge.checkmark")
-                        .foregroundStyle(syncStatusStore.isUsingLocalFallback ? .red : .green)
-                    Text(syncStatusStore.storageModeTitle)
-                        .foregroundStyle(syncStatusStore.isUsingLocalFallback ? .red : .green)
+                    if hasServerCredential {
+                        Image(systemName: "externaldrive.fill.badge.checkmark")
+                            .foregroundStyle(.green)
+                        Text("服务器同步存储")
+                            .foregroundStyle(.green)
+                    } else {
+                        Image(systemName: syncStatusStore.isUsingLocalFallback ? "externaldrive.fill.badge.xmark" : "externaldrive.fill.badge.checkmark")
+                            .foregroundStyle(syncStatusStore.isUsingLocalFallback ? .red : .green)
+                        Text(syncStatusStore.storageModeTitle)
+                            .foregroundStyle(syncStatusStore.isUsingLocalFallback ? .red : .green)
+                    }
+                }
+
+                if hasServerCredential {
+                    Button {
+                        Task {
+                            await ServerSyncCoordinator.shared.pull(
+                                into: modelContext,
+                                settingsStore: settings
+                            )
+                        }
+                    } label: {
+                        HStack {
+                            SettingsIcon(name: "arrow.triangle.2.circlepath", color: .blue)
+                            Text("立即从服务器同步")
+                        }
+                    }
+
+                    HStack {
+                        SettingsIcon(name: "key.fill", color: .orange)
+                        Text("家庭配对码")
+                        Spacer()
+
+                        if savedPairingCode.isEmpty {
+                            if isLoadingPairingCode {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Text("暂未读取")
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Button {
+                                isPairingCodeVisible.toggle()
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Text(isPairingCodeVisible ? savedPairingCode : "••••")
+                                        .font(.body.monospacedDigit().weight(.semibold))
+                                    Image(systemName: isPairingCodeVisible ? "eye.slash.fill" : "eye.fill")
+                                }
+                            }
+                            .buttonStyle(.plain)
+
+                            if isPairingCodeVisible {
+                                Button {
+                                    UIPasteboard.general.string = savedPairingCode
+                                    showInfoAlert(title: "已复制", message: "家庭配对码已复制。")
+                                } label: {
+                                    Image(systemName: "doc.on.doc")
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("复制家庭配对码")
+                            }
+                        }
+                    }
+                } else if ServerAPIConfiguration.serverURL != nil {
+                    HStack {
+                        SettingsIcon(name: "key.fill", color: .orange)
+                        TextField("输入 4 位配对码", text: $pairingCode)
+                            .keyboardType(.numberPad)
+                            .onChange(of: pairingCode) { _, newValue in
+                                pairingCode = String(newValue.filter(\.isNumber).prefix(4))
+                            }
+                        Button(isPairingServer ? "加入中…" : "加入") {
+                            pairWithServer()
+                        }
+                        .disabled(isPairingServer || pairingCode.count != 4)
+                    }
                 }
 
                 NavigationLink {
@@ -345,11 +434,15 @@ struct SettingsView: View {
                     }
                 }
             } header: {
-                Text("数据同步")
+                Text("家庭账号与同步")
             } footer: {
                 SettingsNoteRow(
-                    icon: "arrow.triangle.2.circlepath.icloud",
-                    text: "数据会通过 iCloud 自动同步到同一 Apple ID 下的设备；如果一直显示本地存储，通常是系统网络或当前环境限制。"
+                    icon: hasServerCredential ? "server.rack" : "arrow.triangle.2.circlepath.icloud",
+                    text: hasServerCredential
+                        ? "题库、复习记录、任务、听写计划、日程和积分由上海服务器同步；听写音视频资源仍保留原来的存储方式。"
+                        : (ServerAPIConfiguration.serverURL == nil
+                            ? "数据会通过 iCloud 自动同步到同一 Apple ID 下的设备。"
+                            : "在多台设备输入同一个家庭账号配对码，就会同步同一份数据。")
                 )
             }
 
@@ -445,6 +538,7 @@ struct SettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             loadDeepSeekAPIKey()
+            loadPairingCodeIfNeeded()
         }
         .fileExporter(
             isPresented: $isExportingBackup,
@@ -715,6 +809,62 @@ struct SettingsView: View {
             deepSeekAPIKey = try DeepSeekAPIKeyStore.loadAPIKey()
         } catch {
             showInfoAlert(title: "读取 API Key 失败", message: error.localizedDescription)
+        }
+    }
+
+    private func pairWithServer() {
+        guard !isPairingServer else { return }
+        let code = pairingCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard code.count == 4, code.allSatisfy(\.isNumber) else { return }
+        isPairingServer = true
+        Task {
+            do {
+                let response = try await ServerAPIClient.shared.pair(
+                    code: code,
+                    deviceName: UIDevice.current.name
+                )
+                try ServerCredentialStore.saveToken(response.token)
+                try ServerCredentialStore.savePairingCode(code)
+                await MainActor.run {
+                    savedPairingCode = code
+                    pairingCode = ""
+                    isPairingServer = false
+                    hasServerCredential = true
+                    showInfoAlert(
+                        title: "已加入家庭账号",
+                        message: "这台设备的独立凭据已保存到系统 Keychain。请完全退出并重新打开 App，之后会与该家庭账号下的其他设备同步。"
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    isPairingServer = false
+                    showInfoAlert(title: "配对失败", message: error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private func loadPairingCodeIfNeeded() {
+        guard hasServerCredential, savedPairingCode.isEmpty, !isLoadingPairingCode else { return }
+        if let localCode = try? ServerCredentialStore.loadPairingCode(), !localCode.isEmpty {
+            savedPairingCode = localCode
+            return
+        }
+
+        isLoadingPairingCode = true
+        Task {
+            do {
+                let response = try await ServerAPIClient.shared.pairingCode()
+                try ServerCredentialStore.savePairingCode(response.code)
+                await MainActor.run {
+                    savedPairingCode = response.code
+                    isLoadingPairingCode = false
+                }
+            } catch {
+                await MainActor.run {
+                    isLoadingPairingCode = false
+                }
+            }
         }
     }
 

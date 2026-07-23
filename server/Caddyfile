@@ -1,0 +1,12 @@
+{
+    auto_https disable_redirects
+}
+
+https://111-231-22-148.sslip.io:8443 {
+    tls internal
+    encode zstd gzip
+    request_body {
+        max_size 20MB
+    }
+    reverse_proxy api:8080
+}

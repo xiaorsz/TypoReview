@@ -22,6 +22,21 @@
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>111-231-22-148.sslip.io</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<false/>
+			</dict>
+		</dict>
+	</dict>
+	<key>TypoReviewServerURL</key>
+	<string>https://111.231.22.148/typo-review-sync</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
