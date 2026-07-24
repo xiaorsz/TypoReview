@@ -1405,7 +1405,7 @@ struct HomeView: View {
 
     private func pointsSummaryCard(_ snapshot: DashboardSnapshot) -> some View {
         NavigationLink {
-            PointsDashboardView()
+            PointsDashboardView(initialBalance: snapshot.pointBalance)
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: "star.circle.fill")

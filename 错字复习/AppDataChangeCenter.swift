@@ -7,6 +7,12 @@ extension Notification.Name {
 
 enum AppDataChangeCenter {
     static func post(using center: NotificationCenter = .default) {
-        center.post(name: .appDataDidChange, object: nil)
+        if Thread.isMainThread {
+            center.post(name: .appDataDidChange, object: nil)
+        } else {
+            DispatchQueue.main.async {
+                center.post(name: .appDataDidChange, object: nil)
+            }
+        }
     }
 }

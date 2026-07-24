@@ -46,7 +46,7 @@ struct DataBackupDocument: FileDocument {
     }
 }
 
-struct DataBackupPayload: Codable {
+struct DataBackupPayload: Codable, @unchecked Sendable {
     static let currentVersion = 4
 
     let version: Int
@@ -490,7 +490,7 @@ extension JSONDecoder {
     }
 }
 
-struct AppSettingsSnapshot: Codable, Equatable {
+struct AppSettingsSnapshot: Codable, Equatable, Sendable {
     let id: UUID
     let childName: String
     let dailyLimit: Int

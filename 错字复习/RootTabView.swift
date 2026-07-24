@@ -127,23 +127,32 @@ struct RootTabView: View {
             DebugPerf.mark("RootTabView received NSPersistentStoreRemoteChange")
             #endif
             remoteChangeDebounceTask?.cancel()
+            let container = modelContext.container
             remoteChangeDebounceTask = Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s debounce
+                try? await Task.sleep(nanoseconds: 750_000_000)
                 guard !Task.isCancelled else { return }
                 guard canRefreshLiveAppState else { return }
-                do {
-                    _ = try Grade5EnglishDictationPlanImporter.deduplicateImportedPlan(
-                        in: modelContext
-                    )
-                    _ = try ReviewScheduler.reconcileStandardReviewProgress(in: modelContext)
-                    _ = try ReviewScheduler.deduplicateDailyReviewPlans(in: modelContext)
-                    _ = try PointLedgerService.reconcileMissingAutomaticRewards(in: modelContext)
-                    if modelContext.hasChanges {
-                        try modelContext.save()
+                let reconciliationError = await Task.detached(priority: .utility) {
+                    let backgroundContext = ModelContext(container)
+                    do {
+                        _ = try Grade5EnglishDictationPlanImporter.deduplicateImportedPlan(
+                            in: backgroundContext
+                        )
+                        _ = try ReviewScheduler.reconcileStandardReviewProgress(in: backgroundContext)
+                        _ = try ReviewScheduler.deduplicateDailyReviewPlans(in: backgroundContext)
+                        _ = try PointLedgerService.reconcileMissingAutomaticRewards(in: backgroundContext)
+                        if backgroundContext.hasChanges {
+                            try backgroundContext.save()
+                        }
+                        return nil as String?
+                    } catch {
+                        return error.localizedDescription
                     }
-                } catch {
+                }.value
+                guard !Task.isCancelled else { return }
+                if let reconciliationError {
                     #if DEBUG
-                    DebugPerf.mark("RootTabView remote review reconciliation failed error=\(error.localizedDescription)")
+                    DebugPerf.mark("RootTabView remote review reconciliation failed error=\(reconciliationError)")
                     #endif
                 }
                 appSettingsStore.refreshFromSwiftDataIfPossible(using: modelContext)

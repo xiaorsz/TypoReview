@@ -276,7 +276,6 @@ enum Grade5EnglishDictationPlanImporter {
 
     /// Repairs duplicate plan records created when another device launched before its
     /// initial CloudKit download completed. This can safely run after every remote change.
-    @MainActor
     @discardableResult
     static func deduplicateImportedPlan(
         in modelContext: ModelContext

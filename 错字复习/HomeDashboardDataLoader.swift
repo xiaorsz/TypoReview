@@ -19,11 +19,16 @@ enum HomeDashboardDataLoader {
         try? context.transaction {
             let reviewItems = ((try? context.fetch(FetchDescriptor<ReviewItem>())) ?? [])
                 .map(HomeReviewItemProjection.init)
-            let canonicalReviewRecords = ReviewScheduler.canonicalReviewRecords(
-                (try? context.fetch(FetchDescriptor<ReviewRecord>())) ?? []
+            let weeklyReviewRecords = ReviewScheduler.canonicalReviewRecords(
+                (try? context.fetch(
+                    FetchDescriptor<ReviewRecord>(
+                        predicate: #Predicate<ReviewRecord> {
+                            $0.reviewedAt >= weekStart && $0.reviewedAt < weekEnd
+                        }
+                    )
+                )) ?? []
             )
-            let reviewRecords = canonicalReviewRecords
-                .filter { $0.reviewedAt >= weekStart && $0.reviewedAt < weekEnd }
+            let reviewRecords = weeklyReviewRecords
                 .map(HomeReviewRecordProjection.init)
             let reviewDailyPlans = ((try? context.fetch(
                 FetchDescriptor<ReviewDailyPlan>(
@@ -44,16 +49,31 @@ enum HomeDashboardDataLoader {
             let taskSubtasks = ((try? context.fetch(
                 FetchDescriptor<TaskSubitem>(predicate: #Predicate<TaskSubitem> { !$0.isArchived })
             )) ?? []).map(TaskSubitemProjection.init)
+            var pointEntryDescriptor = FetchDescriptor<PointLedgerEntry>()
+            pointEntryDescriptor.propertiesToFetch = [
+                \.id,
+                \.createdAt,
+                \.amount,
+                \.idempotencyKey,
+            ]
             let pointEntries = PointLedgerService.canonicalEntries(
-                (try? context.fetch(FetchDescriptor<PointLedgerEntry>())) ?? []
+                (try? context.fetch(pointEntryDescriptor)) ?? []
             )
             let pointAmountsAndDates = pointEntries.map { (amount: $0.amount, createdAt: $0.createdAt) }
-            let pointStreak = PointLedgerService.streakSnapshot(
-                reviewRecords: canonicalReviewRecords,
-                dictationSessions: dictationSessionModels,
-                referenceDate: referenceDate,
-                calendar: calendar
+            var rewardStateDescriptor = FetchDescriptor<PointRewardState>(
+                sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
             )
+            rewardStateDescriptor.fetchLimit = 1
+            let rewardState = try? context.fetch(rewardStateDescriptor).first
+            let currentPointStreak: Int
+            if let rewardState, let lastActiveDay = rewardState.lastActiveDay {
+                let yesterday = calendar.date(byAdding: .day, value: -1, to: referenceDate)
+                let isCurrent = calendar.isDate(lastActiveDay, inSameDayAs: referenceDate)
+                    || yesterday.map { calendar.isDate(lastActiveDay, inSameDayAs: $0) } == true
+                currentPointStreak = isCurrent ? rewardState.currentStreak : 0
+            } else {
+                currentPointStreak = 0
+            }
 
             source = HomeDashboardSourceSnapshot(
                 reviewItems: reviewItems,
@@ -69,7 +89,7 @@ enum HomeDashboardDataLoader {
                 pointsEarnedToday: pointAmountsAndDates
                     .filter { $0.amount > 0 && calendar.isDate($0.createdAt, inSameDayAs: referenceDate) }
                     .reduce(0) { $0 + $1.amount },
-                currentPointStreak: pointStreak.currentStreak
+                currentPointStreak: currentPointStreak
             )
         }
         return source

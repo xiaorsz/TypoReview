@@ -161,27 +161,25 @@ final class ServerSyncCoordinator {
             isUploading = false
         }
         do {
-            let payload = try DataBackupPayload.capture(
-                from: modelContext,
-                settings: settingsStore.snapshot,
-                mediaAssets: []
-            )
-            let snapshot = try StructuredSnapshot(payload: payload)
-            let mutations = try snapshot.mutations(comparedWith: baseline)
-            guard !mutations.isEmpty else {
+            let container = modelContext.container
+            let settings = settingsStore.snapshot
+            let preparedUpload = try await Task.detached(priority: .utility) {
+                try Self.prepareUpload(
+                    from: container,
+                    settings: settings,
+                    baseline: baseline
+                )
+            }.value
+            guard !preparedUpload.bodies.isEmpty else {
                 lastErrorDescription = nil
                 return
             }
 
-            for batchStart in stride(from: 0, to: mutations.count, by: 500) {
-                let batchEnd = min(batchStart + 500, mutations.count)
-                let body = try JSONSerialization.data(
-                    withJSONObject: ["mutations": Array(mutations[batchStart..<batchEnd])],
-                    options: [.sortedKeys]
-                )
+            for body in preparedUpload.bodies {
+                try Task.checkCancellation()
                 try await ServerAPIClient.shared.pushMutations(body)
             }
-            saveBaseline(snapshot.hashes)
+            saveBaseline(preparedUpload.hashes)
             lastErrorDescription = nil
             lastSuccessfulUploadAt = .now
         } catch where Self.isCancellation(error) {
@@ -192,6 +190,33 @@ final class ServerSyncCoordinator {
             print("Server upload failed: \(error)")
             #endif
         }
+    }
+
+    nonisolated private static func prepareUpload(
+        from container: ModelContainer,
+        settings: AppSettingsSnapshot,
+        baseline: [String: [String: String]]
+    ) throws -> PreparedServerUpload {
+        let context = ModelContext(container)
+        let payload = try DataBackupPayload.capture(
+            from: context,
+            settings: settings,
+            mediaAssets: []
+        )
+        let snapshot = try StructuredSnapshot(payload: payload)
+        let mutations = try snapshot.mutations(comparedWith: baseline)
+        var bodies: [Data] = []
+        bodies.reserveCapacity((mutations.count + 499) / 500)
+        for batchStart in stride(from: 0, to: mutations.count, by: 500) {
+            let batchEnd = min(batchStart + 500, mutations.count)
+            bodies.append(
+                try JSONSerialization.data(
+                    withJSONObject: ["mutations": Array(mutations[batchStart..<batchEnd])],
+                    options: [.sortedKeys]
+                )
+            )
+        }
+        return PreparedServerUpload(bodies: bodies, hashes: snapshot.hashes)
     }
 
     private static func dataSummary(for payload: DataBackupPayload) -> String {
@@ -374,4 +399,9 @@ final class ServerSyncCoordinator {
             return result
         }
     }
+}
+
+private struct PreparedServerUpload: Sendable {
+    let bodies: [Data]
+    let hashes: [String: [String: String]]
 }

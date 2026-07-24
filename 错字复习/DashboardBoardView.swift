@@ -7,18 +7,26 @@ import Combine
 
 struct DashboardBoardView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
     @Environment(MediaLibraryStore.self) private var mediaLibraryStore
     @Environment(AppSettingsStore.self) private var appSettingsStore
     @Query(sort: \ReviewItem.nextReviewAt) private var reviewItems: [ReviewItem]
-    @Query(sort: \ReviewRecord.reviewedAt, order: .reverse) private var reviewRecords: [ReviewRecord]
-    @Query(sort: \DictationSession.createdAt, order: .reverse) private var dictationSessions: [DictationSession]
-    @Query(sort: \DictationEntry.sortOrder) private var dictationEntries: [DictationEntry]
+    @Query(
+        filter: #Predicate<DictationSession> { $0.reviewedAt == nil },
+        sort: \DictationSession.createdAt,
+        order: .reverse
+    ) private var dictationSessions: [DictationSession]
     @Query(sort: \TaskItem.createdAt) private var allTasks: [TaskItem]
-    @Query(sort: \TaskSubitem.sortOrder) private var taskSubitems: [TaskSubitem]
+    @Query(
+        filter: #Predicate<TaskSubitem> { !$0.isArchived },
+        sort: \TaskSubitem.sortOrder
+    ) private var taskSubitems: [TaskSubitem]
     @Query(sort: \TaskExecutionRecord.occurrenceDate, order: .reverse) private var taskExecutionRecords: [TaskExecutionRecord]
-    @Query(sort: \TaskSubitemExecutionRecord.updatedAt, order: .reverse) private var taskSubitemExecutionRecords: [TaskSubitemExecutionRecord]
-    @Query(sort: \ScheduleItem.startTime) private var allSchedules: [ScheduleItem]
+    @Query(
+        filter: #Predicate<ScheduleItem> { !$0.isArchived },
+        sort: \ScheduleItem.startTime
+    ) private var allSchedules: [ScheduleItem]
 
     @State private var boardNow = Date.now
     @State private var playbackCoordinator = MediaPlaybackCoordinator()
@@ -78,9 +86,8 @@ struct DashboardBoardView: View {
                 return lhs.id.uuidString < rhs.id.uuidString
             }
         let pendingDictationSessions = pendingDictationSessions(for: date)
-        let pendingSessionIDs = Set(pendingDictationSessions.map(\.id))
-        let pendingDictationBoardItems = dictationEntries
-            .filter { pendingSessionIDs.contains($0.sessionID) }
+        let pendingDictationBoardItems = pendingDictationSessions
+            .flatMap { dictationEntries(for: $0) }
             .sorted {
                 if $0.sessionID == $1.sessionID {
                     return $0.sortOrder < $1.sortOrder
@@ -131,6 +138,16 @@ struct DashboardBoardView: View {
             .sorted { $0.scheduledDate < $1.scheduledDate }
     }
 
+    private func dictationEntries(for session: DictationSession) -> [DictationEntry] {
+        let sessionID = session.id
+        return (try? modelContext.fetch(
+            FetchDescriptor<DictationEntry>(
+                predicate: #Predicate<DictationEntry> { $0.sessionID == sessionID },
+                sortBy: [SortDescriptor(\.sortOrder)]
+            )
+        )) ?? []
+    }
+
     private func boardTaskSnapshot(on date: Date) -> BoardTaskSnapshot {
         let calendar = Calendar.current
         let autoArchivedCompletedAtByTaskID = Dictionary(
@@ -157,7 +174,7 @@ struct DashboardBoardView: View {
         let taskProjectionResults = TodayTaskProjectionBuilder.build(
             from: taskProjections,
             executions: taskExecutionRecords.map(TaskExecutionRecordProjection.init),
-            subtasks: taskSubitems.filter { !$0.isArchived }.map(TaskSubitemProjection.init),
+            subtasks: taskSubitems.map(TaskSubitemProjection.init),
             on: date
         )
         let tasksByID = Dictionary(
@@ -1026,20 +1043,20 @@ struct DashboardBoardView: View {
         .buttonStyle(.plain)
     }
 
-    private var boardSnapshotRefreshTimer: Publishers.Autoconnect<Timer.TimerPublisher> {
+    private let boardSnapshotRefreshTimer: Publishers.Autoconnect<Timer.TimerPublisher> = {
         Timer.publish(every: 600, on: .main, in: .common)
             .autoconnect()
-    }
+    }()
 
-    private var boardPlaybackTimer: Publishers.Autoconnect<Timer.TimerPublisher> {
+    private let boardPlaybackTimer: Publishers.Autoconnect<Timer.TimerPublisher> = {
         Timer.publish(every: 15, on: .main, in: .common)
             .autoconnect()
-    }
+    }()
 
-    private var boardInactivityTimer: Publishers.Autoconnect<Timer.TimerPublisher> {
+    private let boardInactivityTimer: Publishers.Autoconnect<Timer.TimerPublisher> = {
         Timer.publish(every: 1, on: .main, in: .common)
             .autoconnect()
-    }
+    }()
 
     @MainActor
     private func reinforceIdleTimerOverrideIfNeeded() {

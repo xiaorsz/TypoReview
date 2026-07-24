@@ -356,7 +356,17 @@ enum PointLedgerService {
     }
 
     static func currentBalance(in modelContext: ModelContext) -> Int {
-        currentSnapshot(in: modelContext).balance
+        var descriptor = FetchDescriptor<PointLedgerEntry>()
+        descriptor.propertiesToFetch = [
+            \.id,
+            \.createdAt,
+            \.amount,
+            \.idempotencyKey,
+        ]
+        let entries = canonicalEntries(
+            (try? modelContext.fetch(descriptor)) ?? []
+        )
+        return entries.reduce(0) { $0 + $1.amount }
     }
 
     /// Repairs rewards that can be absent when completed activity arrives through
@@ -503,11 +513,12 @@ enum PointLedgerService {
     static func redeemManual(
         title: String,
         amount: Int,
+        availableBalance: Int? = nil,
         in modelContext: ModelContext
     ) -> PointLedgerEntry? {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard amount > 0, !trimmedTitle.isEmpty else { return nil }
-        guard currentBalance(in: modelContext) >= amount else { return nil }
+        guard (availableBalance ?? currentBalance(in: modelContext)) >= amount else { return nil }
 
         let id = UUID()
         let entry = PointLedgerEntry(
@@ -870,41 +881,47 @@ struct AccuracyBonusCard: View {
 }
 
 struct PointsDashboardView: View {
+    private static let recentEntryLimit = 15
+
     @Environment(\.modelContext) private var modelContext
 
-    @Query(sort: \PointLedgerEntry.createdAt, order: .reverse) private var entries: [PointLedgerEntry]
-    @Query private var reviewRecords: [ReviewRecord]
-    @Query private var dictationSessions: [DictationSession]
-    @Query private var taskExecutions: [TaskExecutionRecord]
-    @Query private var taskItems: [TaskItem]
+    @Query private var entries: [PointLedgerEntry]
+    @Query private var rewardStates: [PointRewardState]
 
     @State private var redemptionTitle = ""
     @State private var redemptionAmountText = "5"
     @State private var additionTitle = ""
     @State private var additionAmountText = "5"
     @State private var errorMessage: String?
-
-    private var balance: Int {
-        canonicalEntries.reduce(0) { $0 + $1.amount }
-    }
+    @State private var balance: Int?
+    @State private var balanceRefreshID = UUID()
 
     private var currentStreak: Int {
-        streakSnapshot.currentStreak
+        rewardStates.first?.currentStreak ?? 0
     }
 
     private var longestStreak: Int {
-        streakSnapshot.longestStreak
+        rewardStates.first?.longestStreak ?? 0
     }
 
-    private var streakSnapshot: PointStreakSnapshot {
-        PointLedgerService.streakSnapshot(
-            reviewRecords: reviewRecords,
-            dictationSessions: dictationSessions
+    init(initialBalance: Int? = nil) {
+        var entryDescriptor = FetchDescriptor<PointLedgerEntry>(
+            sortBy: [SortDescriptor(\PointLedgerEntry.createdAt, order: .reverse)]
         )
+        entryDescriptor.fetchLimit = Self.recentEntryLimit
+        _entries = Query(entryDescriptor)
+
+        var rewardStateDescriptor = FetchDescriptor<PointRewardState>(
+            sortBy: [SortDescriptor(\PointRewardState.updatedAt, order: .reverse)]
+        )
+        rewardStateDescriptor.fetchLimit = 1
+        _rewardStates = Query(rewardStateDescriptor)
+
+        _balance = State(initialValue: initialBalance)
     }
 
     private var canRedeem: Bool {
-        guard let redemptionAmount else { return false }
+        guard let redemptionAmount, let balance else { return false }
         return !redemptionTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
             balance >= redemptionAmount
     }
@@ -922,38 +939,26 @@ struct PointsDashboardView: View {
         positiveInt(from: additionAmountText)
     }
 
-    private var displayItems: [PointLedgerDisplayItem] {
-        PointLedgerDisplayItem.items(
-            from: canonicalEntries,
-            taskTitleByExecutionID: taskTitleByExecutionID
-        )
-    }
-
-    private var canonicalEntries: [PointLedgerEntry] {
-        PointLedgerService.canonicalEntries(entries)
-    }
-
-    private var recentDisplayItems: [PointLedgerDisplayItem] {
-        Array(displayItems.prefix(10))
-    }
-
-    private var taskTitleByExecutionID: [String: String] {
-        PointTaskTitleResolver.titleByExecutionID(
-            taskExecutions: taskExecutions,
-            taskItems: taskItems
-        )
-    }
-
     var body: some View {
-        Form {
+        let displayItems = PointLedgerDisplayItem.items(
+            from: PointLedgerService.canonicalEntries(entries),
+            taskTitleByExecutionID: [:]
+        )
+
+        return Form {
             Section {
                 HStack {
                     PointsSettingsIcon(name: "star.circle.fill", color: .yellow)
                     Text("当前积分")
                     Spacer()
-                    Text("\(balance)")
-                        .font(.title3.weight(.bold))
-                        .foregroundStyle(.orange)
+                    if let balance {
+                        Text("\(balance)")
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(.orange)
+                    } else {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
                 }
 
                 HStack {
@@ -1022,32 +1027,37 @@ struct PointsDashboardView: View {
                     Text("还没有积分记录")
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(recentDisplayItems) { item in
+                    ForEach(displayItems) { item in
                         PointLedgerEntryRow(item: item)
                     }
 
-                    if displayItems.count > recentDisplayItems.count {
+                    if entries.count >= Self.recentEntryLimit {
                         NavigationLink {
                             PointLedgerHistoryView()
                         } label: {
-                            HStack {
-                                Label("查看全部明细", systemImage: "list.bullet.rectangle")
-                                Spacer()
-                                Text("\(displayItems.count) 组")
-                                    .foregroundStyle(.secondary)
-                            }
+                            Label("查看全部明细", systemImage: "list.bullet.rectangle")
                         }
                     }
                 }
             } header: {
                 Text("最近明细")
             } footer: {
-                if displayItems.count > recentDisplayItems.count {
-                    Text("复习和听写的单项积分会按天汇总显示，完整流水仍保留在数据中。")
+                if entries.count >= Self.recentEntryLimit {
+                    Text("这里只加载最近 15 条流水；复习和听写记录会按天汇总显示。")
                 }
             }
         }
         .navigationTitle("积分与兑换")
+        .task {
+            if balance == nil {
+                await refreshBalance()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .appDataDidChange)) { _ in
+            Task {
+                await refreshBalance()
+            }
+        }
         .alert("操作失败", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
@@ -1063,12 +1073,17 @@ struct PointsDashboardView: View {
             errorMessage = "请输入有效的消耗积分。"
             return
         }
+        guard let availableBalance = balance else {
+            errorMessage = "积分还在加载，请稍后再试。"
+            return
+        }
 
-        guard PointLedgerService.redeemManual(
+        guard let entry = PointLedgerService.redeemManual(
             title: redemptionTitle,
             amount: amount,
+            availableBalance: availableBalance,
             in: modelContext
-        ) != nil else {
+        ) else {
             errorMessage = "积分不足，或兑换内容还没有填写。"
             return
         }
@@ -1077,6 +1092,7 @@ struct PointsDashboardView: View {
             try modelContext.save()
             redemptionTitle = ""
             redemptionAmountText = "5"
+            balance = availableBalance + entry.amount
             AppDataChangeCenter.post()
         } catch {
             errorMessage = error.localizedDescription
@@ -1089,11 +1105,11 @@ struct PointsDashboardView: View {
             return
         }
 
-        guard PointLedgerService.addManualPoints(
+        guard let entry = PointLedgerService.addManualPoints(
             title: additionTitle,
             amount: amount,
             in: modelContext
-        ) != nil else {
+        ) else {
             errorMessage = "增加说明还没有填写，或积分数字无效。"
             return
         }
@@ -1102,6 +1118,9 @@ struct PointsDashboardView: View {
             try modelContext.save()
             additionTitle = ""
             additionAmountText = "5"
+            if let balance {
+                self.balance = balance + entry.amount
+            }
             AppDataChangeCenter.post()
         } catch {
             errorMessage = error.localizedDescription
@@ -1113,28 +1132,62 @@ struct PointsDashboardView: View {
         guard let value = Int(trimmedText), value > 0 else { return nil }
         return value
     }
+
+    @MainActor
+    private func refreshBalance() async {
+        let refreshID = UUID()
+        balanceRefreshID = refreshID
+        let container = modelContext.container
+        let refreshedBalance = await Task.detached(priority: .utility) {
+            let backgroundContext = ModelContext(container)
+            return PointLedgerService.currentBalance(in: backgroundContext)
+        }.value
+
+        guard !Task.isCancelled, balanceRefreshID == refreshID else { return }
+        balance = refreshedBalance
+    }
 }
 
 private struct PointLedgerHistoryView: View {
-    @Query(sort: \PointLedgerEntry.createdAt, order: .reverse) private var entries: [PointLedgerEntry]
-    @Query private var taskExecutions: [TaskExecutionRecord]
-    @Query private var taskItems: [TaskItem]
+    private static let pageSize = 100
+    @State private var loadedLimit = pageSize
 
-    private var taskTitleByExecutionID: [String: String] {
-        PointTaskTitleResolver.titleByExecutionID(
-            taskExecutions: taskExecutions,
-            taskItems: taskItems
+    var body: some View {
+        PointLedgerHistoryPage(
+            limit: loadedLimit,
+            pageSize: Self.pageSize,
+            loadMore: {
+                loadedLimit += Self.pageSize
+            }
         )
+        .id(loadedLimit)
+        .navigationTitle("积分明细")
     }
+}
 
-    private var displayItems: [PointLedgerDisplayItem] {
-        PointLedgerDisplayItem.items(
-            from: PointLedgerService.canonicalEntries(entries),
-            taskTitleByExecutionID: taskTitleByExecutionID
+private struct PointLedgerHistoryPage: View {
+    @Query private var entries: [PointLedgerEntry]
+    let limit: Int
+    let pageSize: Int
+    let loadMore: () -> Void
+
+    init(limit: Int, pageSize: Int, loadMore: @escaping () -> Void) {
+        self.limit = limit
+        self.pageSize = pageSize
+        self.loadMore = loadMore
+        var descriptor = FetchDescriptor<PointLedgerEntry>(
+            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
         )
+        descriptor.fetchLimit = limit
+        _entries = Query(descriptor)
     }
 
     var body: some View {
+        let displayItems = PointLedgerDisplayItem.items(
+            from: PointLedgerService.canonicalEntries(entries),
+            taskTitleByExecutionID: [:]
+        )
+
         List {
             if entries.isEmpty {
                 Text("还没有积分记录")
@@ -1143,9 +1196,20 @@ private struct PointLedgerHistoryView: View {
                 ForEach(displayItems) { item in
                     PointLedgerEntryRow(item: item)
                 }
+
+                if entries.count == limit {
+                    Button {
+                        loadMore()
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Label("再加载 \(pageSize) 条", systemImage: "arrow.down.circle")
+                            Spacer()
+                        }
+                    }
+                }
             }
         }
-        .navigationTitle("积分明细")
     }
 }
 
@@ -1311,26 +1375,6 @@ private struct PointLedgerCompactKey: Hashable {
 
         self.sourceType = entry.sourceType
         self.day = calendar.startOfDay(for: entry.createdAt)
-    }
-}
-
-private enum PointTaskTitleResolver {
-    static func titleByExecutionID(
-        taskExecutions: [TaskExecutionRecord],
-        taskItems: [TaskItem]
-    ) -> [String: String] {
-        let titlesByTaskID = Dictionary(
-            taskItems.map { ($0.id, $0.title) },
-            uniquingKeysWith: { first, _ in first }
-        )
-
-        return Dictionary(
-            taskExecutions.compactMap { execution -> (String, String)? in
-                guard let title = titlesByTaskID[execution.taskID] else { return nil }
-                return (execution.id.uuidString, title)
-            },
-            uniquingKeysWith: { first, _ in first }
-        )
     }
 }
 
