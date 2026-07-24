@@ -755,7 +755,7 @@ struct TasksView: View {
                 let executionProjections = safeExecutions.map(TaskExecutionRecordProjection.init)
                 let subtaskProjections = safeSubtasks.map(TaskSubitemProjection.init)
                 let taskProjectionsByID = Dictionary(
-                    deduplicatedVisibleTasks.map { ($0.id, TaskProjection($0)) },
+                    deduplicatedTasks.map { ($0.id, TaskProjection($0)) },
                     uniquingKeysWith: { first, _ in first }
                 )
                 let scheduleProjectionsByID = Dictionary(
