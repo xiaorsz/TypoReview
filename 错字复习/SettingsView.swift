@@ -235,7 +235,9 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     SettingsNoteRow(
                         icon: "lock.shield.fill",
-                        text: "DeepSeek API Key 通过系统 iCloud Keychain 安全同步；AI 开关和模型会通过 iCloud 设置同步。需要各设备登录同一 Apple ID，并开启 iCloud 密码与钥匙串。"
+                        text: hasServerCredential
+                            ? "DeepSeek API Key 会加密保存到家庭服务器，并自动写入各设备的系统 Keychain。"
+                            : "DeepSeek API Key 通过系统 iCloud Keychain 安全同步；需要各设备登录同一 Apple ID，并开启 iCloud 密码与钥匙串。"
                     )
                     SettingsNoteRow(
                         icon: "arrow.up.doc.fill",
@@ -575,7 +577,9 @@ struct SettingsView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("API Key 会从本机的系统 Keychain 中移除，AI 小结将无法继续使用。")
+            Text(hasServerCredential
+                ? "API Key 会从本机和家庭账号中移除，其他设备也将无法继续使用 AI 小结。"
+                : "API Key 会从本机的系统 Keychain 中移除，AI 小结将无法继续使用。")
         }
         .confirmationDialog(
             "恢复备份",
@@ -836,7 +840,28 @@ struct SettingsView: View {
         do {
             try DeepSeekAPIKeyStore.saveAPIKey(trimmedKey)
             deepSeekAPIKey = try DeepSeekAPIKeyStore.loadAPIKey()
-            showInfoAlert(title: "保存成功", message: "DeepSeek API Key 已保存到系统 Keychain，并会通过 iCloud 钥匙串同步到其他设备。")
+            Task {
+                do {
+                    if ServerAPIConfiguration.current != nil {
+                        _ = try await ServerAPIClient.shared.saveDeepSeekAPIKey(trimmedKey)
+                    }
+                    await MainActor.run {
+                        showInfoAlert(
+                            title: "保存成功",
+                            message: ServerAPIConfiguration.current != nil
+                                ? "DeepSeek API Key 已加密保存到家庭服务器，并会同步到其他设备。"
+                                : "DeepSeek API Key 已保存到系统 Keychain，并会通过 iCloud 钥匙串同步到其他设备。"
+                        )
+                    }
+                } catch {
+                    await MainActor.run {
+                        showInfoAlert(
+                            title: "服务器同步失败",
+                            message: "API Key 已保存在本机，但尚未同步到家庭服务器：\(error.localizedDescription)"
+                        )
+                    }
+                }
+            }
         } catch {
             showInfoAlert(title: "保存失败", message: error.localizedDescription)
         }
@@ -845,7 +870,23 @@ struct SettingsView: View {
     private func clearDeepSeekAPIKey() {
         DeepSeekAPIKeyStore.deleteAPIKey()
         deepSeekAPIKey = ""
-        showInfoAlert(title: "已清空", message: "DeepSeek API Key 已从系统 Keychain 移除。")
+        Task {
+            do {
+                if ServerAPIConfiguration.current != nil {
+                    try await ServerAPIClient.shared.deleteDeepSeekAPIKey()
+                }
+                await MainActor.run {
+                    showInfoAlert(title: "已清空", message: "DeepSeek API Key 已从本机和家庭账号移除。")
+                }
+            } catch {
+                await MainActor.run {
+                    showInfoAlert(
+                        title: "服务器同步失败",
+                        message: "本机 Key 已清空，但家庭服务器删除失败：\(error.localizedDescription)"
+                    )
+                }
+            }
+        }
     }
 
     private func testDeepSeekConnection() {
@@ -859,6 +900,9 @@ struct SettingsView: View {
         Task {
             do {
                 try DeepSeekAPIKeyStore.saveAPIKey(trimmedKey)
+                if ServerAPIConfiguration.current != nil {
+                    _ = try await ServerAPIClient.shared.saveDeepSeekAPIKey(trimmedKey)
+                }
                 let model = DeepSeekSummaryModel(rawValue: settings.aiSummaryModelRawValue) ?? .flash
                 let response = try await DeepSeekSummaryClient(apiKey: trimmedKey, model: model.rawValue)
                     .testConnection()

@@ -14,11 +14,13 @@ import asyncpg
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from .db import Database, tombstone_record, upsert_record
+from .db import Database, tombstone_record, upsert_point_ledger_entry, upsert_record
 from .domain import (
     ENTITY_KEYS,
+    SETTINGS_RECORD_ID,
     SHANGHAI,
     apply_review_result,
+    canonicalize_settings,
     is_due,
     isoformat,
     parse_datetime,
@@ -164,6 +166,10 @@ class PairingCodeCreation(BaseModel):
     uses: int | None = None
 
 
+class SecretValueUpdate(BaseModel):
+    value: str = Field(min_length=1, max_length=1000)
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     pool = database.require_pool()
@@ -291,6 +297,74 @@ async def revoke_device(
     return {"revoked": status_value.endswith("1")}
 
 
+def require_secret_encryption_key() -> str:
+    key = os.environ.get("SECRET_ENCRYPTION_KEY", "")
+    if len(key) < 32:
+        raise HTTPException(status_code=503, detail="secret encryption is not configured")
+    return key
+
+
+@app.get("/v1/secrets/deepseek-api-key")
+async def get_deepseek_api_key(account_id: UUID = Depends(require_account)) -> dict[str, Any]:
+    pool = database.require_pool()
+    encryption_key = require_secret_encryption_key()
+    async with pool.acquire() as connection:
+        row = await connection.fetchrow(
+            """
+            SELECT pgp_sym_decrypt(ciphertext, $2) AS value, updated_at
+            FROM account_secrets
+            WHERE account_id=$1 AND secret_name='deepseek-api-key'
+            """,
+            account_id,
+            encryption_key,
+        )
+    if row is None:
+        return {"value": None, "updatedAt": None}
+    return {"value": row["value"], "updatedAt": isoformat(row["updated_at"])}
+
+
+@app.put("/v1/secrets/deepseek-api-key")
+async def put_deepseek_api_key(
+    request: SecretValueUpdate,
+    account_id: UUID = Depends(require_account),
+) -> dict[str, Any]:
+    value = request.value.strip()
+    if not value:
+        raise HTTPException(status_code=422, detail="secret value must not be empty")
+    pool = database.require_pool()
+    encryption_key = require_secret_encryption_key()
+    async with pool.acquire() as connection:
+        updated_at = await connection.fetchval(
+            """
+            INSERT INTO account_secrets(account_id, secret_name, ciphertext, updated_at)
+            VALUES($1, 'deepseek-api-key', pgp_sym_encrypt($2, $3, 'cipher-algo=aes256'), now())
+            ON CONFLICT (account_id, secret_name) DO UPDATE
+            SET ciphertext=EXCLUDED.ciphertext, updated_at=EXCLUDED.updated_at
+            RETURNING updated_at
+            """,
+            account_id,
+            value,
+            encryption_key,
+        )
+    # Do not echo the secret back in a write response. Authorized devices can
+    # retrieve it through the dedicated GET endpoint when synchronizing.
+    return {"value": None, "updatedAt": isoformat(updated_at)}
+
+
+@app.delete("/v1/secrets/deepseek-api-key")
+async def delete_deepseek_api_key(account_id: UUID = Depends(require_account)) -> dict[str, bool]:
+    pool = database.require_pool()
+    async with pool.acquire() as connection:
+        status_value = await connection.execute(
+            """
+            DELETE FROM account_secrets
+            WHERE account_id=$1 AND secret_name='deepseek-api-key'
+            """,
+            account_id,
+        )
+    return {"deleted": status_value.endswith("1")}
+
+
 def record_timestamp(entity_type: str, payload: dict[str, Any], fallback: datetime) -> datetime:
     field = UPDATED_AT_FIELD.get(entity_type)
     value = payload.get(field) if field else None
@@ -309,14 +383,15 @@ async def import_snapshot(
     exported_at = snapshot.exportedAt.astimezone(timezone.utc)
     async with pool.acquire() as connection, connection.transaction():
         if snapshot.settings is not None:
-            settings_id = UUID(str(snapshot.settings["id"]))
+            settings_payload = canonicalize_settings(snapshot.settings)
+            settings_payload.setdefault("updatedAt", isoformat(exported_at))
             changed = await upsert_record(
                 connection,
                 account_id=account_id,
                 entity_type="settings",
-                record_id=settings_id,
-                payload=snapshot.settings,
-                client_updated_at=exported_at,
+                record_id=SETTINGS_RECORD_ID,
+                payload=settings_payload,
+                client_updated_at=parse_datetime(settings_payload["updatedAt"]) or exported_at,
             )
             inserted_or_updated["settings"] = int(changed)
 
@@ -333,14 +408,24 @@ async def import_snapshot(
         for entity_type in ENTITY_KEYS:
             changed_count = 0
             for payload in raw[entity_type]:
-                changed = await upsert_record(
-                    connection,
-                    account_id=account_id,
-                    entity_type=entity_type,
-                    record_id=UUID(str(payload["id"])),
-                    payload=payload,
-                    client_updated_at=record_timestamp(entity_type, payload, exported_at),
-                )
+                if entity_type == "pointLedgerEntries":
+                    changed, duplicate = await upsert_point_ledger_entry(
+                        connection,
+                        account_id=account_id,
+                        record_id=UUID(str(payload["id"])),
+                        payload=payload,
+                        client_updated_at=record_timestamp(entity_type, payload, exported_at),
+                    )
+                    ignored_point_duplicates += int(duplicate)
+                else:
+                    changed = await upsert_record(
+                        connection,
+                        account_id=account_id,
+                        entity_type=entity_type,
+                        record_id=UUID(str(payload["id"])),
+                        payload=payload,
+                        client_updated_at=record_timestamp(entity_type, payload, exported_at),
+                    )
                 changed_count += int(changed)
             inserted_or_updated[entity_type] = changed_count
 
@@ -356,11 +441,25 @@ async def import_snapshot(
 async def export_snapshot(account_id: UUID = Depends(require_account)) -> dict[str, Any]:
     pool = database.require_pool()
     async with pool.acquire() as connection:
+        settings = await connection.fetchval(
+            """
+            SELECT payload
+            FROM records
+            WHERE account_id = $1
+              AND entity_type = 'settings'
+              AND deleted_at IS NULL
+            ORDER BY client_updated_at DESC, server_version DESC
+            LIMIT 1
+            """,
+            account_id,
+        )
         rows = await connection.fetch(
             """
             SELECT entity_type, payload
             FROM records
-            WHERE account_id = $1 AND deleted_at IS NULL
+            WHERE account_id = $1
+              AND entity_type <> 'settings'
+              AND deleted_at IS NULL
             ORDER BY entity_type, record_id
             """,
             account_id,
@@ -369,15 +468,13 @@ async def export_snapshot(account_id: UUID = Depends(require_account)) -> dict[s
         "version": 4,
         "exportedAt": isoformat(datetime.now(timezone.utc)),
         "appVersion": "server-1.0",
-        "settings": None,
+        "settings": canonicalize_settings(settings) if settings is not None else None,
         **{key: [] for key in ENTITY_KEYS},
         "mediaAssets": [],
     }
     for row in rows:
         payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
-        if row["entity_type"] == "settings":
-            result["settings"] = payload
-        elif row["entity_type"] in ENTITY_KEYS:
+        if row["entity_type"] in ENTITY_KEYS:
             result[row["entity_type"]].append(payload)
     return result
 
@@ -438,6 +535,11 @@ async def push_mutations(
             )
             if claimed is None:
                 continue
+            if mutation.entityType == "settings" and mutation.operation == "delete":
+                # Settings are a per-account singleton. A device that previously
+                # used a different local UUID must not delete the family's settings.
+                applied.append(str(mutation.mutationID))
+                continue
             if mutation.operation == "delete":
                 await tombstone_record(
                     connection,
@@ -449,6 +551,24 @@ async def push_mutations(
             else:
                 if mutation.payload is None:
                     raise HTTPException(status_code=422, detail="upsert payload is required")
+                if mutation.entityType == "settings":
+                    settings_updated_at = parse_datetime(mutation.payload.get("updatedAt"))
+                    if settings_updated_at is None:
+                        # Builds released before settings gained an edit timestamp
+                        # may contain stale defaults. They can download settings,
+                        # but must not overwrite a newer family value.
+                        applied.append(str(mutation.mutationID))
+                        continue
+                    await upsert_record(
+                        connection,
+                        account_id=account_id,
+                        entity_type="settings",
+                        record_id=SETTINGS_RECORD_ID,
+                        payload=canonicalize_settings(mutation.payload),
+                        client_updated_at=settings_updated_at,
+                    )
+                    applied.append(str(mutation.mutationID))
+                    continue
                 if mutation.entityType == "reviewRecords" and mutation.payload.get("modeRawValue") != "dictation":
                     reviewed_at = parse_datetime(mutation.payload.get("reviewedAt"))
                     item_id_value = mutation.payload.get("itemID")
@@ -547,14 +667,23 @@ async def push_mutations(
                 if mutation.entityType == "reviewItems" and mutation.recordID in server_scheduled_item_ids:
                     applied.append(str(mutation.mutationID))
                     continue
-                await upsert_record(
-                    connection,
-                    account_id=account_id,
-                    entity_type=mutation.entityType,
-                    record_id=mutation.recordID,
-                    payload=mutation.payload,
-                    client_updated_at=mutation.updatedAt,
-                )
+                if mutation.entityType == "pointLedgerEntries":
+                    await upsert_point_ledger_entry(
+                        connection,
+                        account_id=account_id,
+                        record_id=mutation.recordID,
+                        payload=mutation.payload,
+                        client_updated_at=mutation.updatedAt,
+                    )
+                else:
+                    await upsert_record(
+                        connection,
+                        account_id=account_id,
+                        entity_type=mutation.entityType,
+                        record_id=mutation.recordID,
+                        payload=mutation.payload,
+                        client_updated_at=mutation.updatedAt,
+                    )
             applied.append(str(mutation.mutationID))
     return {"appliedMutationIDs": applied}
 

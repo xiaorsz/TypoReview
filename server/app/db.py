@@ -85,6 +85,106 @@ async def upsert_record(
     return status.endswith("1")
 
 
+async def upsert_point_ledger_entry(
+    connection: asyncpg.Connection,
+    *,
+    account_id: UUID,
+    record_id: UUID,
+    payload: dict[str, Any],
+    client_updated_at: Any,
+) -> tuple[bool, bool]:
+    """Insert one logical point award without failing on a duplicate device copy.
+
+    Different devices can materialize the same idempotent award with different
+    record UUIDs. The partial unique index correctly treats those rows as one
+    logical award, so retain the first canonical row and acknowledge later
+    duplicates instead of aborting the caller's whole sync transaction.
+    """
+    updated_at = parse_datetime(client_updated_at)
+    if updated_at is None:
+        raise ValueError(f"pointLedgerEntries/{record_id} is missing an update timestamp")
+
+    idempotency_key = str(payload.get("idempotencyKey") or "").strip()
+    if not idempotency_key:
+        changed = await upsert_record(
+            connection,
+            account_id=account_id,
+            entity_type="pointLedgerEntries",
+            record_id=record_id,
+            payload=payload,
+            client_updated_at=updated_at,
+        )
+        return changed, False
+
+    inserted_id = await connection.fetchval(
+        """
+        INSERT INTO records(account_id, entity_type, record_id, payload, client_updated_at, deleted_at)
+        VALUES($1, 'pointLedgerEntries', $2, $3::jsonb, $4, NULL)
+        ON CONFLICT DO NOTHING
+        RETURNING record_id
+        """,
+        account_id,
+        record_id,
+        payload,
+        updated_at,
+    )
+    if inserted_id is not None:
+        return True, False
+
+    # ON CONFLICT DO NOTHING also covers a concurrent insert. Once it returns,
+    # the conflicting transaction is visible, so resolve which logical row won.
+    existing = await connection.fetchrow(
+        """
+        SELECT record_id, payload, deleted_at
+        FROM records
+        WHERE account_id=$1
+          AND entity_type='pointLedgerEntries'
+          AND (
+              record_id=$2
+              OR (deleted_at IS NULL AND payload->>'idempotencyKey'=$3)
+          )
+        ORDER BY
+          CASE
+            WHEN deleted_at IS NULL AND payload->>'idempotencyKey'=$3 THEN 0
+            ELSE 1
+          END,
+          client_updated_at,
+          record_id
+        LIMIT 1
+        FOR UPDATE
+        """,
+        account_id,
+        record_id,
+        idempotency_key,
+    )
+    if existing is None:
+        # A conflicting row was removed between statements. Retry once through
+        # the normal insert path; a new conflict remains safely idempotent.
+        return await upsert_point_ledger_entry(
+            connection,
+            account_id=account_id,
+            record_id=record_id,
+            payload=payload,
+            client_updated_at=updated_at,
+        )
+
+    existing_payload = existing["payload"]
+    existing_key = str(existing_payload.get("idempotencyKey") or "").strip()
+    if existing["deleted_at"] is None and existing_key == idempotency_key:
+        if existing["record_id"] != record_id:
+            return False, True
+
+    changed = await upsert_record(
+        connection,
+        account_id=account_id,
+        entity_type="pointLedgerEntries",
+        record_id=record_id,
+        payload=payload,
+        client_updated_at=updated_at,
+    )
+    return changed, False
+
+
 async def tombstone_record(
     connection: asyncpg.Connection,
     *,

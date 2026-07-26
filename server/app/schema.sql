@@ -1,4 +1,5 @@
 CREATE SEQUENCE IF NOT EXISTS record_version_seq;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS accounts (
     id uuid PRIMARY KEY,
@@ -22,6 +23,9 @@ CREATE INDEX IF NOT EXISTS records_changes_idx
     ON records(account_id, server_version);
 CREATE INDEX IF NOT EXISTS records_entity_idx
     ON records(account_id, entity_type) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS settings_singleton_idx
+    ON records(account_id)
+    WHERE entity_type = 'settings' AND deleted_at IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS point_ledger_idempotency_idx
     ON records(account_id, (payload->>'idempotencyKey'))
     WHERE entity_type = 'pointLedgerEntries'
@@ -76,6 +80,14 @@ CREATE TABLE IF NOT EXISTS pairing_attempts (
 
 CREATE INDEX IF NOT EXISTS pairing_attempts_time_idx
     ON pairing_attempts(attempted_at);
+
+CREATE TABLE IF NOT EXISTS account_secrets (
+    account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    secret_name text NOT NULL,
+    ciphertext bytea NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (account_id, secret_name)
+);
 
 CREATE TABLE IF NOT EXISTS daily_review_plans (
     id uuid PRIMARY KEY,

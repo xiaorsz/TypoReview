@@ -64,7 +64,16 @@ final class ServerSyncCoordinator {
             _ = await pull(into: modelContext, settingsStore: settingsStore)
             return
         } else {
-            await uploadChanges(from: modelContext, settingsStore: settingsStore)
+            let uploadSucceeded = await uploadChanges(
+                from: modelContext,
+                settingsStore: settingsStore
+            )
+            guard uploadSucceeded else {
+                // Preserve locally completed work when the server rejects an
+                // upload. Pulling the older server snapshot here would replace
+                // the local store and make a successful submission appear undone.
+                return
+            }
         }
         await pull(into: modelContext, settingsStore: settingsStore)
     }
@@ -118,6 +127,7 @@ final class ServerSyncCoordinator {
             lastErrorDescription = nil
             lastSuccessfulPullAt = .now
             lastPulledDataSummary = Self.dataSummary(for: payload)
+            await synchronizeDeepSeekAPIKey()
             AppDataChangeCenter.post()
             return true
         } catch where Self.isCancellation(error) {
@@ -148,12 +158,13 @@ final class ServerSyncCoordinator {
         }
     }
 
+    @discardableResult
     func uploadChanges(
         from modelContext: ModelContext,
         settingsStore: AppSettingsStore
-    ) async {
-        guard isEnabled, !isApplyingRemoteSnapshot, !isPulling, !isUploading else { return }
-        guard let baseline = loadBaseline() else { return }
+    ) async -> Bool {
+        guard isEnabled, !isApplyingRemoteSnapshot, !isPulling, !isUploading else { return false }
+        guard let baseline = loadBaseline() else { return false }
         isUploading = true
         activeSyncPhase = "正在上传数据"
         defer {
@@ -172,7 +183,7 @@ final class ServerSyncCoordinator {
             }.value
             guard !preparedUpload.bodies.isEmpty else {
                 lastErrorDescription = nil
-                return
+                return true
             }
 
             for body in preparedUpload.bodies {
@@ -182,13 +193,15 @@ final class ServerSyncCoordinator {
             saveBaseline(preparedUpload.hashes)
             lastErrorDescription = nil
             lastSuccessfulUploadAt = .now
+            return true
         } catch where Self.isCancellation(error) {
-            return
+            return false
         } catch {
             lastErrorDescription = error.localizedDescription
             #if DEBUG
             print("Server upload failed: \(error)")
             #endif
+            return false
         }
     }
 
@@ -221,6 +234,27 @@ final class ServerSyncCoordinator {
 
     private static func dataSummary(for payload: DataBackupPayload) -> String {
         "题库 \(payload.reviewItems.count) 条，复习记录 \(payload.reviewRecords.count) 条，听写 \(payload.dictationSessions.count) 组 / \(payload.dictationEntries.count) 条"
+    }
+
+    private func synchronizeDeepSeekAPIKey() async {
+        do {
+            let remote = try await ServerAPIClient.shared.deepSeekAPIKey()
+            if let value = remote.value?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !value.isEmpty {
+                try DeepSeekAPIKeyStore.saveAPIKey(value)
+                return
+            }
+
+            let local = try DeepSeekAPIKeyStore.loadAPIKey()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !local.isEmpty {
+                _ = try await ServerAPIClient.shared.saveDeepSeekAPIKey(local)
+            }
+        } catch {
+            #if DEBUG
+            print("DeepSeek API Key sync failed: \(error)")
+            #endif
+        }
     }
 
     private static func isCancellation(_ error: Error) -> Bool {
@@ -298,6 +332,7 @@ final class ServerSyncCoordinator {
             "scheduleItems": "updatedAt",
             "pointLedgerEntries": "createdAt",
             "pointRewardStates": "updatedAt",
+            "settings": "updatedAt",
         ]
 
         let records: [String: [String: [String: Any]]]

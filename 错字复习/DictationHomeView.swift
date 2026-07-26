@@ -443,7 +443,7 @@ struct DictationHomeView: View {
                     tint: .green
                 )
             }
-            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+            .listRowInsets(EdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8))
             .listRowBackground(Color.clear)
         }
     }

@@ -60,7 +60,11 @@ if [[ ! -f "$env_file" ]]; then
     printf 'DATABASE_URL=postgresql://typo_review:%s@postgres:5432/typo_review\n' "$db_password"
     printf 'API_TOKEN=%s\n' "$api_token"
     printf 'DEFAULT_ACCOUNT_ID=00000000-0000-0000-0000-000000000001\n'
+    printf 'SECRET_ENCRYPTION_KEY=%s\n' "$(openssl rand -hex 32)"
   } > "$env_file"
+fi
+if ! grep -q '^SECRET_ENCRYPTION_KEY=' "$env_file"; then
+  printf 'SECRET_ENCRYPTION_KEY=%s\n' "$(openssl rand -hex 32)" >> "$env_file"
 fi
 chmod 600 "$env_file"
 ln -sfn "$release_dir" "$current_link"

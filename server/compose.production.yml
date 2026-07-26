@@ -28,6 +28,7 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       API_TOKEN: ${API_TOKEN}
       DEFAULT_ACCOUNT_ID: ${DEFAULT_ACCOUNT_ID}
+      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY}
       TZ: Asia/Shanghai
     ports:
       - "127.0.0.1:18181:8080"

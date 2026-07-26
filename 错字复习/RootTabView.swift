@@ -191,7 +191,13 @@ struct RootTabView: View {
 
             Tab("题库", systemImage: "square.grid.2x2.fill", value: LegacyTab.library) {
                 tabRoot(for: .library) {
-                    LibraryView()
+                    DeferredTabContent(
+                        title: "题库",
+                        loadingMessage: "正在打开题库...",
+                        delayNanoseconds: 120_000_000
+                    ) {
+                        LibraryView()
+                    }
                 }
             }
 
@@ -203,7 +209,7 @@ struct RootTabView: View {
 
             Tab("待办", systemImage: "checklist", value: LegacyTab.tasks) {
                 tabRoot(for: .tasks) {
-                    TasksView()
+                    DeferredTasksHomeView()
                 }
             }
 
@@ -233,7 +239,13 @@ struct RootTabView: View {
             .tag(LegacyTab.home)
 
             tabRoot(for: .library) {
-                LibraryView()
+                DeferredTabContent(
+                    title: "题库",
+                    loadingMessage: "正在打开题库...",
+                    delayNanoseconds: 120_000_000
+                ) {
+                    LibraryView()
+                }
             }
             .tabItem {
                 Label("题库", systemImage: "square.grid.2x2.fill")
@@ -249,7 +261,7 @@ struct RootTabView: View {
             .tag(LegacyTab.dictation)
 
             tabRoot(for: .tasks) {
-                TasksView()
+                DeferredTasksHomeView()
             }
             .tabItem {
                 Label("待办", systemImage: "checklist")

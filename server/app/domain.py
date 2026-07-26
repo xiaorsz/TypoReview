@@ -9,6 +9,7 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 INTERVALS = [0, 1, 2, 4, 7, 15, 30]
 COMPLETION_STAGE = 7
 DICTATION_FOLLOW_UP_COMPLETE_STAGE = 6
+SETTINGS_RECORD_ID = UUID("00000000-0000-0000-0000-000000000002")
 
 ENTITY_KEYS = (
     "reviewItems",
@@ -24,6 +25,10 @@ ENTITY_KEYS = (
     "pointLedgerEntries",
     "pointRewardStates",
 )
+
+
+def canonicalize_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    return {**payload, "id": str(SETTINGS_RECORD_ID)}
 
 
 def parse_datetime(value: str | datetime | None) -> datetime | None:

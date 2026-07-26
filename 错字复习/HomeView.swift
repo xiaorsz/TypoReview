@@ -1005,21 +1005,7 @@ struct HomeView: View {
             on day: Date,
             calendar: Calendar
         ) -> Bool {
-            let start = calendar.startOfDay(for: task.startDate)
-            guard day >= start else { return false }
-
-            if let endDate = task.endDate, day > calendar.startOfDay(for: endDate) {
-                return false
-            }
-
-            switch task.recurrence.kind {
-            case .once:
-                return calendar.isDate(day, inSameDayAs: start)
-            case .daily:
-                return true
-            case .weekly:
-                return task.recurrence.weekdays.contains(calendar.component(.weekday, from: day))
-            }
+            task.occurs(on: day, calendar: calendar)
         }
 
         private static func preferredExecutionRecord(
@@ -2032,6 +2018,7 @@ struct HomeView: View {
                             reviewEntryButton(snapshot)
                             dictationEntryButton(snapshot)
                         }
+                        .fixedSize(horizontal: false, vertical: true)
                     } else {
                         VStack(spacing: 10) {
                             reviewEntryButton(snapshot)
@@ -2064,6 +2051,7 @@ struct HomeView: View {
                             lightweightReviewPlaceholderCard
                             lightweightDictationEntryButton
                         }
+                        .fixedSize(horizontal: false, vertical: true)
                     } else {
                         VStack(spacing: 10) {
                             lightweightReviewPlaceholderCard
@@ -2141,9 +2129,9 @@ struct HomeView: View {
                 .foregroundStyle(.white.opacity(0.9))
                 .lineLimit(2)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding()
-                .background(Color.orange.opacity(0.88))
+        .background(Color.orange.opacity(0.88))
         .foregroundStyle(.white)
         .clipShape(RoundedRectangle(cornerRadius: 16))
     }
@@ -2168,7 +2156,7 @@ struct HomeView: View {
 
                 Spacer()
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .padding()
             .background(Color.teal.opacity(0.88))
@@ -2371,7 +2359,7 @@ struct HomeView: View {
                 .buttonStyle(.plain)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding(16)
         .background(
             LinearGradient(
@@ -2436,7 +2424,7 @@ struct HomeView: View {
                 .buttonStyle(.plain)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding(16)
         .background(
             LinearGradient(

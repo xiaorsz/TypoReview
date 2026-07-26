@@ -292,7 +292,6 @@ struct TasksView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(filter: #Predicate<TaskItem> { !$0.isArchived }, sort: \TaskItem.createdAt, order: .reverse) private var activeTasks: [TaskItem]
     @Query(filter: #Predicate<TaskItem> { $0.isArchived }, sort: \TaskItem.createdAt, order: .reverse) private var archivedTasks: [TaskItem]
-    @Query(sort: \TaskCompletion.completedAt, order: .reverse) private var completions: [TaskCompletion]
     @Query(filter: #Predicate<ScheduleItem> { !$0.isArchived }, sort: \ScheduleItem.startTime) private var activeSchedules: [ScheduleItem]
     @Query(filter: #Predicate<ScheduleItem> { $0.isArchived }, sort: \ScheduleItem.startTime) private var archivedSchedules: [ScheduleItem]
     

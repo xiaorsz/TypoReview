@@ -86,6 +86,35 @@ struct TaskProjection: Sendable {
         )
     }
 
+    func occurs(on date: Date, calendar: Calendar = .current) -> Bool {
+        let day = calendar.startOfDay(for: date)
+        let start = calendar.startOfDay(for: startDate)
+        guard day >= start else { return false }
+
+        if let endDate, day > calendar.startOfDay(for: endDate) {
+            return false
+        }
+
+        let matchesRecurrence: Bool
+        switch recurrence.kind {
+        case .once:
+            matchesRecurrence = calendar.isDate(day, inSameDayAs: start)
+        case .daily:
+            matchesRecurrence = true
+        case .weekly:
+            matchesRecurrence = recurrence.weekdays.contains(calendar.component(.weekday, from: day))
+        }
+
+        guard matchesRecurrence else { return false }
+        guard recurrence.kind != .once else { return true }
+        return !TaskPauseSupport.isDatePaused(
+            day,
+            completedIntervals: pauseIntervals,
+            currentPauseStartDate: pauseStartedAt,
+            calendar: calendar
+        )
+    }
+
     func originText(for pendingDate: Date, relativeTo date: Date) -> String {
         let calendar = Calendar.current
         let targetDay = calendar.startOfDay(for: date)

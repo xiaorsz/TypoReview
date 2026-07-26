@@ -1,26 +1,98 @@
 import SwiftUI
 import SwiftData
 
+private struct LibraryItemProjection: Identifiable, Hashable, @unchecked Sendable {
+    let id: UUID
+    let type: ReviewItemType
+    let content: String
+    let prompt: String
+    let source: String
+    let stage: Int
+    let nextReviewAt: Date
+    let lastReviewedAt: Date?
+    let consecutiveWrongCount: Int
+    let isPriority: Bool
+    let reviewTrackRawValue: String
+    let dictationFollowUpStep: Int
+    let isDictationPass: Bool
+    let createdAt: Date
+    let updatedAt: Date
+
+    init(_ item: ReviewItem) {
+        id = item.id
+        type = item.type
+        content = item.content
+        prompt = item.prompt
+        source = item.source
+        stage = item.stage
+        nextReviewAt = item.nextReviewAt
+        lastReviewedAt = item.lastReviewedAt
+        consecutiveWrongCount = item.consecutiveWrongCount
+        isPriority = item.isPriority
+        reviewTrackRawValue = item.reviewTrackRawValue
+        dictationFollowUpStep = item.dictationFollowUpStep
+        isDictationPass = item.isDictationPass
+        createdAt = item.createdAt
+        updatedAt = item.updatedAt
+    }
+
+    var reviewTrack: ReviewTrack {
+        if let track = ReviewTrack(rawValue: reviewTrackRawValue) {
+            if track == .standard, isDictationPass, dictationFollowUpStep == 0 {
+                return .dictationFollowUp
+            }
+            return track
+        }
+        return isDictationPass ? .dictationFollowUp : .standard
+    }
+
+    var resolvedDictationFollowUpStep: Int {
+        if reviewTrack == .dictationFollowUp {
+            return (1...2).contains(dictationFollowUpStep) ? dictationFollowUpStep : 1
+        }
+        if isDictationPass {
+            return stage >= 5 ? 2 : 1
+        }
+        return 0
+    }
+
+    var isMastered: Bool {
+        ReviewScheduler.isMastered(
+            stage: stage,
+            consecutiveWrongCount: consecutiveWrongCount
+        ) && nextReviewAt == .distantFuture
+    }
+}
+
+private struct LibraryViewSnapshot: @unchecked Sendable {
+    let filterCounts: [LibraryFilter: Int]
+    let stageFilterCounts: [LibraryStageFilter: Int]
+    let filteredItems: [LibraryItemProjection]
+    let displayedItems: [LibraryItemProjection]
+
+    static let empty = LibraryViewSnapshot(
+        filterCounts: [:],
+        stageFilterCounts: [:],
+        filteredItems: [],
+        displayedItems: []
+    )
+}
+
 struct LibraryView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \ReviewItem.updatedAt, order: .reverse) private var reviewItems: [ReviewItem]
     @State private var searchText = ""
     @State private var filter: LibraryFilter = .all
     @State private var stageFilter: LibraryStageFilter = .all
     @State private var displayedItemLimit = 50
     @State private var editingItemID: UUID?
-
-    private let scheduler = ReviewScheduler()
-
-    private struct ViewSnapshot {
-        let filterCounts: [LibraryFilter: Int]
-        let stageFilterCounts: [LibraryStageFilter: Int]
-        let filteredItems: [ReviewItem]
-        let displayedItems: [ReviewItem]
-    }
+    @State private var viewSnapshot: LibraryViewSnapshot = .empty
+    @State private var snapshotRefreshTask: Task<Void, Never>?
+    @State private var isSnapshotLoaded = false
+    @State private var isViewVisible = false
 
     var body: some View {
-        let snapshot = makeViewSnapshot()
+        let snapshot = viewSnapshot
 
         List {
             Section {
@@ -45,7 +117,18 @@ struct LibraryView: View {
                 .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 6, trailing: 0))
             }
 
-            if snapshot.filteredItems.isEmpty {
+            if !isSnapshotLoaded {
+                Section {
+                    HStack(spacing: 12) {
+                        ProgressView()
+                        Text("正在整理题库...")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+                }
+            } else if snapshot.filteredItems.isEmpty {
                 ContentUnavailableView {
                     Label(emptyTitle, systemImage: emptyIcon)
                 } description: {
@@ -70,7 +153,7 @@ struct LibraryView: View {
             } else {
                 ForEach(snapshot.displayedItems) { item in
                     NavigationLink {
-                        AddReviewItemView(item: item)
+                        LibraryReviewItemEditor(itemID: item.id)
                     } label: {
                         libraryRow(item)
                     }
@@ -109,15 +192,39 @@ struct LibraryView: View {
         .searchable(text: $searchText, prompt: "搜索词句或英语")
         .onChange(of: searchText) { _, _ in
             displayedItemLimit = 50
+            requestSnapshotRefresh(reason: "search", delay: 0.12)
+        }
+        .onChange(of: filter) { _, _ in
+            requestSnapshotRefresh(reason: "filter", delay: 0.02)
+        }
+        .onChange(of: stageFilter) { _, _ in
+            requestSnapshotRefresh(reason: "stage filter", delay: 0.02)
+        }
+        .onChange(of: displayedItemLimit) { _, _ in
+            requestSnapshotRefresh(reason: "pagination", delay: 0)
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active, isViewVisible {
+                requestSnapshotRefresh(reason: "scene active", delay: 0.08)
+            } else {
+                snapshotRefreshTask?.cancel()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .appDataDidChange)) { _ in
+            requestSnapshotRefresh(reason: "app data changed", delay: 0.08)
+        }
+        .onAppear {
+            isViewVisible = true
+            requestSnapshotRefresh(reason: "onAppear", delay: isSnapshotLoaded ? 0.08 : 0.12)
+        }
+        .onDisappear {
+            isViewVisible = false
+            snapshotRefreshTask?.cancel()
         }
         .navigationTitle("题库")
         .navigationBarTitleDisplayMode(.large)
         .navigationDestination(item: $editingItemID) { itemID in
-            if let item = reviewItems.first(where: { $0.id == itemID }) {
-                AddReviewItemView(item: item)
-            } else {
-                ContentUnavailableView("内容不存在", systemImage: "exclamationmark.triangle")
-            }
+            LibraryReviewItemEditor(itemID: itemID)
         }
         .toolbar {
             Menu("新增", systemImage: "plus") {
@@ -136,8 +243,57 @@ struct LibraryView: View {
         }
     }
 
-    private func makeViewSnapshot(referenceDate: Date = .now) -> ViewSnapshot {
-        let canonicalItems = ReviewContentIdentity.canonicalReviewItems(from: reviewItems)
+    private func requestSnapshotRefresh(reason: String, delay: TimeInterval) {
+        #if DEBUG
+        DebugPerf.mark("LibraryView requestSnapshotRefresh reason=\(reason) delay=\(delay)")
+        #endif
+        snapshotRefreshTask?.cancel()
+        guard isViewVisible, scenePhase == .active else { return }
+
+        let container = modelContext.container
+        let requestedFilter = filter
+        let requestedStageFilter = stageFilter
+        let requestedSearchText = searchText
+        let requestedLimit = displayedItemLimit
+
+        snapshotRefreshTask = Task(priority: .utility) {
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+            guard !Task.isCancelled else { return }
+
+            let refreshedSnapshot = await Task.detached(priority: .utility) {
+                let backgroundContext = ModelContext(container)
+                let descriptor = FetchDescriptor<ReviewItem>(
+                    sortBy: [SortDescriptor(\ReviewItem.updatedAt, order: .reverse)]
+                )
+                let items = ((try? backgroundContext.fetch(descriptor)) ?? [])
+                    .map(LibraryItemProjection.init)
+
+                return Self.makeViewSnapshot(
+                    from: items,
+                    filter: requestedFilter,
+                    stageFilter: requestedStageFilter,
+                    searchText: requestedSearchText,
+                    displayedItemLimit: requestedLimit
+                )
+            }.value
+
+            guard !Task.isCancelled, isViewVisible, scenePhase == .active else { return }
+            viewSnapshot = refreshedSnapshot
+            isSnapshotLoaded = true
+        }
+    }
+
+    nonisolated private static func makeViewSnapshot(
+        from items: [LibraryItemProjection],
+        filter: LibraryFilter,
+        stageFilter: LibraryStageFilter,
+        searchText: String,
+        displayedItemLimit: Int,
+        referenceDate: Date = .now
+    ) -> LibraryViewSnapshot {
+        let canonicalItems = canonicalItems(from: items)
             .sorted {
                 if $0.updatedAt != $1.updatedAt {
                     return $0.updatedAt > $1.updatedAt
@@ -151,7 +307,7 @@ struct LibraryView: View {
         var stageFilterCounts = Dictionary(
             uniqueKeysWithValues: LibraryStageFilter.options.map { ($0, 0) }
         )
-        var scopedItems: [ReviewItem] = []
+        var scopedItems: [LibraryItemProjection] = []
         scopedItems.reserveCapacity(canonicalItems.count)
 
         for item in canonicalItems {
@@ -171,7 +327,7 @@ struct LibraryView: View {
             scopedItems.append(item)
         }
 
-        let filteredItems: [ReviewItem]
+        let filteredItems: [LibraryItemProjection]
         if searchText.isEmpty {
             filteredItems = scopedItems
         } else {
@@ -182,7 +338,7 @@ struct LibraryView: View {
             }
         }
 
-        return ViewSnapshot(
+        return LibraryViewSnapshot(
             filterCounts: filterCounts,
             stageFilterCounts: stageFilterCounts,
             filteredItems: filteredItems,
@@ -190,7 +346,62 @@ struct LibraryView: View {
         )
     }
 
-    private func matches(_ item: ReviewItem, filter: LibraryFilter, referenceDate: Date) -> Bool {
+    nonisolated private static func canonicalItems(
+        from items: [LibraryItemProjection]
+    ) -> [LibraryItemProjection] {
+        var canonicalByKey: [String: LibraryItemProjection] = [:]
+
+        for item in items {
+            let itemKey = ReviewContentIdentity.key(type: item.type, content: item.content)
+            guard !itemKey.hasSuffix("|") else { continue }
+
+            if let current = canonicalByKey[itemKey] {
+                if isPreferred(item, over: current) {
+                    canonicalByKey[itemKey] = item
+                }
+            } else {
+                canonicalByKey[itemKey] = item
+            }
+        }
+
+        return Array(canonicalByKey.values)
+    }
+
+    nonisolated private static func isPreferred(
+        _ candidate: LibraryItemProjection,
+        over current: LibraryItemProjection
+    ) -> Bool {
+        let candidateFinished = candidate.nextReviewAt == .distantFuture
+        let currentFinished = current.nextReviewAt == .distantFuture
+        if candidateFinished != currentFinished {
+            return candidateFinished
+        }
+        if candidate.stage != current.stage {
+            return candidate.stage > current.stage
+        }
+        if candidate.consecutiveWrongCount != current.consecutiveWrongCount {
+            return candidate.consecutiveWrongCount < current.consecutiveWrongCount
+        }
+        if candidate.nextReviewAt != current.nextReviewAt {
+            return candidate.nextReviewAt > current.nextReviewAt
+        }
+
+        let candidateReviewedAt = candidate.lastReviewedAt ?? .distantPast
+        let currentReviewedAt = current.lastReviewedAt ?? .distantPast
+        if candidateReviewedAt != currentReviewedAt {
+            return candidateReviewedAt > currentReviewedAt
+        }
+        if candidate.updatedAt != current.updatedAt {
+            return candidate.updatedAt > current.updatedAt
+        }
+        return candidate.createdAt < current.createdAt
+    }
+
+    nonisolated private static func matches(
+        _ item: LibraryItemProjection,
+        filter: LibraryFilter,
+        referenceDate: Date
+    ) -> Bool {
         switch filter {
         case .all:
             return true
@@ -199,7 +410,7 @@ struct LibraryView: View {
         case .priority:
             return item.isPriority
         case .mastered:
-            return scheduler.isMastered(item)
+            return item.isMastered
         }
     }
 
@@ -234,7 +445,10 @@ struct LibraryView: View {
         .buttonStyle(.plain)
     }
 
-    private func matches(_ item: ReviewItem, stageFilter: LibraryStageFilter) -> Bool {
+    nonisolated private static func matches(
+        _ item: LibraryItemProjection,
+        stageFilter: LibraryStageFilter
+    ) -> Bool {
         switch stageFilter {
         case .all:
             return true
@@ -277,7 +491,7 @@ struct LibraryView: View {
     }
 
     @ViewBuilder
-    private func paginationFooter(snapshot: ViewSnapshot) -> some View {
+    private func paginationFooter(snapshot: LibraryViewSnapshot) -> some View {
         if snapshot.filteredItems.count > 50 {
             Section {
                 VStack(spacing: 8) {
@@ -302,7 +516,7 @@ struct LibraryView: View {
         }
     }
 
-    private func libraryRow(_ item: ReviewItem) -> some View {
+    private func libraryRow(_ item: LibraryItemProjection) -> some View {
         let status = statusBadge(for: item)
 
         return HStack(alignment: .top, spacing: 12) {
@@ -354,9 +568,19 @@ struct LibraryView: View {
         .padding(.vertical, 6)
     }
 
-    private func subtitle(for item: ReviewItem) -> String {
+    private func subtitle(for item: LibraryItemProjection) -> String {
         if item.reviewTrack == .dictationFollowUp {
-            return item.trackingSummaryText
+            guard item.dictationFollowUpStep > 0 else {
+                return "听写通过后的跟进复习"
+            }
+            switch item.resolvedDictationFollowUpStep {
+            case 1:
+                return "听写通过后，第3天复习"
+            case 2:
+                return "听写通过后，第7天复习"
+            default:
+                return "听写通过后的跟进复习"
+            }
         }
 
         let prompt = item.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -376,8 +600,8 @@ struct LibraryView: View {
             .background(Color.orange.opacity(0.08), in: Capsule())
     }
 
-    private func statusBadge(for item: ReviewItem) -> (title: String, tint: Color) {
-        if scheduler.isMastered(item) {
+    private func statusBadge(for item: LibraryItemProjection) -> (title: String, tint: Color) {
+        if item.isMastered {
             return ("已掌握", .green)
         }
 
@@ -388,7 +612,25 @@ struct LibraryView: View {
             return reviewDay < today ? ("已逾期", .red) : ("今日待复习", .orange)
         }
 
-        return (item.stageBadgeText, item.stageBadgeColor)
+        if item.reviewTrack == .dictationFollowUp {
+            guard item.dictationFollowUpStep > 0 else {
+                return ("听写跟进", .blue)
+            }
+            switch item.resolvedDictationFollowUpStep {
+            case 1:
+                return ("第3天", .blue)
+            case 2:
+                return ("第7天", .teal)
+            default:
+                return ("听写跟进", .blue)
+            }
+        }
+
+        if item.isDictationPass {
+            return ("听写跟进", .blue)
+        }
+
+        return (item.stage.reviewStageDisplayText, item.stage.stageColor)
     }
 
     private func typeLabel(for type: ReviewItemType) -> String {
@@ -413,17 +655,27 @@ struct LibraryView: View {
         }
     }
 
-    private func togglePriority(_ item: ReviewItem) {
-        item.isPriority.toggle()
-        item.updatedAt = .now
+    private func togglePriority(_ item: LibraryItemProjection) {
+        guard let persistedItem = fetchReviewItem(id: item.id) else { return }
+        persistedItem.isPriority.toggle()
+        persistedItem.updatedAt = .now
         try? modelContext.save()
         AppDataChangeCenter.post()
     }
 
-    private func delete(_ item: ReviewItem) {
-        modelContext.delete(item)
+    private func delete(_ item: LibraryItemProjection) {
+        guard let persistedItem = fetchReviewItem(id: item.id) else { return }
+        modelContext.delete(persistedItem)
         try? modelContext.save()
         AppDataChangeCenter.post()
+    }
+
+    private func fetchReviewItem(id: UUID) -> ReviewItem? {
+        var descriptor = FetchDescriptor<ReviewItem>(
+            predicate: #Predicate<ReviewItem> { $0.id == id }
+        )
+        descriptor.fetchLimit = 1
+        return try? modelContext.fetch(descriptor).first
     }
 
     private var emptyIcon: String {
@@ -474,7 +726,36 @@ struct LibraryView: View {
     }
 }
 
-private enum LibraryFilter: String, CaseIterable, Identifiable {
+private struct LibraryReviewItemEditor: View {
+    @Environment(\.modelContext) private var modelContext
+    @State private var item: ReviewItem?
+    @State private var hasFinishedLoading = false
+
+    let itemID: UUID
+
+    var body: some View {
+        Group {
+            if let item {
+                AddReviewItemView(item: item)
+            } else if hasFinishedLoading {
+                ContentUnavailableView("内容不存在", systemImage: "exclamationmark.triangle")
+            } else {
+                ProgressView("正在打开...")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .task(id: itemID) {
+            var descriptor = FetchDescriptor<ReviewItem>(
+                predicate: #Predicate<ReviewItem> { $0.id == itemID }
+            )
+            descriptor.fetchLimit = 1
+            item = try? modelContext.fetch(descriptor).first
+            hasFinishedLoading = true
+        }
+    }
+}
+
+private enum LibraryFilter: String, CaseIterable, Identifiable, Sendable {
     case all = "全部"
     case due = "待复习"
     case priority = "重点复习"
@@ -492,7 +773,7 @@ private enum LibraryFilter: String, CaseIterable, Identifiable {
     }
 }
 
-private enum LibraryStageFilter: Hashable, Identifiable {
+private enum LibraryStageFilter: Hashable, Identifiable, Sendable {
     case all
     case stage(Int)
     case dictationFollowUp

@@ -185,7 +185,9 @@ struct DataBackupPayload: Codable, @unchecked Sendable {
         let dictationEntries = try modelContext.fetch(FetchDescriptor<DictationEntry>()).map(DictationEntrySnapshot.init)
         let scheduleItems = try modelContext.fetch(FetchDescriptor<ScheduleItem>()).map(ScheduleItemSnapshot.init)
         let mediaAssetSnapshots = mediaAssets.map(MediaAssetSnapshot.init)
-        let pointLedgerEntries = try modelContext.fetch(FetchDescriptor<PointLedgerEntry>()).map(PointLedgerEntrySnapshot.init)
+        let pointLedgerEntries = PointLedgerService.canonicalEntries(
+            try modelContext.fetch(FetchDescriptor<PointLedgerEntry>())
+        ).map(PointLedgerEntrySnapshot.init)
         let pointRewardStates = try modelContext.fetch(FetchDescriptor<PointRewardState>()).map(PointRewardStateSnapshot.init)
 
         return DataBackupPayload(
@@ -491,6 +493,8 @@ extension JSONDecoder {
 }
 
 struct AppSettingsSnapshot: Codable, Equatable, Sendable {
+    static let legacyUpdatedAt = Date(timeIntervalSince1970: 0)
+
     let id: UUID
     let childName: String
     let dailyLimit: Int
@@ -509,6 +513,7 @@ struct AppSettingsSnapshot: Codable, Equatable, Sendable {
     let boardAutoplaySkipChinaHolidays: Bool
     let aiSummaryEnabled: Bool
     let aiSummaryModelRawValue: String
+    let updatedAt: Date
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -529,9 +534,10 @@ struct AppSettingsSnapshot: Codable, Equatable, Sendable {
         case boardAutoplaySkipChinaHolidays
         case aiSummaryEnabled
         case aiSummaryModelRawValue
+        case updatedAt
     }
 
-    init(_ settings: AppSettings) {
+    init(_ settings: AppSettings, updatedAt: Date = AppSettingsSnapshot.legacyUpdatedAt) {
         id = settings.id
         childName = settings.childName
         dailyLimit = settings.dailyLimit
@@ -550,6 +556,7 @@ struct AppSettingsSnapshot: Codable, Equatable, Sendable {
         boardAutoplaySkipChinaHolidays = settings.boardAutoplaySkipChinaHolidays
         aiSummaryEnabled = settings.aiSummaryEnabled
         aiSummaryModelRawValue = settings.aiSummaryModelRawValue
+        self.updatedAt = updatedAt
     }
 
     // 内部用：不依赖 AppSettings 实例直接构造快照（避免 @Model 实例化问题）
@@ -571,7 +578,8 @@ struct AppSettingsSnapshot: Codable, Equatable, Sendable {
         boardAutoplaySkipWeekends: Bool,
         boardAutoplaySkipChinaHolidays: Bool,
         aiSummaryEnabled: Bool,
-        aiSummaryModelRawValue: String
+        aiSummaryModelRawValue: String,
+        updatedAt: Date = AppSettingsSnapshot.legacyUpdatedAt
     ) {
         self.id = id
         self.childName = childName
@@ -591,6 +599,7 @@ struct AppSettingsSnapshot: Codable, Equatable, Sendable {
         self.boardAutoplaySkipChinaHolidays = boardAutoplaySkipChinaHolidays
         self.aiSummaryEnabled = aiSummaryEnabled
         self.aiSummaryModelRawValue = aiSummaryModelRawValue
+        self.updatedAt = updatedAt
     }
 
     init(from decoder: any Decoder) throws {
@@ -629,6 +638,8 @@ struct AppSettingsSnapshot: Codable, Equatable, Sendable {
             ?? AppSettings.defaultAISummaryEnabled
         aiSummaryModelRawValue = try container.decodeIfPresent(String.self, forKey: .aiSummaryModelRawValue)
             ?? AppSettings.defaultAISummaryModelRawValue
+        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt)
+            ?? AppSettingsSnapshot.legacyUpdatedAt
     }
 
     func makeModel() -> AppSettings {

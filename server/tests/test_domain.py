@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timezone
 
-from app.domain import apply_review_result, is_due
+from app.domain import SETTINGS_RECORD_ID, apply_review_result, canonicalize_settings, is_due
 
 
 def item(stage: int = 0, next_review_at: str = "2026-07-23T00:00:00.000Z") -> dict:
@@ -18,6 +18,11 @@ def item(stage: int = 0, next_review_at: str = "2026-07-23T00:00:00.000Z") -> di
 
 
 class DomainTests(unittest.TestCase):
+    def test_settings_use_one_stable_record_id(self):
+        payload = canonicalize_settings({"id": "11111111-1111-1111-1111-111111111111", "dailyLimit": 50})
+        self.assertEqual(payload["id"], str(SETTINGS_RECORD_ID))
+        self.assertEqual(payload["dailyLimit"], 50)
+
     def test_first_correct_jumps_to_stage_two(self):
         reviewed_at = datetime(2026, 7, 23, 2, tzinfo=timezone.utc)
         updated, old_stage, new_stage = apply_review_result(item(), result="correct", reviewed_at=reviewed_at)

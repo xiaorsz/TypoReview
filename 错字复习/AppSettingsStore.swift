@@ -42,6 +42,7 @@ final class AppSettingsStore {
     var boardAutoplaySkipChinaHolidays: Bool
     var aiSummaryEnabled: Bool
     var aiSummaryModelRawValue: String
+    private var settingsUpdatedAt: Date
 
     private var hasBootstrapped = false
     private var hasActivatedExternalStores = false
@@ -62,7 +63,7 @@ final class AppSettingsStore {
         // AppSettings 是 @Model 类，实例化时 SwiftData 会调用 ModelContainer.currentContainer()，
         // 但 AppSettingsStore 在 TypoReviewApp.init() 的最开头就被创建，ModelContainer 还不存在。
         // iOS 17 上这会触发 _assertionFailure 崩溃。改为直接使用静态默认常量。
-        id = UUID()
+        id = AppSettings.syncSingletonID
         childName = AppSettings.defaultChildName
         dailyLimit = AppSettings.defaultDailyLimit
         remindHour = AppSettings.defaultRemindHour
@@ -80,6 +81,7 @@ final class AppSettingsStore {
         boardAutoplaySkipChinaHolidays = AppSettings.defaultBoardAutoplaySkipChinaHolidays
         aiSummaryEnabled = AppSettings.defaultAISummaryEnabled
         aiSummaryModelRawValue = AppSettings.defaultAISummaryModelRawValue
+        settingsUpdatedAt = AppSettingsSnapshot.legacyUpdatedAt
         lastSyncedAISummaryEnabled = AppSettings.defaultAISummaryEnabled
         lastSyncedAISummaryModelRawValue = AppSettings.defaultAISummaryModelRawValue
 
@@ -122,7 +124,7 @@ final class AppSettingsStore {
     }
 
     var snapshot: AppSettingsSnapshot {
-        AppSettingsSnapshot(modelRepresentation)
+        AppSettingsSnapshot(modelRepresentation, updatedAt: settingsUpdatedAt)
     }
 
     // ⚠️ 只能在 ModelContainer 创建完成（bootstrap 被调用）之后调用此属性。
@@ -206,6 +208,12 @@ final class AppSettingsStore {
 
     func persist(using modelContext: ModelContext) {
         activateExternalStoresIfNeeded()
+        settingsUpdatedAt = .now
+        persistCurrentValues(using: modelContext)
+        AppDataChangeCenter.post()
+    }
+
+    private func persistCurrentValues(using modelContext: ModelContext) {
         persistToDefaults()
         syncAISummarySettingsToUbiquitousStoreIfNeeded()
         markChanged()
@@ -220,12 +228,13 @@ final class AppSettingsStore {
             // 不实例化 AppSettings()（@Model 类需要 ModelContainer），改为直接应用默认 snapshot
             apply(snapshot: makeDefaultSnapshot(), incrementRevision: false)
         }
-        persist(using: modelContext)
+        persistCurrentValues(using: modelContext)
+        AppDataChangeCenter.post()
     }
 
     private func makeDefaultSnapshot() -> AppSettingsSnapshot {
         AppSettingsSnapshot(
-            id: UUID(),
+            id: AppSettings.syncSingletonID,
             childName: AppSettings.defaultChildName,
             dailyLimit: AppSettings.defaultDailyLimit,
             remindHour: AppSettings.defaultRemindHour,
@@ -242,7 +251,8 @@ final class AppSettingsStore {
             boardAutoplaySkipWeekends: AppSettings.defaultBoardAutoplaySkipWeekends,
             boardAutoplaySkipChinaHolidays: AppSettings.defaultBoardAutoplaySkipChinaHolidays,
             aiSummaryEnabled: AppSettings.defaultAISummaryEnabled,
-            aiSummaryModelRawValue: AppSettings.defaultAISummaryModelRawValue
+            aiSummaryModelRawValue: AppSettings.defaultAISummaryModelRawValue,
+            updatedAt: AppSettingsSnapshot.legacyUpdatedAt
         )
     }
 
@@ -308,7 +318,7 @@ final class AppSettingsStore {
     }
 
     private func apply(snapshot: AppSettingsSnapshot, incrementRevision: Bool) {
-        id = snapshot.id
+        id = AppSettings.syncSingletonID
         childName = snapshot.childName
         dailyLimit = snapshot.dailyLimit
         remindHour = snapshot.remindHour
@@ -327,6 +337,7 @@ final class AppSettingsStore {
         boardAutoplaySkipChinaHolidays = snapshot.boardAutoplaySkipChinaHolidays
         aiSummaryEnabled = snapshot.aiSummaryEnabled
         aiSummaryModelRawValue = snapshot.aiSummaryModelRawValue
+        settingsUpdatedAt = snapshot.updatedAt
 
         if incrementRevision {
             markChanged()
@@ -334,7 +345,10 @@ final class AppSettingsStore {
     }
 
     private func apply(from settings: AppSettings, incrementRevision: Bool) {
-        apply(snapshot: AppSettingsSnapshot(settings), incrementRevision: incrementRevision)
+        apply(
+            snapshot: AppSettingsSnapshot(settings, updatedAt: settingsUpdatedAt),
+            incrementRevision: incrementRevision
+        )
     }
 
     private func persistToDefaults() {
@@ -415,7 +429,9 @@ final class AppSettingsStore {
         do {
             return try safelyAccessSwiftData {
                 let existing = try modelContext.fetch(FetchDescriptor<AppSettings>())
-                return AppSettings.chooseCanonical(from: existing).map(AppSettingsSnapshot.init)
+                return AppSettings.chooseCanonical(from: existing).map {
+                    AppSettingsSnapshot($0, updatedAt: settingsUpdatedAt)
+                }
             }
         } catch {
             lastSwiftDataError = error.localizedDescription

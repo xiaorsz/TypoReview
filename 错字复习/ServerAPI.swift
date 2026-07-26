@@ -221,6 +221,11 @@ struct ServerPairingCodeResponse: Decodable, Sendable {
     let persistent: Bool
 }
 
+struct ServerSecretValueResponse: Decodable, Sendable {
+    let value: String?
+    let updatedAt: Date?
+}
+
 actor ServerAPIClient {
     static let shared = ServerAPIClient()
 
@@ -279,6 +284,28 @@ actor ServerAPIClient {
 
     func exportSnapshot() async throws -> DataBackupPayload {
         try await request(path: "/v1/migration/export", method: "GET")
+    }
+
+    func deepSeekAPIKey() async throws -> ServerSecretValueResponse {
+        try await request(path: "/v1/secrets/deepseek-api-key", method: "GET")
+    }
+
+    func saveDeepSeekAPIKey(_ value: String) async throws -> ServerSecretValueResponse {
+        struct Body: Encodable {
+            let value: String
+        }
+        return try await request(
+            path: "/v1/secrets/deepseek-api-key",
+            method: "PUT",
+            body: try encoder.encode(Body(value: value))
+        )
+    }
+
+    func deleteDeepSeekAPIKey() async throws {
+        let _: ServerSecretDeletionResponse = try await request(
+            path: "/v1/secrets/deepseek-api-key",
+            method: "DELETE"
+        )
     }
 
     func dailyPlan(day: String, dailyLimit: Int) async throws -> ServerDailyPlan {
@@ -353,4 +380,8 @@ private struct EmptyHealthResponse: Decodable {
 
 private struct ServerMutationResponse: Decodable {
     let appliedMutationIDs: [UUID]
+}
+
+private struct ServerSecretDeletionResponse: Decodable {
+    let deleted: Bool
 }

@@ -81,6 +81,7 @@ enum BoardManualPlaybackOption: String, CaseIterable, Identifiable {
 
 @Model
 final class AppSettings {
+    static let syncSingletonID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
     static let defaultChildName = ""
     static let defaultDailyLimit = 15
     static let defaultRemindHour = 19
@@ -101,7 +102,7 @@ final class AppSettings {
     static let supportedChinaHolidayYearsSummary = ChinaHolidayCalendar.supportedYearsSummary
     static let legacyReviewInteractionStyleKey = "reviewInteractionStyle"
 
-    var id: UUID = UUID()
+    var id: UUID = AppSettings.syncSingletonID
     var childName: String = AppSettings.defaultChildName
     var dailyLimit: Int = AppSettings.defaultDailyLimit
     var remindHour: Int = AppSettings.defaultRemindHour
@@ -121,7 +122,7 @@ final class AppSettings {
     var aiSummaryModelRawValue: String = AppSettings.defaultAISummaryModelRawValue
 
     init(
-        id: UUID = UUID(),
+        id: UUID = AppSettings.syncSingletonID,
         childName: String = AppSettings.defaultChildName,
         dailyLimit: Int = AppSettings.defaultDailyLimit,
         remindHour: Int = AppSettings.defaultRemindHour,
@@ -178,6 +179,7 @@ final class AppSettings {
         canonical.migrateLegacyReviewInteractionStyleIfNeeded()
         canonical.migrateLegacyBoardAutoplayDurationIfNeeded()
         canonical.migrateLegacyBoardAutoplaySlotsIfNeeded()
+        canonical.id = syncSingletonID
 
         if modelContext.hasChanges {
             try modelContext.save()

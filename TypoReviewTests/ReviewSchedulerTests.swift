@@ -739,6 +739,18 @@ final class TaskPauseTests: XCTestCase {
         )
     }
 
+    func testPausedWeeklyTaskIsExcludedFromCalendarOccurrenceCount() {
+        let task = TaskProjection(
+            id: UUID(),
+            title: "完成学而思数学",
+            startDate: date(2026, 3, 20),
+            recurrence: .weekly([6]),
+            pauseStartedAt: date(2026, 7, 16)
+        )
+
+        XCTAssertFalse(task.occurs(on: date(2026, 7, 24), calendar: calendar))
+    }
+
     func testResumedTaskDoesNotBackfillDatesSkippedWhilePaused() {
         let task = TaskProjection(
             id: UUID(),
