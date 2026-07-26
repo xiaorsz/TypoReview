@@ -11,6 +11,7 @@ struct DictationReviewView: View {
     @State private var submittedSummaries: [DictationEntrySummary] = []
     @State private var submittedAccuracyBonusAmount = 0
     @State private var navigateToSummary = false
+    @State private var isSubmitting = false
 
     let session: DictationSession
     let entries: [DictationEntry]
@@ -25,7 +26,7 @@ struct DictationReviewView: View {
     }
 
     private var canSubmit: Bool {
-        !entries.isEmpty && pendingCount == 0
+        !entries.isEmpty && pendingCount == 0 && session.reviewedAt == nil && !isSubmitting
     }
 
     var body: some View {
@@ -43,10 +44,12 @@ struct DictationReviewView: View {
                             .buttonStyle(.borderedProminent)
                             .tint(.green)
                             .controlSize(.small)
+                            .disabled(session.reviewedAt != nil || isSubmitting)
 
                         Button("清空") { markAll(.pending) }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
+                            .disabled(session.reviewedAt != nil || isSubmitting)
                         
                         Spacer()
                     }
@@ -102,6 +105,7 @@ struct DictationReviewView: View {
                                         .background(entry.result == .correct ? Color.green : Color.green.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
                                     }
                                     .buttonStyle(.plain)
+                                    .disabled(session.reviewedAt != nil || isSubmitting)
 
                                     Button {
                                         entry.result = entry.result == .wrong ? .pending : .wrong
@@ -118,6 +122,7 @@ struct DictationReviewView: View {
                                         .background(entry.result == .wrong ? Color.red : Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
                                     }
                                     .buttonStyle(.plain)
+                                    .disabled(session.reviewedAt != nil || isSubmitting)
                                 }
                                 .frame(width: 160)
                             }
@@ -147,13 +152,31 @@ struct DictationReviewView: View {
         .navigationTitle("统一判卷")
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom) {
-            Button("完成判定") {
-                submitReview()
+            Group {
+                if session.reviewedAt != nil {
+                    Label("这次听写已经完成判定", systemImage: "checkmark.circle.fill")
+                        .font(.headline)
+                        .foregroundStyle(.green)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                } else {
+                    Button {
+                        submitReview()
+                    } label: {
+                        HStack(spacing: 8) {
+                            if isSubmitting {
+                                ProgressView()
+                                    .tint(.white)
+                            }
+                            Text(isSubmitting ? "正在提交..." : "完成判定")
+                        }
+                    }
+                    .buttonStyle(ResultButtonStyle(color: .blue))
+                    .disabled(!canSubmit)
+                }
             }
-            .buttonStyle(ResultButtonStyle(color: .blue))
             .padding()
             .background(.bar)
-            .disabled(!canSubmit)
         }
         .alert("提交失败", isPresented: Binding(
             get: { saveErrorMessage != nil },
@@ -219,7 +242,8 @@ struct DictationReviewView: View {
     }
 
     private func submitReview() {
-        guard canSubmit else { return }
+        guard canSubmit, session.reviewedAt == nil, !isSubmitting else { return }
+        isSubmitting = true
 
         let now = Date()
         let summaries = entries.map {
@@ -311,6 +335,7 @@ struct DictationReviewView: View {
             submittedAccuracyBonusAmount = accuracyBonusAmount
             navigateToSummary = true
         } catch {
+            isSubmitting = false
             saveErrorMessage = "这次判定没有保存成功，请再试一次。\(error.localizedDescription)"
         }
     }

@@ -28,6 +28,7 @@ struct BatchReviewGradingView: View {
     @State private var accuracyBonusAmount = 0
     @State private var saveErrorMessage: String?
     @State private var skippedSyncedCount = 0
+    @State private var isSubmitting = false
     
     private let scheduler = ReviewScheduler()
 
@@ -185,11 +186,19 @@ struct BatchReviewGradingView: View {
                         .foregroundStyle(.orange)
                 }
 
-                Button("提交复习结果") {
+                Button {
                     submitResults()
+                } label: {
+                    HStack(spacing: 8) {
+                        if isSubmitting {
+                            ProgressView()
+                                .tint(.white)
+                        }
+                        Text(isSubmitting ? "正在提交..." : "提交复习结果")
+                    }
                 }
                 .buttonStyle(ResultButtonStyle(color: allMarked ? .blue : .gray))
-                .disabled(!allMarked)
+                .disabled(!allMarked || isSubmitting)
             }
             .padding(20)
             .background(.thinMaterial)
@@ -270,7 +279,7 @@ struct BatchReviewGradingView: View {
                         Text(summaryText)
                             .foregroundStyle(.white.opacity(0.85))
 
-                        if skippedSyncedCount > 0 {
+                        if skippedSyncedCount > 0, totalCount > 0 {
                             Text("另有 \(skippedSyncedCount) 题的进度已更新，本次无需重复复习。")
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(.white.opacity(0.9))
@@ -358,6 +367,9 @@ struct BatchReviewGradingView: View {
     }
 
     private func submitResults() {
+        guard !isSubmitting else { return }
+        isSubmitting = true
+
         var summaries: [SessionReviewSummary] = []
         let now = Date()
         let submittedStates = entryStates.filter { $0.result != .pending }
@@ -373,6 +385,7 @@ struct BatchReviewGradingView: View {
             }
         } catch {
             saveErrorMessage = "提交前同步校验失败，请稍后再试一次。\(error.localizedDescription)"
+            isSubmitting = false
             return
         }
 
@@ -426,6 +439,7 @@ struct BatchReviewGradingView: View {
             AppDataChangeCenter.post()
         } catch {
             saveErrorMessage = "这次复习结果没有保存成功，请再试一次。\(error.localizedDescription)"
+            isSubmitting = false
             return
         }
         
