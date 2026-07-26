@@ -17,10 +17,9 @@ struct SettingsView: View {
     @State private var pendingImportFilename = ""
     @State private var infoAlert: InfoAlert?
     @State private var isRestoringBackup = false
-    @State private var isUpdatingEnglishGlosses = false
-    @State private var isConfirmingEnglishGlossUpdate = false
     @State private var deepSeekAPIKey = ""
     @State private var isTestingDeepSeekConnection = false
+    @State private var isConfirmingDeepSeekAPIKeyClear = false
     @State private var pairingCode = ""
     @State private var savedPairingCode = (try? ServerCredentialStore.loadPairingCode()) ?? ""
     @State private var isPairingCodeVisible = false
@@ -71,6 +70,34 @@ struct SettingsView: View {
 
     private let boardAutoplayDurationOptions = [15, 30, 45, 60, 90, 120]
     private let boardManualPlaybackOptions = BoardManualPlaybackOption.allCases
+
+    private var serverSyncCoordinator: ServerSyncCoordinator {
+        .shared
+    }
+
+    private var serverSyncStatusText: String {
+        if serverSyncCoordinator.isSynchronizing {
+            return serverSyncCoordinator.serverStatusText
+        }
+        if serverSyncCoordinator.lastErrorDescription != nil {
+            return "等待重试"
+        }
+        if serverSyncCoordinator.lastSuccessfulPullAt != nil {
+            return "已同步"
+        }
+        return "等待首次同步"
+    }
+
+    private var serverSyncStatusColor: Color {
+        if serverSyncCoordinator.isSynchronizing {
+            return .secondary
+        }
+        if serverSyncCoordinator.lastErrorDescription != nil
+            || serverSyncCoordinator.lastSuccessfulPullAt == nil {
+            return .orange
+        }
+        return .green
+    }
 
     var body: some View {
         Form {
@@ -179,11 +206,12 @@ struct SettingsView: View {
                         Spacer()
 
                         Button(role: .destructive) {
-                            clearDeepSeekAPIKey()
+                            isConfirmingDeepSeekAPIKeyClear = true
                         } label: {
                             Label("清空", systemImage: "trash")
                         }
                         .buttonStyle(.borderless)
+                        .disabled(deepSeekAPIKey.isEmpty)
                     }
 
                     Button {
@@ -333,8 +361,8 @@ struct SettingsView: View {
                     Text("同步状态")
                     Spacer()
                     if hasServerCredential {
-                        Text(ServerSyncCoordinator.shared.lastErrorDescription == nil ? "家庭账号已同步" : "等待重试")
-                            .foregroundStyle(ServerSyncCoordinator.shared.lastErrorDescription == nil ? .green : .orange)
+                        Text(serverSyncStatusText)
+                            .foregroundStyle(serverSyncStatusColor)
                     } else {
                         Text(syncStatusStore.statusText)
                             .foregroundStyle(syncStatusStore.syncNoticeKind == .ready ? .green : .secondary)
@@ -369,9 +397,15 @@ struct SettingsView: View {
                     } label: {
                         HStack {
                             SettingsIcon(name: "arrow.triangle.2.circlepath", color: .blue)
-                            Text("立即从服务器同步")
+                            Text(serverSyncCoordinator.isSynchronizing ? serverSyncStatusText : "立即从服务器同步")
+                            Spacer()
+                            if serverSyncCoordinator.isSynchronizing {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
                         }
                     }
+                    .disabled(serverSyncCoordinator.isSynchronizing || isRestoringBackup)
 
                     HStack {
                         SettingsIcon(name: "key.fill", color: .orange)
@@ -443,30 +477,6 @@ struct SettingsView: View {
                         : (ServerAPIConfiguration.serverURL == nil
                             ? "数据会通过 iCloud 自动同步到同一 Apple ID 下的设备。"
                             : "在多台设备输入同一个家庭账号配对码，就会同步同一份数据。")
-                )
-            }
-
-            Section {
-                Button {
-                    isConfirmingEnglishGlossUpdate = true
-                } label: {
-                    HStack {
-                        SettingsIcon(name: "text.book.closed.fill", color: .purple)
-                        Text("更新已有英语释义")
-                        Spacer()
-                        if isUpdatingEnglishGlosses {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                    }
-                }
-                .disabled(isUpdatingEnglishGlosses || isRestoringBackup)
-            } header: {
-                Text("词典维护")
-            } footer: {
-                SettingsNoteRow(
-                    icon: "text.magnifyingglass",
-                    text: "会用本地 ECDICT 重新覆盖已有英语错题和听写条目的中文释义；词典未命中的内容会保持原样。"
                 )
             }
 
@@ -556,16 +566,16 @@ struct SettingsView: View {
             handleBackupImport(result)
         }
         .confirmationDialog(
-            "更新已有英语释义",
-            isPresented: $isConfirmingEnglishGlossUpdate,
+            "清空 DeepSeek API Key？",
+            isPresented: $isConfirmingDeepSeekAPIKeyClear,
             titleVisibility: .visible
         ) {
-            Button("用 ECDICT 覆盖更新") {
-                updateExistingEnglishGlosses()
+            Button("清空 API Key", role: .destructive) {
+                clearDeepSeekAPIKey()
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("这会把已有英语错题和听写条目的中文提示改为本地词典释义。手动改过的英语释义也会被覆盖；词典未命中的内容保持不变。")
+            Text("API Key 会从本机的系统 Keychain 中移除，AI 小结将无法继续使用。")
         }
         .confirmationDialog(
             "恢复备份",
@@ -747,58 +757,6 @@ struct SettingsView: View {
         } catch {
             showInfoAlert(
                 title: "恢复失败",
-                message: error.localizedDescription
-            )
-        }
-    }
-
-    private func updateExistingEnglishGlosses() {
-        guard !isUpdatingEnglishGlosses else { return }
-        isUpdatingEnglishGlosses = true
-        defer { isUpdatingEnglishGlosses = false }
-
-        do {
-            let now = Date()
-            let reviewItems = try modelContext.fetch(FetchDescriptor<ReviewItem>())
-            let dictationEntries = try modelContext.fetch(FetchDescriptor<DictationEntry>())
-            var updatedReviewCount = 0
-            var updatedDictationCount = 0
-            var unmatchedCount = 0
-
-            for item in reviewItems where item.type == .englishWord {
-                guard let gloss = EnglishGlossService.shared.lookup(text: item.content) else {
-                    unmatchedCount += 1
-                    continue
-                }
-                guard item.prompt != gloss.translation else { continue }
-                item.prompt = gloss.translation
-                item.updatedAt = now
-                updatedReviewCount += 1
-            }
-
-            for entry in dictationEntries where entry.type == .englishWord {
-                guard let gloss = EnglishGlossService.shared.lookup(text: entry.content) else {
-                    unmatchedCount += 1
-                    continue
-                }
-                guard entry.prompt != gloss.translation else { continue }
-                entry.prompt = gloss.translation
-                entry.updatedAt = now
-                updatedDictationCount += 1
-            }
-
-            if modelContext.hasChanges {
-                try modelContext.save()
-                AppDataChangeCenter.post()
-            }
-
-            showInfoAlert(
-                title: "更新完成",
-                message: "已更新错题 \(updatedReviewCount) 条、听写 \(updatedDictationCount) 条。\n\n词典未命中 \(unmatchedCount) 条，已保持原样。"
-            )
-        } catch {
-            showInfoAlert(
-                title: "更新失败",
                 message: error.localizedDescription
             )
         }

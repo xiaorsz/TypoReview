@@ -34,7 +34,10 @@ enum MediaLibraryStorage {
         }
     }
 
-    static func availability(for storedFilename: String) -> MediaFileAvailability {
+    static func availability(
+        for storedFilename: String,
+        requestDownloadIfNeeded: Bool = true
+    ) -> MediaFileAvailability {
         for url in candidateFileURLs(for: storedFilename) {
             let fileManager = FileManager.default
             guard fileManager.fileExists(atPath: url.path) else { continue }
@@ -44,7 +47,9 @@ enum MediaLibraryStorage {
                     return .ready(url)
                 }
 
-                try? fileManager.startDownloadingUbiquitousItem(at: url)
+                if requestDownloadIfNeeded {
+                    try? fileManager.startDownloadingUbiquitousItem(at: url)
+                }
                 return .downloading
             }
 
@@ -55,7 +60,7 @@ enum MediaLibraryStorage {
     }
 
     static func syncStatusText(for storedFilename: String, storageScope: MediaStorageScope) -> String {
-        switch availability(for: storedFilename) {
+        switch availability(for: storedFilename, requestDownloadIfNeeded: false) {
         case .ready:
             return storageScope == .iCloud ? "已同步" : "仅本机"
         case .downloading:
@@ -67,28 +72,26 @@ enum MediaLibraryStorage {
 
     static func fileSize(for storedFilename: String) -> Int64 {
         for url in candidateFileURLs(for: storedFilename) where FileManager.default.fileExists(atPath: url.path) {
-            let values = try? url.resourceValues(forKeys: [
-                .totalFileSizeKey,
-                .fileSizeKey,
-                .totalFileAllocatedSizeKey,
-                .fileAllocatedSizeKey
-            ])
-
-            if let size = values?.totalFileAllocatedSize {
-                return Int64(size)
-            }
-            if let size = values?.fileAllocatedSize {
-                return Int64(size)
-            }
-            if let size = values?.totalFileSize {
-                return Int64(size)
-            }
-            if let size = values?.fileSize {
-                return Int64(size)
-            }
+            return allocatedFileSize(at: url)
         }
 
         return 0
+    }
+
+    static func evictDownloadedCopy(for storedFilename: String) throws -> Int64? {
+        guard let cloudDirectory = try? iCloudDirectoryURL() else { return nil }
+
+        let fileManager = FileManager.default
+        let fileURL = cloudDirectory.appendingPathComponent(storedFilename, isDirectory: false)
+        guard fileManager.fileExists(atPath: fileURL.path),
+              isUbiquitous(fileURL),
+              isDownloaded(fileURL) else {
+            return nil
+        }
+
+        let releasedByteCount = allocatedFileSize(at: fileURL)
+        try fileManager.evictUbiquitousItem(at: fileURL)
+        return releasedByteCount
     }
 
     static func preferredMetadataURL() throws -> (fileURL: URL, storageScope: MediaStorageScope) {
@@ -181,6 +184,33 @@ enum MediaLibraryStorage {
         }
 
         return false
+    }
+
+    private static func allocatedFileSize(at url: URL) -> Int64 {
+        let values = try? url.resourceValues(forKeys: [
+            .totalFileSizeKey,
+            .fileSizeKey,
+            .totalFileAllocatedSizeKey,
+            .fileAllocatedSizeKey,
+            .isUbiquitousItemKey
+        ])
+
+        if let size = values?.totalFileAllocatedSize {
+            return Int64(size)
+        }
+        if let size = values?.fileAllocatedSize {
+            return Int64(size)
+        }
+        if values?.isUbiquitousItem == true {
+            return 0
+        }
+        if let size = values?.totalFileSize {
+            return Int64(size)
+        }
+        if let size = values?.fileSize {
+            return Int64(size)
+        }
+        return 0
     }
 
     private static func makeStoredFilename(for sourceURL: URL) -> String {

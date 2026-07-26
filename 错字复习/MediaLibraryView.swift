@@ -3,6 +3,28 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct MediaLibraryView: View {
+    private struct FileMetadata: Sendable {
+        let syncStatusText: String
+        let fileSize: Int64
+    }
+
+    private struct FileLookup: Sendable {
+        let id: UUID
+        let storedFilename: String
+        let storageScopeRawValue: String
+    }
+
+    private struct FileMetadataSnapshot: Sendable {
+        let metadataByAssetID: [UUID: FileMetadata]
+        let totalFileSizeText: String
+    }
+
+    private struct StorageCleanupResult: Sendable {
+        let cleanedFileCount: Int
+        let releasedByteCount: Int64
+        let failureMessages: [String]
+    }
+
     @Environment(MediaLibraryStore.self) private var mediaLibraryStore
 
     @State private var isImportingFiles = false
@@ -10,28 +32,21 @@ struct MediaLibraryView: View {
     @State private var playbackCoordinator = MediaPlaybackCoordinator()
     @State private var renamingAssetID: UUID?
     @State private var titleDraft = ""
+    @State private var fileMetadataByAssetID: [UUID: FileMetadata] = [:]
+    @State private var totalMediaFileSizeText = "正在统计…"
+    @State private var isConfirmingStorageCleanup = false
+    @State private var isCleaningStorage = false
 
     private var mediaAssets: [MediaLibraryAsset] {
-        mediaLibraryStore.mediaAssets.sorted { lhs, rhs in
-            if lhs.playlistOrder == rhs.playlistOrder {
-                return lhs.createdAt > rhs.createdAt
-            }
-            return lhs.playlistOrder > rhs.playlistOrder
-        }
+        Array(mediaLibraryStore.mediaAssets.reversed())
     }
 
     private var totalMediaCount: Int {
-        mediaAssets.count
+        mediaLibraryStore.mediaAssets.count
     }
 
-    private var totalMediaFileSize: Int64 {
-        mediaAssets.reduce(into: Int64(0)) { total, asset in
-            total += MediaLibraryStorage.fileSize(for: asset.storedFilename)
-        }
-    }
-
-    private var totalMediaFileSizeText: String {
-        ByteCountFormatter.string(fromByteCount: totalMediaFileSize, countStyle: .file)
+    private var hasICloudMediaAssets: Bool {
+        mediaLibraryStore.mediaAssets.contains { $0.storageScope == .iCloud }
     }
 
     var body: some View {
@@ -95,6 +110,18 @@ struct MediaLibraryView: View {
         ) { result in
             handleImport(result)
         }
+        .confirmationDialog(
+            "清理晨读资源占用？",
+            isPresented: $isConfirmingStorageCleanup,
+            titleVisibility: .visible
+        ) {
+            Button("清理本机副本", role: .destructive) {
+                cleanDownloadedMediaCopies()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("只会移除已同步到 iCloud 的本机下载副本，不会删除资源或播放列表。当前试听会停止；以后播放时会自动重新下载。")
+        }
         .alert(item: $importAlert) { alert in
             Alert(
                 title: Text(alert.title),
@@ -105,35 +132,74 @@ struct MediaLibraryView: View {
         .sheet(isPresented: isShowingRenameSheet) {
             renameSheet
         }
+        .task(id: mediaAssets) {
+            await refreshFileMetadata(for: mediaAssets)
+        }
+        .onChange(of: playbackCoordinator.currentAsset?.id) { _, _ in
+            Task {
+                await refreshFileMetadata(for: mediaAssets)
+            }
+        }
         .onDisappear {
             playbackCoordinator.stop()
         }
     }
 
     private var librarySummarySection: some View {
-        HStack(spacing: 12) {
-            summaryCard(
-                title: "资源数量",
-                value: "\(totalMediaCount)",
-                caption: totalMediaCount == 1 ? "共 1 条资源" : "共 \(totalMediaCount) 条资源",
-                icon: "square.stack.3d.up.fill",
-                tint: .blue
-            )
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                summaryCard(
+                    title: "资源数量",
+                    value: "\(totalMediaCount)",
+                    caption: totalMediaCount == 1 ? "共 1 条资源" : "共 \(totalMediaCount) 条资源",
+                    icon: "square.stack.3d.up.fill",
+                    tint: .blue
+                )
 
-            summaryCard(
-                title: "占用体积",
-                value: totalMediaFileSizeText,
-                caption: "按当前可读取文件统计",
-                icon: "externaldrive.fill",
-                tint: .green
-            )
+                summaryCard(
+                    title: "本机占用",
+                    value: totalMediaFileSizeText,
+                    caption: "已下载到本机的文件",
+                    icon: "externaldrive.fill",
+                    tint: .green
+                )
+            }
+
+            Button {
+                isConfirmingStorageCleanup = true
+            } label: {
+                HStack {
+                    if isCleaningStorage {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "externaldrive.badge.minus")
+                    }
+                    Text(isCleaningStorage ? "正在清理…" : "清理本机占用")
+                        .fontWeight(.semibold)
+                    Spacer()
+                    Text("保留 iCloud 文件")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(isCleaningStorage || !hasICloudMediaAssets)
+
+            Text(hasICloudMediaAssets
+                ? "仅移除 iCloud 资源的本机副本；再次播放时会自动下载。"
+                : "当前没有可从 iCloud 恢复的资源，本机独有文件不会被清理。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
     }
 
     private func mediaRow(for asset: MediaLibraryAsset) -> some View {
         let isPlaying = self.isPlaying(asset)
-        let syncStatus = MediaLibraryStorage.syncStatusText(for: asset.storedFilename, storageScope: asset.storageScope)
+        let syncStatus = fileMetadataByAssetID[asset.id]?.syncStatusText ?? "检查中"
+        let statusColor = syncStatusColor(for: syncStatus)
         
         return VStack(spacing: 0) {
             HStack(alignment: .center, spacing: 14) {
@@ -188,10 +254,10 @@ struct MediaLibraryView: View {
                             Text(syncStatus)
                                 .font(.system(size: 10, weight: .semibold))
                         }
-                        .foregroundStyle(syncStatusColor(for: asset))
+                        .foregroundStyle(statusColor)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(syncStatusColor(for: asset).opacity(0.12), in: Capsule())
+                        .background(statusColor.opacity(0.12), in: Capsule())
 
                         HStack(spacing: 4) {
                             Image(systemName: "calendar")
@@ -485,8 +551,8 @@ struct MediaLibraryView: View {
         }
     }
 
-    private func syncStatusColor(for asset: MediaLibraryAsset) -> Color {
-        switch MediaLibraryStorage.syncStatusText(for: asset.storedFilename, storageScope: asset.storageScope) {
+    private func syncStatusColor(for syncStatus: String) -> Color {
+        switch syncStatus {
         case "已同步":
             return .green
         case "等待下载", "等待同步":
@@ -495,6 +561,122 @@ struct MediaLibraryView: View {
             return .red
         default:
             return .secondary
+        }
+    }
+
+    private func refreshFileMetadata(for assets: [MediaLibraryAsset]) async {
+        let lookups = assets.map {
+            FileLookup(
+                id: $0.id,
+                storedFilename: $0.storedFilename,
+                storageScopeRawValue: $0.storageScopeRawValue
+            )
+        }
+
+        let snapshot: FileMetadataSnapshot? = await Task.detached(priority: .utility) { () -> FileMetadataSnapshot? in
+            var metadataByAssetID: [UUID: FileMetadata] = [:]
+            var totalFileSize: Int64 = 0
+
+            for lookup in lookups {
+                guard !Task.isCancelled else { return nil }
+
+                let storageScope = MediaStorageScope(rawValue: lookup.storageScopeRawValue) ?? .local
+                let fileMetadata = FileMetadata(
+                    syncStatusText: MediaLibraryStorage.syncStatusText(
+                        for: lookup.storedFilename,
+                        storageScope: storageScope
+                    ),
+                    fileSize: MediaLibraryStorage.fileSize(for: lookup.storedFilename)
+                )
+                metadataByAssetID[lookup.id] = fileMetadata
+                totalFileSize += fileMetadata.fileSize
+            }
+
+            return FileMetadataSnapshot(
+                metadataByAssetID: metadataByAssetID,
+                totalFileSizeText: ByteCountFormatter.string(
+                    fromByteCount: totalFileSize,
+                    countStyle: .file
+                )
+            )
+        }.value
+
+        guard !Task.isCancelled, let snapshot else { return }
+        fileMetadataByAssetID = snapshot.metadataByAssetID
+        totalMediaFileSizeText = snapshot.totalFileSizeText
+    }
+
+    private func cleanDownloadedMediaCopies() {
+        guard !isCleaningStorage else { return }
+
+        let lookups = mediaLibraryStore.mediaAssets
+            .filter { $0.storageScope == .iCloud }
+            .map {
+                FileLookup(
+                    id: $0.id,
+                    storedFilename: $0.storedFilename,
+                    storageScopeRawValue: $0.storageScopeRawValue
+                )
+            }
+        guard !lookups.isEmpty else { return }
+
+        playbackCoordinator.stop()
+        isCleaningStorage = true
+
+        Task {
+            let result = await Task.detached(priority: .utility) {
+                var cleanedFileCount = 0
+                var releasedByteCount: Int64 = 0
+                var failureMessages: [String] = []
+
+                for lookup in lookups {
+                    do {
+                        if let releasedBytes = try MediaLibraryStorage.evictDownloadedCopy(
+                            for: lookup.storedFilename
+                        ) {
+                            cleanedFileCount += 1
+                            releasedByteCount += releasedBytes
+                        }
+                    } catch {
+                        failureMessages.append(error.localizedDescription)
+                    }
+                }
+
+                return StorageCleanupResult(
+                    cleanedFileCount: cleanedFileCount,
+                    releasedByteCount: releasedByteCount,
+                    failureMessages: failureMessages
+                )
+            }.value
+
+            await refreshFileMetadata(for: mediaAssets)
+            isCleaningStorage = false
+            showStorageCleanupResult(result)
+        }
+    }
+
+    private func showStorageCleanupResult(_ result: StorageCleanupResult) {
+        let releasedSize = ByteCountFormatter.string(
+            fromByteCount: result.releasedByteCount,
+            countStyle: .file
+        )
+
+        if result.cleanedFileCount > 0 {
+            var message = "已清理 \(result.cleanedFileCount) 个本机副本，预计释放 \(releasedSize)。\n\n资源仍保留在 iCloud，播放时会自动下载。"
+            if !result.failureMessages.isEmpty {
+                message += "\n\n另有 \(result.failureMessages.count) 个文件未能清理：\(result.failureMessages[0])"
+            }
+            importAlert = MediaImportAlert(title: "清理完成", message: message)
+        } else if let firstFailure = result.failureMessages.first {
+            importAlert = MediaImportAlert(
+                title: "清理失败",
+                message: "没有文件被清理：\(firstFailure)"
+            )
+        } else {
+            importAlert = MediaImportAlert(
+                title: "暂无可清理内容",
+                message: "iCloud 资源可能尚未下载，或本机副本已经清理。资源和播放列表没有变化。"
+            )
         }
     }
 

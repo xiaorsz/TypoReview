@@ -17,6 +17,7 @@ final class MediaPlaybackCoordinator {
     private var playlist: [MediaLibraryAsset] = []
     private var currentIndex = 0
     private var endObserver: NSObjectProtocol?
+    @ObservationIgnored private var downloadRetryTask: Task<Void, Never>?
     private var boardManualStopDeadline: Date?
     private var wrapsAtPlaylistEnd = true
 
@@ -214,6 +215,7 @@ final class MediaPlaybackCoordinator {
     }
 
     func stop() {
+        cancelDownloadRetry()
         player.pause()
         player.replaceCurrentItem(with: nil)
         currentAsset = nil
@@ -232,6 +234,7 @@ final class MediaPlaybackCoordinator {
     }
 
     func stopBoardPlaybackByUser() {
+        cancelDownloadRetry()
         player.pause()
         player.replaceCurrentItem(with: nil)
         currentAsset = nil
@@ -266,6 +269,7 @@ final class MediaPlaybackCoordinator {
     }
 
     private func suspendBoardManualPlayback() {
+        cancelDownloadRetry()
         player.pause()
         player.replaceCurrentItem(with: nil)
         currentAsset = nil
@@ -305,6 +309,12 @@ final class MediaPlaybackCoordinator {
                 isWaitingForDownload = true
                 pendingAssetTitle = asset.title
                 MediaAudioSession.deactivate()
+                waitForDownload(
+                    of: asset,
+                    at: index,
+                    attempts: attempts,
+                    allowsWrap: allowsWrap
+                )
                 return
             }
 
@@ -321,6 +331,7 @@ final class MediaPlaybackCoordinator {
         currentAsset = asset
         pendingAssetTitle = nil
         isWaitingForDownload = false
+        downloadRetryTask = nil
 
         if let endObserver {
             NotificationCenter.default.removeObserver(endObserver)
@@ -342,6 +353,56 @@ final class MediaPlaybackCoordinator {
         player.play()
         isPlaying = true
         isManuallyPaused = false
+    }
+
+    private func waitForDownload(
+        of asset: MediaLibraryAsset,
+        at index: Int,
+        attempts: Int,
+        allowsWrap: Bool
+    ) {
+        cancelDownloadRetry()
+        let storedFilename = asset.storedFilename
+
+        downloadRetryTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 1_000_000_000)
+                } catch {
+                    return
+                }
+
+                let downloadedFileURL: URL? = await Task.detached(priority: .utility) { () -> URL? in
+                    if case let .ready(fileURL) = MediaLibraryStorage.availability(
+                        for: storedFilename,
+                        requestDownloadIfNeeded: false
+                    ) {
+                        return fileURL
+                    }
+                    return nil
+                }.value
+
+                guard let self,
+                      self.isWaitingForDownload,
+                      self.currentIndex == index else {
+                    return
+                }
+
+                if downloadedFileURL != nil {
+                    self.startPlayback(
+                        at: index,
+                        attempts: attempts,
+                        allowsWrap: allowsWrap
+                    )
+                    return
+                }
+            }
+        }
+    }
+
+    private func cancelDownloadRetry() {
+        downloadRetryTask?.cancel()
+        downloadRetryTask = nil
     }
 
     private func playNext() {
