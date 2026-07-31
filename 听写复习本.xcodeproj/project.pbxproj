@@ -60,6 +60,7 @@
 		8A380A90A6B3085F9EF257D4 /* ServerSyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9ADDAD4F640B449CCCE635E9 /* ServerSyncCoordinator.swift */; };
 		8B58527C28E31748BB6A27C5 /* AddDictationSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35B9623148B3E1F3AF728F7B /* AddDictationSessionView.swift */; };
 		8DD0DB1825D5A2A8FBA4F3AD /* Contents.json in Resources */ = {isa = PBXBuildFile; fileRef = 86837560373D9A64F21BD7FB /* Contents.json */; };
+		8DE3807E98B58C764F35CBA3 /* DailyQuote.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADA80A7B778076486444D416 /* DailyQuote.swift */; };
 		932330CC5F580390519EA018 /* BatchReviewGradingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD3384CB49CD514C167C97AA /* BatchReviewGradingView.swift */; };
 		93B852594FDEA6D8D1FEC8F5 /* AppSettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E33196EB04064951A5A5CDE /* AppSettingsStore.swift */; };
 		963D00C473C8F1621AA6A93C /* TypoWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9902D09D4660DE61317DFEBD /* TypoWidgetBundle.swift */; };
@@ -77,6 +78,7 @@
 		C4A164C2713F7EBDE40E4E17 /* DictationSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 784F6272A4455A0B3B474874 /* DictationSessionView.swift */; };
 		C7EE7B8B203F8CB7A51BD4A3 /* TaskDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16A57F8025A6845AE693BD48 /* TaskDetailView.swift */; };
 		CBE04FABF7F77F50A74027E2 /* AddTaskView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF9F30993E7E3348AE59F070 /* AddTaskView.swift */; };
+		D093460C6713385132B3E8AC /* DailyQuoteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 618E15EAB427191F7A67F687 /* DailyQuoteTests.swift */; };
 		D2432CB1D76C1165C0C57F33 /* ObjectiveCExceptionCatcher.m in Sources */ = {isa = PBXBuildFile; fileRef = 69297C3450DFB660ED1F3DE2 /* ObjectiveCExceptionCatcher.m */; };
 		D6475E707A9E4409EC8DC7A7 /* TaskSubitem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8571739A6CB6E57C35B4B2B4 /* TaskSubitem.swift */; };
 		D8F6247E90A49A83716297D8 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 67CBEE4738C53CAF8BFD0E09 /* Assets.xcassets */; };
@@ -148,6 +150,7 @@
 		54E7E4D3A83E8BB53D0F1DBA /* DictationReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationReviewView.swift; sourceTree = "<group>"; };
 		5666CDE286D6F2BD6E13076D /* TypoReviewServerCA.crt */ = {isa = PBXFileReference; path = TypoReviewServerCA.crt; sourceTree = "<group>"; };
 		58DA378CBD575240BAB65E55 /* ServerAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAPI.swift; sourceTree = "<group>"; };
+		618E15EAB427191F7A67F687 /* DailyQuoteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DailyQuoteTests.swift; sourceTree = "<group>"; };
 		639EFA48907D78F1554913B1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		67CBEE4738C53CAF8BFD0E09 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		68697C00FBC6375BFCE2DC7D /* Grade5ChineseDictationPlanImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Grade5ChineseDictationPlanImporter.swift; sourceTree = "<group>"; };
@@ -175,6 +178,7 @@
 		9ADDAD4F640B449CCCE635E9 /* ServerSyncCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerSyncCoordinator.swift; sourceTree = "<group>"; };
 		A320D12ED2C802E15DB792C0 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		A3516E8E0523A9A64606E534 /* MediaLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryView.swift; sourceTree = "<group>"; };
+		ADA80A7B778076486444D416 /* DailyQuote.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DailyQuote.swift; sourceTree = "<group>"; };
 		AFFC43C9FF7768E732522AE5 /* AddReviewItemView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddReviewItemView.swift; sourceTree = "<group>"; };
 		B1AE669F908DAA7398525F62 /* HomeDashboardDataLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeDashboardDataLoader.swift; sourceTree = "<group>"; };
 		B6A74373962C3C4C62923384 /* TaskItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskItem.swift; sourceTree = "<group>"; };
@@ -220,6 +224,7 @@
 				0FFAF335CDD525B5AAB52CC1 /* BatchAddReviewItemsView.swift */,
 				BD3384CB49CD514C167C97AA /* BatchReviewGradingView.swift */,
 				CA218905C6AD638CB04C774E /* BatchReviewSessionView.swift */,
+				ADA80A7B778076486444D416 /* DailyQuote.swift */,
 				0327899BD934C072FBA06790 /* DailySummaryAI.swift */,
 				4DAC45C1C6C9D73CED4CF57E /* DashboardBoardView.swift */,
 				D52668595FD4C40411DDCF20 /* DataBackup.swift */,
@@ -273,6 +278,7 @@
 		2A53280D2C178BB4D621FC99 /* TypoReviewTests */ = {
 			isa = PBXGroup;
 			children = (
+				618E15EAB427191F7A67F687 /* DailyQuoteTests.swift */,
 				FC14A829652113A150E05B1A /* Grade5ChineseDictationPlanImporterTests.swift */,
 				7D30746825CCB6331C055DBD /* Grade5EnglishDictationPlanImporterTests.swift */,
 				3B5B13F8AB47E2DB03305856 /* ReviewSchedulerTests.swift */,
@@ -497,6 +503,7 @@
 				01634FB78D42C465212540EA /* BatchAddReviewItemsView.swift in Sources */,
 				932330CC5F580390519EA018 /* BatchReviewGradingView.swift in Sources */,
 				231AA24240FC6FCBD6A369F2 /* BatchReviewSessionView.swift in Sources */,
+				8DE3807E98B58C764F35CBA3 /* DailyQuote.swift in Sources */,
 				43E41D5D393E2BF26C137D85 /* DailySummaryAI.swift in Sources */,
 				5FCF0E1D826394BF87A3A0AE /* DashboardBoardView.swift in Sources */,
 				8101EFDBFE693CE7C0CEF6CE /* DataBackup.swift in Sources */,
@@ -544,6 +551,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D093460C6713385132B3E8AC /* DailyQuoteTests.swift in Sources */,
 				F806FCD140EADB3FA9BB9620 /* Grade5ChineseDictationPlanImporterTests.swift in Sources */,
 				0C54AB9F68BF65DBEBD1214A /* Grade5EnglishDictationPlanImporterTests.swift in Sources */,
 				625D57263F5433D997BF62C9 /* ReviewSchedulerTests.swift in Sources */,

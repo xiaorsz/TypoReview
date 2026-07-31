@@ -226,6 +226,39 @@ struct ServerSecretValueResponse: Decodable, Sendable {
     let updatedAt: Date?
 }
 
+struct ServerDailyQuoteResponse: Decodable, Sendable {
+    enum Status: String, Decodable, Sendable {
+        case available
+        case exhausted
+    }
+
+    struct Quote: Decodable, Sendable {
+        let id: String
+        let text: String
+        let kind: DailyQuote.Kind
+        let attribution: String
+        let explanation: String
+        let action: String
+    }
+
+    let date: String
+    let status: Status
+    let quote: Quote?
+
+    var dailyQuote: DailyQuote? {
+        guard status == .available, let quote else { return nil }
+        return DailyQuote(
+            id: quote.id,
+            dayKey: date,
+            text: quote.text,
+            kind: quote.kind,
+            attribution: quote.attribution,
+            explanation: quote.explanation,
+            action: quote.action
+        )
+    }
+}
+
 actor ServerAPIClient {
     static let shared = ServerAPIClient()
 
@@ -255,6 +288,16 @@ actor ServerAPIClient {
 
     func health() async throws {
         let _: EmptyHealthResponse = try await request(path: "/health", method: "GET", authorized: false)
+    }
+
+    func dailyQuote() async throws -> ServerDailyQuoteResponse {
+        try await request(
+            path: "/v1/content/daily-quote",
+            method: "GET",
+            authorized: false,
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            timeoutInterval: 10
+        )
     }
 
     func pair(code: String, deviceName: String) async throws -> ServerPairingResponse {
@@ -340,7 +383,9 @@ actor ServerAPIClient {
         path: String,
         method: String,
         body: Data? = nil,
-        authorized: Bool = true
+        authorized: Bool = true,
+        cachePolicy: URLRequest.CachePolicy = .useProtocolCachePolicy,
+        timeoutInterval: TimeInterval? = nil
     ) async throws -> Response {
         guard let baseURL = configuration?.baseURL ?? ServerAPIConfiguration.serverURL else {
             throw ServerAPIError.notConfigured
@@ -349,6 +394,10 @@ actor ServerAPIClient {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.httpBody = body
+        request.cachePolicy = cachePolicy
+        if let timeoutInterval {
+            request.timeoutInterval = timeoutInterval
+        }
         if authorized {
             guard let token = configuration?.token else { throw ServerAPIError.notConfigured }
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")

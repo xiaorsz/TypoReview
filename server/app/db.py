@@ -11,6 +11,7 @@ import asyncpg
 from .domain import parse_datetime
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+DAILY_QUOTES_PATH = Path(__file__).with_name("daily_quotes.json")
 
 
 class Database:
@@ -41,6 +42,7 @@ class Database:
                 "INSERT INTO accounts(id) VALUES($1) ON CONFLICT (id) DO NOTHING",
                 account_id,
             )
+            await seed_daily_quotes(connection)
 
     async def close(self) -> None:
         if self.pool is not None:
@@ -51,6 +53,138 @@ class Database:
         if self.pool is None:
             raise RuntimeError("database is not connected")
         return self.pool
+
+
+def load_seed_daily_quotes() -> list[dict[str, Any]]:
+    if not DAILY_QUOTES_PATH.exists():
+        return []
+    payload = json.loads(DAILY_QUOTES_PATH.read_text(encoding="utf-8"))
+    quotes = payload.get("quotes", [])
+    if not isinstance(quotes, list):
+        raise ValueError("daily_quotes.json must contain a quotes array")
+
+    seen_ids: set[str] = set()
+    seen_texts: set[str] = set()
+    seen_orders: set[int] = set()
+    normalized: list[dict[str, Any]] = []
+    for raw in quotes:
+        if not isinstance(raw, dict):
+            raise ValueError("every daily quote must be an object")
+        quote_id = str(raw.get("id") or "").strip()
+        text = str(raw.get("text") or "").strip()
+        attribution = str(raw.get("attribution") or "").strip()
+        explanation = str(raw.get("explanation") or "").strip()
+        action = str(raw.get("action") or "").strip()
+        kind = str(raw.get("kind") or "verified").strip()
+        sort_order = raw.get("sortOrder")
+        if not quote_id or not text or not explanation or not action:
+            raise ValueError(f"daily quote {quote_id or '<missing id>'} has incomplete content")
+        if kind not in {"verified", "encouragement"}:
+            raise ValueError(f"daily quote {quote_id} has an invalid kind")
+        if kind == "verified" and not attribution:
+            raise ValueError(f"verified daily quote {quote_id} is missing attribution")
+        if not isinstance(sort_order, int) or sort_order < 0:
+            raise ValueError(f"daily quote {quote_id} has an invalid sortOrder")
+        if quote_id in seen_ids or text in seen_texts or sort_order in seen_orders:
+            raise ValueError(f"daily quote {quote_id} has a duplicate id, text, or sortOrder")
+        seen_ids.add(quote_id)
+        seen_texts.add(text)
+        seen_orders.add(sort_order)
+        normalized.append(
+            {
+                "id": quote_id,
+                "text": text,
+                "kind": kind,
+                "attribution": attribution,
+                "explanation": explanation,
+                "action": action,
+                "sortOrder": sort_order,
+            }
+        )
+    return normalized
+
+
+async def seed_daily_quotes(connection: asyncpg.Connection) -> None:
+    for quote in load_seed_daily_quotes():
+        await connection.execute(
+            """
+            INSERT INTO daily_quotes(
+                id, quote_text, kind, attribution, explanation, action_text, sort_order
+            )
+            VALUES($1,$2,$3,$4,$5,$6,$7)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            quote["id"],
+            quote["text"],
+            quote["kind"],
+            quote["attribution"],
+            quote["explanation"],
+            quote["action"],
+            quote["sortOrder"],
+        )
+
+
+async def fetch_or_assign_daily_quote(
+    connection: asyncpg.Connection,
+    *,
+    quote_day: Any,
+) -> Any:
+    existing = await connection.fetchrow(
+        """
+        SELECT q.id, q.quote_text, q.kind, q.attribution, q.explanation, q.action_text
+        FROM daily_quote_assignments a
+        JOIN daily_quotes q ON q.id=a.quote_id
+        WHERE a.quote_day=$1
+        """,
+        quote_day,
+    )
+    if existing is not None:
+        return existing
+
+    candidate = await connection.fetchrow(
+        """
+        SELECT q.id
+        FROM daily_quotes q
+        WHERE q.is_active
+          AND NOT EXISTS (
+              SELECT 1 FROM daily_quote_assignments a WHERE a.quote_id=q.id
+          )
+        ORDER BY q.sort_order, q.id
+        FOR UPDATE SKIP LOCKED
+        LIMIT 1
+        """
+    )
+    if candidate is None:
+        return None
+
+    inserted_quote_id = await connection.fetchval(
+        """
+        INSERT INTO daily_quote_assignments(quote_day, quote_id)
+        VALUES($1,$2)
+        ON CONFLICT (quote_day) DO NOTHING
+        RETURNING quote_id
+        """,
+        quote_day,
+        candidate["id"],
+    )
+    if inserted_quote_id is None:
+        return await connection.fetchrow(
+            """
+            SELECT q.id, q.quote_text, q.kind, q.attribution, q.explanation, q.action_text
+            FROM daily_quote_assignments a
+            JOIN daily_quotes q ON q.id=a.quote_id
+            WHERE a.quote_day=$1
+            """,
+            quote_day,
+        )
+    return await connection.fetchrow(
+        """
+        SELECT id, quote_text, kind, attribution, explanation, action_text
+        FROM daily_quotes
+        WHERE id=$1
+        """,
+        inserted_quote_id,
+    )
 
 
 async def upsert_record(

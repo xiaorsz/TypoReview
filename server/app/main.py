@@ -11,10 +11,10 @@ from typing import Any, Literal
 from uuid import UUID, uuid4
 
 import asyncpg
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 
-from .db import Database, tombstone_record, upsert_point_ledger_entry, upsert_record
+from .db import Database, fetch_or_assign_daily_quote, tombstone_record, upsert_point_ledger_entry, upsert_record
 from .domain import (
     ENTITY_KEYS,
     SETTINGS_RECORD_ID,
@@ -170,12 +170,171 @@ class SecretValueUpdate(BaseModel):
     value: str = Field(min_length=1, max_length=1000)
 
 
+class DailyQuoteAdminItem(BaseModel):
+    id: str = Field(min_length=1, max_length=120)
+    text: str = Field(min_length=1, max_length=500)
+    kind: Literal["verified", "encouragement"] = "verified"
+    attribution: str = Field(default="", max_length=300)
+    explanation: str = Field(min_length=1, max_length=1000)
+    action: str = Field(min_length=1, max_length=500)
+    sortOrder: int = Field(ge=0)
+
+
+class DailyQuoteAdminImport(BaseModel):
+    quotes: list[DailyQuoteAdminItem] = Field(min_length=1, max_length=1000)
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     pool = database.require_pool()
     async with pool.acquire() as connection:
         await connection.fetchval("SELECT 1")
     return {"status": "ok", "service": "typo-review-sync"}
+
+
+@app.get("/v1/content/daily-quote")
+async def daily_quote(response: Response) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    quote_day = datetime.now(SHANGHAI).date()
+    pool = database.require_pool()
+    async with pool.acquire() as connection, connection.transaction():
+        quote = await fetch_or_assign_daily_quote(connection, quote_day=quote_day)
+    if quote is None:
+        return {"date": quote_day.isoformat(), "status": "exhausted", "quote": None}
+    return {
+        "date": quote_day.isoformat(),
+        "status": "available",
+        "quote": {
+            "id": quote["id"],
+            "text": quote["quote_text"],
+            "kind": quote["kind"],
+            "attribution": quote["attribution"],
+            "explanation": quote["explanation"],
+            "action": quote["action_text"],
+        },
+    }
+
+
+@app.get("/v1/admin/daily-quotes/status")
+async def daily_quote_admin_status(
+    _: UUID = Depends(require_master_token),
+) -> dict[str, int | str | None]:
+    pool = database.require_pool()
+    async with pool.acquire() as connection:
+        counts = await connection.fetchrow(
+            """
+            SELECT
+                count(*) FILTER (WHERE q.is_active) AS total,
+                count(*) FILTER (WHERE a.quote_id IS NOT NULL) AS used,
+                count(*) FILTER (WHERE q.is_active AND a.quote_id IS NULL) AS remaining
+            FROM daily_quotes q
+            LEFT JOIN daily_quote_assignments a ON a.quote_id=q.id
+            """
+        )
+        last_day = await connection.fetchval(
+            "SELECT max(quote_day) FROM daily_quote_assignments"
+        )
+    return {
+        "total": counts["total"],
+        "used": counts["used"],
+        "remaining": counts["remaining"],
+        "lastAssignedDate": last_day.isoformat() if last_day else None,
+    }
+
+
+@app.post("/v1/admin/daily-quotes/import")
+async def import_daily_quotes(
+    request: DailyQuoteAdminImport,
+    _: UUID = Depends(require_master_token),
+) -> dict[str, int]:
+    ids = [item.id.strip() for item in request.quotes]
+    texts = [item.text.strip() for item in request.quotes]
+    orders = [item.sortOrder for item in request.quotes]
+    if any(
+        not item.id.strip()
+        or not item.text.strip()
+        or not item.explanation.strip()
+        or not item.action.strip()
+        or (item.kind == "verified" and not item.attribution.strip())
+        for item in request.quotes
+    ):
+        raise HTTPException(status_code=422, detail="quote content is incomplete")
+    if (
+        len(ids) != len(set(ids))
+        or len(texts) != len(set(texts))
+        or len(orders) != len(set(orders))
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="quote ids, text values, and sortOrder values must be unique",
+        )
+
+    inserted = 0
+    updated = 0
+    ignored_assigned = 0
+    pool = database.require_pool()
+    async with pool.acquire() as connection, connection.transaction():
+        for item in request.quotes:
+            assigned = await connection.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM daily_quote_assignments WHERE quote_id=$1)",
+                item.id.strip(),
+            )
+            if assigned:
+                ignored_assigned += 1
+                continue
+            existed = await connection.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM daily_quotes WHERE id=$1)",
+                item.id.strip(),
+            )
+            duplicate_text_id = await connection.fetchval(
+                """
+                SELECT id
+                FROM daily_quotes
+                WHERE btrim(quote_text)=btrim($1) AND id<>$2
+                LIMIT 1
+                """,
+                item.text.strip(),
+                item.id.strip(),
+            )
+            if duplicate_text_id is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"quote text already exists as {duplicate_text_id}",
+                )
+            await connection.execute(
+                """
+                INSERT INTO daily_quotes(
+                    id, quote_text, kind, attribution, explanation, action_text,
+                    sort_order, is_active, updated_at
+                )
+                VALUES($1,$2,$3,$4,$5,$6,$7,true,now())
+                ON CONFLICT (id) DO UPDATE
+                SET quote_text=EXCLUDED.quote_text,
+                    kind=EXCLUDED.kind,
+                    attribution=EXCLUDED.attribution,
+                    explanation=EXCLUDED.explanation,
+                    action_text=EXCLUDED.action_text,
+                    sort_order=EXCLUDED.sort_order,
+                    is_active=true,
+                    updated_at=now()
+                """,
+                item.id.strip(),
+                item.text.strip(),
+                item.kind,
+                item.attribution.strip(),
+                item.explanation.strip(),
+                item.action.strip(),
+                item.sortOrder,
+            )
+            if existed:
+                updated += 1
+            else:
+                inserted += 1
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "ignoredAssigned": ignored_assigned,
+    }
 
 
 @app.post("/v1/auth/pairing-code")

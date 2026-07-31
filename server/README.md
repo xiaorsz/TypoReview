@@ -21,6 +21,30 @@ cd server
 PYTHONPATH=. python3 -m unittest discover -s tests
 ```
 
+## 每日一句
+
+- App 通过公开只读接口 `GET /v1/content/daily-quote` 获取服务器当天的内容。
+- 日期固定按北京时间计算；同一天始终返回同一条，已分配内容永不重复使用。
+- 首批 110 条内容位于 `app/daily_quotes.json`，每条包含正文、出处、白话解释和行动建议。
+- 全部用完后接口返回 `status: "exhausted"`，App 显示“已用完”，不会回退到 AI 或 App 内置句库。
+
+查看库存：
+
+```bash
+cd server
+API_TOKEN='<管理令牌>' python3 scripts/daily_quotes_admin.py status
+```
+
+后续追加内容时，准备同结构 JSON 文件并导入。ID、正文和排序号不能重复；
+已分配的 ID 会被保护，不会被后台修改：
+
+```bash
+cd server
+API_TOKEN='<管理令牌>' python3 scripts/daily_quotes_admin.py import --file /path/to/new_quotes.json
+```
+
+远程管理时可通过 `TYPO_REVIEW_ADMIN_URL` 或 `--base-url` 指定服务器入口。
+
 ## 首次部署
 
 1. 将目录发布到 `/opt/typo-review-sync`。

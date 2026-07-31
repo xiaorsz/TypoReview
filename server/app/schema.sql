@@ -111,3 +111,30 @@ CREATE TABLE IF NOT EXISTS daily_review_plan_items (
 
 CREATE INDEX IF NOT EXISTS daily_review_plan_items_item_idx
     ON daily_review_plan_items(item_id);
+
+CREATE TABLE IF NOT EXISTS daily_quotes (
+    id text PRIMARY KEY,
+    quote_text text NOT NULL CHECK (length(btrim(quote_text)) > 0),
+    kind text NOT NULL DEFAULT 'verified',
+    attribution text NOT NULL DEFAULT '',
+    explanation text NOT NULL DEFAULT '',
+    action_text text NOT NULL DEFAULT '',
+    sort_order integer NOT NULL CHECK (sort_order >= 0),
+    is_active boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+DROP INDEX IF EXISTS daily_quotes_sort_order_idx;
+CREATE INDEX daily_quotes_sort_order_idx ON daily_quotes(sort_order);
+CREATE UNIQUE INDEX IF NOT EXISTS daily_quotes_text_idx
+    ON daily_quotes((btrim(quote_text)));
+
+CREATE TABLE IF NOT EXISTS daily_quote_assignments (
+    quote_day date PRIMARY KEY,
+    quote_id text NOT NULL UNIQUE REFERENCES daily_quotes(id),
+    assigned_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS daily_quote_assignments_quote_idx
+    ON daily_quote_assignments(quote_id);

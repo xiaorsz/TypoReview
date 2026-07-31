@@ -465,6 +465,13 @@ private struct HomeDashboardBoardRoute: Identifiable, Hashable {
     let id = UUID()
 }
 
+private enum DailyQuotePresentationState: Equatable {
+    case loading
+    case available(DailyQuote)
+    case exhausted
+    case unavailable
+}
+
 struct HomeView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
@@ -488,6 +495,9 @@ struct HomeView: View {
     @State private var needsDashboardRefreshAfterCurrent = false
     @State private var dailySummaryPresentation: DailySummaryPresentation?
     @State private var dailySummaryTask: Task<Void, Never>?
+    @State private var dailyQuoteState: DailyQuotePresentationState = .loading
+    @State private var dailyQuoteDetail: DailyQuote?
+    @State private var dailyQuoteTask: Task<Void, Never>?
 
     private let isPad = UIDevice.current.userInterfaceIdiom == .pad
 
@@ -1648,6 +1658,7 @@ struct HomeView: View {
                 reason: "onAppear",
                 delay: dashboardSnapshot == nil ? initialDashboardSnapshotDelay : refreshDashboardSnapshotDelay
             )
+            refreshDailyQuote()
         }
         .modifier(HomeViewDataReconstructor(
             scenePhase: scenePhase,
@@ -1658,8 +1669,10 @@ struct HomeView: View {
             onSceneChange: { newPhase in
                 if newPhase == .active {
                     requestDashboardSnapshotRefresh(reason: "scenePhase active", delay: foregroundDashboardSnapshotDelay)
+                    refreshDailyQuote()
                 } else {
                     dashboardSnapshotTask?.cancel()
+                    dailyQuoteTask?.cancel()
                 }
             }
         ))
@@ -1680,6 +1693,7 @@ struct HomeView: View {
             #endif
             dashboardSnapshotTask?.cancel()
             dailySummaryTask?.cancel()
+            dailyQuoteTask?.cancel()
         }
         .sheet(item: $previewSession) { session in
             if let snapshot = dashboardSnapshot {
@@ -1703,6 +1717,9 @@ struct HomeView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color(uiColor: .systemGroupedBackground))
             }
+        }
+        .sheet(item: $dailyQuoteDetail) { quote in
+            DailyQuoteDetailView(quote: quote)
         }
         .navigationDestination(item: $activeDictationRoute) { route in
             HomeDeferredDictationSessionView(route: route)
@@ -1998,6 +2015,8 @@ struct HomeView: View {
                 VStack(spacing: 14) {
                     heroCard(snapshot)
 
+                    dailyQuoteCard
+
                     if !AppStorePreviewMode.isEnabled && syncStatusStore.syncNoticeKind != .ready {
                         syncStatusSummaryCard
                     }
@@ -2045,6 +2064,8 @@ struct HomeView: View {
 
                 VStack(spacing: 14) {
                     loadingHeroCard
+
+                    dailyQuoteCard
 
                     if isWide {
                         HStack(spacing: 12) {
@@ -2114,6 +2135,243 @@ struct HomeView: View {
                     )
                 )
         )
+    }
+
+    @ViewBuilder
+    private var dailyQuoteCard: some View {
+        switch dailyQuoteState {
+        case .available(let quote):
+            Button {
+                dailyQuoteDetail = quote
+            } label: {
+                dailyQuoteCardContent(
+                    badge: quote.kind.badgeTitle,
+                    badgeColor: quote.kind == .verified ? .indigo : .teal,
+                    text: quote.text,
+                    attribution: quote.nonemptyAttribution,
+                    showsDisclosure: true,
+                    accessibilityLabel: dailyQuoteAccessibilityLabel(for: quote)
+                )
+            }
+            .buttonStyle(.plain)
+
+        case .loading:
+            dailyQuoteCardContent(
+                badge: "获取中",
+                badgeColor: .secondary,
+                text: "正在获取今天的每日一句…",
+                attribution: nil,
+                showsDisclosure: false,
+                accessibilityLabel: "每日一句，正在获取"
+            )
+
+        case .exhausted:
+            dailyQuoteCardContent(
+                badge: "已用完",
+                badgeColor: .orange,
+                text: "每日一句已用完，等待服务器补充新内容。",
+                attribution: nil,
+                showsDisclosure: false,
+                accessibilityLabel: "每日一句已用完，等待服务器补充新内容"
+            )
+
+        case .unavailable:
+            dailyQuoteCardContent(
+                badge: "暂未获取",
+                badgeColor: .secondary,
+                text: "联网后会自动获取今天的每日一句。",
+                attribution: nil,
+                showsDisclosure: false,
+                accessibilityLabel: "每日一句暂未获取，联网后会自动获取"
+            )
+        }
+    }
+
+    private func dailyQuoteCardContent(
+        badge: String,
+        badgeColor: Color,
+        text: String,
+        attribution: String?,
+        showsDisclosure: Bool,
+        accessibilityLabel: String
+    ) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "quote.opening")
+                .font(.title3.weight(.semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.indigo)
+                .frame(width: 38, height: 38)
+                .background(Color.indigo.opacity(0.09), in: Circle())
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("每日一句")
+                        .font(.headline)
+
+                    Spacer(minLength: 8)
+
+                    Text(badge)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(badgeColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(badgeColor.opacity(0.1), in: Capsule())
+                }
+
+                Text(text)
+                    .font(.system(.body, design: .rounded, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let attribution {
+                    Text("— \(attribution)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if showsDisclosure {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 4)
+                    .accessibilityHidden(true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .homeCardSurface(padding: 14)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityHint(showsDisclosure ? "轻点查看解释" : "")
+        .animation(.easeInOut(duration: 0.25), value: dailyQuoteState)
+    }
+
+    private func dailyQuoteAccessibilityLabel(for quote: DailyQuote) -> String {
+        let attributionText = quote.nonemptyAttribution.map { "，出处\($0)" } ?? ""
+        return "每日一句，\(quote.kind.badgeTitle)，\(quote.text)\(attributionText)"
+    }
+
+    private func refreshDailyQuote(referenceDate: Date = .now) {
+        dailyQuoteTask?.cancel()
+
+        let expectedDayKey = DailyQuoteCache.shanghaiDayKey(for: referenceDate)
+        if let cached = DailyQuoteCache.standard.load(for: expectedDayKey) {
+            dailyQuoteState = .available(cached)
+            return
+        }
+        dailyQuoteState = .loading
+
+        dailyQuoteTask = Task {
+            do {
+                let response = try await ServerAPIClient.shared.dailyQuote()
+                guard !Task.isCancelled,
+                      DailyQuoteCache.shanghaiDayKey() == expectedDayKey,
+                      response.date == expectedDayKey else {
+                    return
+                }
+                switch response.status {
+                case .available:
+                    guard let quote = response.dailyQuote else {
+                        dailyQuoteState = .unavailable
+                        return
+                    }
+                    DailyQuoteCache.standard.save(quote)
+                    dailyQuoteState = .available(quote)
+                case .exhausted:
+                    DailyQuoteCache.standard.clear()
+                    dailyQuoteState = .exhausted
+                }
+            } catch {
+                guard !Task.isCancelled,
+                      DailyQuoteCache.shanghaiDayKey() == expectedDayKey else {
+                    return
+                }
+                dailyQuoteState = .unavailable
+            }
+        }
+    }
+
+    private struct DailyQuoteDetailView: View {
+        @Environment(\.dismiss) private var dismiss
+
+        let quote: DailyQuote
+
+        var body: some View {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Image(systemName: "quote.opening")
+                                .font(.title2.weight(.semibold))
+                                .foregroundStyle(.indigo)
+                                .accessibilityHidden(true)
+
+                            Text(quote.text)
+                                .font(.system(.title3, design: .rounded, weight: .semibold))
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            if let attribution = quote.nonemptyAttribution {
+                                Text("— \(attribution)")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .homeCardSurface(padding: 18)
+
+                        dailyQuoteDetailSection(
+                            title: "这句话是什么意思",
+                            icon: "text.book.closed",
+                            color: .indigo,
+                            text: quote.explanation
+                        )
+
+                        dailyQuoteDetailSection(
+                            title: "今天可以这样做",
+                            icon: "figure.walk",
+                            color: .teal,
+                            text: quote.action
+                        )
+                    }
+                    .padding(16)
+                    .frame(maxWidth: 700)
+                    .frame(maxWidth: .infinity)
+                }
+                .background(Color(uiColor: .systemGroupedBackground))
+                .navigationTitle("每日一句")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("完成") {
+                            dismiss()
+                        }
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
+        }
+
+        private func dailyQuoteDetailSection(
+            title: String,
+            icon: String,
+            color: Color,
+            text: String
+        ) -> some View {
+            VStack(alignment: .leading, spacing: 10) {
+                Label(title, systemImage: icon)
+                    .font(.headline)
+                    .foregroundStyle(color)
+                Text(text)
+                    .font(.body)
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .homeCardSurface(padding: 16)
+        }
     }
 
     private var lightweightReviewPlaceholderCard: some View {
