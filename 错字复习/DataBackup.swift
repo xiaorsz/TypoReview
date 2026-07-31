@@ -782,8 +782,10 @@ struct TaskItemSnapshot: Codable {
     let note: String
     let recurrenceJSON: String?
     let skipPolicyRawValue: String?
+    let timingModeRawValue: String?
     let startDate: Date
     let endDate: Date?
+    let deadline: Date?
     let pauseIntervalsJSON: String?
     let pauseStartedAt: Date?
     let isArchived: Bool
@@ -796,8 +798,10 @@ struct TaskItemSnapshot: Codable {
         note = task.note
         recurrenceJSON = task.recurrenceJSON
         skipPolicyRawValue = task.skipPolicyRawValue
+        timingModeRawValue = task.timingModeRawValue
         startDate = task.startDate
         endDate = task.endDate
+        deadline = task.deadline
         pauseIntervalsJSON = task.pauseIntervalsJSON
         pauseStartedAt = task.pauseStartedAt
         isArchived = task.isArchived
@@ -812,8 +816,10 @@ struct TaskItemSnapshot: Codable {
             note: note,
             recurrence: recurrenceJSON.map(TaskRecurrence.fromJSON) ?? .once,
             skipPolicy: skipPolicyRawValue.flatMap(TaskSkipPolicy.init(rawValue:)) ?? .skippable,
+            timingMode: timingModeRawValue.flatMap(TaskTimingMode.init(rawValue:)) ?? .scheduled,
             startDate: startDate,
             endDate: endDate,
+            deadline: deadline,
             pauseIntervalsJSON: pauseIntervalsJSON,
             pauseStartedAt: pauseStartedAt,
             isArchived: isArchived,
@@ -822,6 +828,7 @@ struct TaskItemSnapshot: Codable {
         )
         task.recurrenceJSON = recurrenceJSON
         task.skipPolicyRawValue = skipPolicyRawValue
+        task.timingModeRawValue = timingModeRawValue
         return task
     }
 }

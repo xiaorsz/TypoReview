@@ -572,6 +572,7 @@ struct HomeView: View {
         let todayCompletedTasks: [HomeTaskDisplayItem]
         let todayCompletedTaskCount: Int
         let totalPendingTaskCount: Int
+        let recentPlans: [RecentPlanProjection]
         let calendarWeeks: [HomeCalendarWeekSummary]
         let activeTaskCount: Int
         let pointBalance: Int
@@ -605,6 +606,7 @@ struct HomeView: View {
             calendarTasks: [HomeCalendarTaskProjection],
             taskExecutions: [TaskExecutionRecordProjection],
             taskSubtasks: [TaskSubitemProjection],
+            recentPlans: [RecentPlanProjection],
             activeTaskCount: Int,
             pointBalance: Int,
             pointsEarnedToday: Int,
@@ -846,6 +848,7 @@ struct HomeView: View {
                 todayCompletedTasks: tCompletedTasks,
                 todayCompletedTaskCount: tCompletedTaskCount,
                 totalPendingTaskCount: totPendingTaskCount,
+                recentPlans: recentPlans,
                 calendarWeeks: calendarWeeks,
                 activeTaskCount: activeTaskCount,
                 pointBalance: pointBalance,
@@ -1896,7 +1899,9 @@ struct HomeView: View {
                 }
                 let deduplicatedTaskModels = deduplicatedHomeTasks(source.tasks)
                 let deduplicatedVisibleTaskModels = deduplicatedHomeTasks(visibleTaskModels)
-                let activeTaskModels = deduplicatedTaskModels.filter { !$0.isArchived }
+                let activeTaskModels = deduplicatedTaskModels.filter {
+                    !$0.isArchived && $0.task.timingMode == .scheduled
+                }
 
                 let taskProjections = deduplicatedVisibleTaskModels.map(\.task)
                 let taskExecutionProjections = source.taskExecutions
@@ -1929,6 +1934,14 @@ struct HomeView: View {
                             stableID: item.task.id.uuidString
                         )
                     }
+                )
+                let recentPlans = RecentPlanSupport.visibleProjections(
+                    from: deduplicatedTaskModels.map(\.task),
+                    executions: taskExecutionProjections,
+                    subtasks: taskSubitemProjections,
+                    on: referenceDate,
+                    includeCompletedToday: true,
+                    calendar: calendar
                 )
 
                 #if DEBUG
@@ -1965,6 +1978,7 @@ struct HomeView: View {
                     calendarTasks: deduplicatedTaskModels.map(HomeCalendarTaskProjection.init),
                     taskExecutions: taskExecutionProjections,
                     taskSubtasks: taskSubitemProjections,
+                    recentPlans: recentPlans,
                     activeTaskCount: activeTaskModels.count,
                     pointBalance: source.pointBalance,
                     pointsEarnedToday: source.pointsEarnedToday,
@@ -2022,6 +2036,8 @@ struct HomeView: View {
                     }
 
                     todayScheduleCard(snapshot)
+
+                    recentPlansCard(snapshot)
 
                     todayTasksCard(snapshot)
 
@@ -2819,6 +2835,124 @@ struct HomeView: View {
     // MARK: - Today Tasks
 
     @ViewBuilder
+    private func recentPlansCard(_ snapshot: DashboardSnapshot) -> some View {
+        if !snapshot.recentPlans.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Image(systemName: "calendar.badge.exclamationmark")
+                        .font(.title3)
+                        .foregroundStyle(.blue)
+                    Text("近期计划")
+                        .font(.headline)
+                    Spacer()
+                    Text("\(snapshot.recentPlans.filter { !$0.isCompleted }.count) 项待完成")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+
+                ForEach(snapshot.recentPlans) { plan in
+                    recentPlanHomeRow(plan)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .homeCardSurface()
+        }
+    }
+
+    private func recentPlanHomeRow(_ plan: RecentPlanProjection) -> some View {
+        HStack(spacing: 10) {
+            if plan.hasSubtasks {
+                Image(systemName: plan.isCompleted ? "checkmark.circle.fill" : "list.bullet.circle")
+                    .font(.title3)
+                    .foregroundStyle(plan.isCompleted ? .green : .secondary)
+            } else {
+                Button {
+                    if !plan.isCompleted {
+                        completeRecentPlan(plan)
+                    }
+                } label: {
+                    Image(systemName: plan.isCompleted ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
+                        .foregroundStyle(plan.isCompleted ? .green : .secondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(plan.isCompleted)
+            }
+
+            NavigationLink(value: HomeTaskDetailRoute(taskID: plan.task.id, title: plan.task.title)) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(plan.task.title)
+                        .fontWeight(.medium)
+                        .foregroundStyle(plan.isCompleted ? .secondary : .primary)
+                        .strikethrough(plan.isCompleted)
+
+                    HStack(spacing: 5) {
+                        Text("截止 \(plan.deadline.formatted(.dateTime.month().day()))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Text("·")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+
+                        Text(plan.isCompleted ? "今日已完成" : plan.deadlineState.statusText)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(plan.isCompleted ? .green : recentPlanColor(plan.deadlineState))
+
+                        if plan.hasSubtasks {
+                            Text("· \(plan.completedSubtaskCount)/\(plan.totalSubtaskCount)")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(plan.isCompleted ? .green : .blue)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.vertical, 3)
+    }
+
+    private func recentPlanColor(_ state: RecentPlanDeadlineState) -> Color {
+        switch state.kind {
+        case .overdue:
+            return .red
+        case .dueToday:
+            return .orange
+        case .upcoming:
+            return state.dayCount <= 7 ? .orange : .blue
+        }
+    }
+
+    private func completeRecentPlan(_ plan: RecentPlanProjection) {
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        let taskID = plan.task.id
+        let executions = (try? modelContext.fetch(
+            FetchDescriptor<TaskExecutionRecord>(
+                predicate: #Predicate<TaskExecutionRecord> { $0.taskID == taskID }
+            )
+        )) ?? []
+
+        guard let task = (try? modelContext.fetch(
+            FetchDescriptor<TaskItem>(
+                predicate: #Predicate<TaskItem> { $0.id == taskID }
+            )
+        ))?.first else {
+            return
+        }
+
+        TaskExecutionSupport.markTaskCompleted(
+            task: task,
+            occurrenceDate: task.startDate,
+            existingExecutions: executions,
+            modelContext: modelContext
+        )
+        try? modelContext.save()
+        WidgetCenter.shared.reloadAllTimelinesInBackground()
+        AppDataChangeCenter.post()
+        requestDashboardSnapshotRefresh(reason: "recent plan completed", delay: 0)
+    }
+
+    @ViewBuilder
     private func todayTasksCard(_ snapshot: DashboardSnapshot) -> some View {
         let pendingItems = snapshot.todayPendingTasks
         let historicalItems = snapshot.historicalPendingTasks
@@ -3106,6 +3240,7 @@ struct HomeView: View {
                 todayCompletedTasks: completedTodayPending ? snapshot.todayCompletedTasks + [newItem] : snapshot.todayCompletedTasks,
                 todayCompletedTaskCount: snapshot.todayCompletedTaskCount + (completedTodayPending ? 1 : 0),
                 totalPendingTaskCount: max(snapshot.totalPendingTaskCount - 1, 0),
+                recentPlans: snapshot.recentPlans,
                 calendarWeeks: snapshot.calendarWeeks,
                 activeTaskCount: snapshot.activeTaskCount,
                 pointBalance: snapshot.pointBalance + PointLedgerService.taskRewardAmount,

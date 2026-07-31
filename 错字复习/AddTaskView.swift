@@ -10,11 +10,13 @@ struct AddTaskView: View {
 
     @State private var title = ""
     @State private var note = ""
+    @State private var timingMode: TaskTimingMode = .scheduled
     @State private var recurrenceKind: TaskRecurrence.Kind = .once
     @State private var selectedWeekdays: Set<Int> = []
     @State private var skipPolicy: TaskSkipPolicy = .skippable
     @State private var startDate: Date = .now
     @State private var endDate: Date = .now
+    @State private var deadline: Date = .now
     @State private var hasEndDate = false
     @State private var showSaveToast = false
     @State private var persistenceErrorMessage: String?
@@ -24,11 +26,13 @@ struct AddTaskView: View {
         if let task {
             _title = State(initialValue: task.title)
             _note = State(initialValue: task.note)
+            _timingMode = State(initialValue: task.timingMode)
             _recurrenceKind = State(initialValue: task.recurrence.kind)
             _selectedWeekdays = State(initialValue: Set(task.recurrence.weekdays))
             _skipPolicy = State(initialValue: task.skipPolicy)
             _startDate = State(initialValue: task.startDate)
             _endDate = State(initialValue: task.endDate ?? task.startDate)
+            _deadline = State(initialValue: task.deadline ?? task.startDate)
             _hasEndDate = State(initialValue: task.endDate != nil)
         }
     }
@@ -47,8 +51,13 @@ struct AddTaskView: View {
             VStack(spacing: 20) {
                 introCard
                 infoCard
-                recurrenceCard
-                policyCard
+                timingModeCard
+                if timingMode == .flexibleDeadline {
+                    deadlineCard
+                } else {
+                    recurrenceCard
+                    policyCard
+                }
             }
             .padding(20)
             .frame(maxWidth: 780)
@@ -79,7 +88,11 @@ struct AddTaskView: View {
                 .font(.system(.title3, design: .rounded, weight: .bold))
                 .foregroundStyle(.white)
 
-            Text("任务可以设置为单次或按周期重复。")
+            Text(
+                timingMode == .flexibleDeadline
+                    ? "设置截止日期，创建后随时都可以完成。"
+                    : "任务可以设置为单次或按周期重复。"
+            )
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.85))
         }
@@ -125,6 +138,69 @@ struct AddTaskView: View {
         }
         .padding(20)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private var timingModeCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("任务类型", systemImage: "square.grid.2x2")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.blue)
+
+            Picker("任务类型", selection: $timingMode) {
+                ForEach(TaskTimingMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(existingTask != nil)
+
+            Text(
+                timingMode == .flexibleDeadline
+                    ? "近期计划会在截止前一个月显示在首页、Widget 和大屏看板。"
+                    : "普通任务按指定日期或重复规则出现在今日任务中。"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            if existingTask != nil {
+                Text("任务创建后不能更改类型。")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(20)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private var deadlineCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("截止日期", systemImage: "calendar.badge.exclamationmark")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(.orange)
+
+            DatePicker(
+                "计划截止",
+                selection: $deadline,
+                in: deadlineDateRange,
+                displayedComponents: .date
+            )
+            .font(.subheadline.weight(.medium))
+
+            Text("进入提醒期后会持续显示；截止后未完成将标记为逾期，直到完成或手动归档。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(20)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private var deadlineDateRange: ClosedRange<Date> {
+        let today = Calendar.current.startOfDay(for: .now)
+        let lowerBound = existingTask?.deadline.map {
+            min(Calendar.current.startOfDay(for: $0), today)
+        } ?? today
+        let upperBound = Calendar.current.date(byAdding: .year, value: 20, to: today) ?? .distantFuture
+        return lowerBound...upperBound
     }
 
     private var recurrenceCard: some View {
@@ -244,14 +320,22 @@ struct AddTaskView: View {
         let actionID = String(UUID().uuidString.prefix(6))
         let targetTitle = trimmedTitle
         let recurrence: TaskRecurrence
-        switch recurrenceKind {
-        case .once:
+        if timingMode == .flexibleDeadline {
             recurrence = .once
-        case .daily:
-            recurrence = .daily
-        case .weekly:
-            recurrence = .weekly(Array(selectedWeekdays))
+        } else {
+            switch recurrenceKind {
+            case .once:
+                recurrence = .once
+            case .daily:
+                recurrence = .daily
+            case .weekly:
+                recurrence = .weekly(Array(selectedWeekdays))
+            }
         }
+        let resolvedSkipPolicy: TaskSkipPolicy = timingMode == .flexibleDeadline ? .unskippable : skipPolicy
+        let resolvedDeadline = timingMode == .flexibleDeadline
+            ? Calendar.current.startOfDay(for: deadline)
+            : nil
 
         #if DEBUG
         DebugPerf.mark(
@@ -275,10 +359,16 @@ struct AddTaskView: View {
             existingTask.title = targetTitle
             existingTask.note = note.trimmingCharacters(in: .whitespacesAndNewlines)
             existingTask.recurrence = recurrence
-            existingTask.skipPolicy = skipPolicy
-            existingTask.startDate = startDate
-            existingTask.endDate = recurrenceKind == .once ? nil : (hasEndDate ? endDate : nil)
-            if recurrenceKind == .once, existingTask.pauseStartedAt != nil {
+            existingTask.skipPolicy = resolvedSkipPolicy
+            existingTask.timingMode = timingMode
+            if timingMode == .scheduled {
+                existingTask.startDate = startDate
+            }
+            existingTask.endDate = timingMode == .scheduled && recurrenceKind != .once && hasEndDate
+                ? endDate
+                : nil
+            existingTask.deadline = resolvedDeadline
+            if recurrence.kind == .once, existingTask.pauseStartedAt != nil {
                 existingTask.resume(on: .now)
             }
             existingTask.updatedAt = .now
@@ -288,9 +378,15 @@ struct AddTaskView: View {
                 title: targetTitle,
                 note: note.trimmingCharacters(in: .whitespacesAndNewlines),
                 recurrence: recurrence,
-                skipPolicy: skipPolicy,
-                startDate: startDate,
-                endDate: recurrenceKind == .once ? nil : (hasEndDate ? endDate : nil)
+                skipPolicy: resolvedSkipPolicy,
+                timingMode: timingMode,
+                startDate: timingMode == .flexibleDeadline
+                    ? Calendar.current.startOfDay(for: .now)
+                    : startDate,
+                endDate: timingMode == .scheduled && recurrenceKind != .once && hasEndDate
+                    ? endDate
+                    : nil,
+                deadline: resolvedDeadline
             )
             modelContext.insert(task)
             savedTask = task
@@ -329,6 +425,7 @@ struct AddTaskView: View {
     }
 
     private func ensureTodayExecutionRecordIfNeeded(for task: TaskItem) throws {
+        guard task.timingMode == .scheduled else { return }
         let today = TaskExecutionSupport.day(for: .now)
         let isScheduledToday = task.scheduledOccurrenceDates(upTo: today).contains {
             Calendar.current.isDate($0, inSameDayAs: today)

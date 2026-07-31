@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import Observation
 import SwiftData
+import WidgetKit
 
 @MainActor
 @Observable
@@ -129,6 +130,7 @@ final class ServerSyncCoordinator {
             lastPulledDataSummary = Self.dataSummary(for: payload)
             await synchronizeDeepSeekAPIKey()
             AppDataChangeCenter.post()
+            WidgetCenter.shared.reloadAllTimelinesInBackground()
             return true
         } catch where Self.isCancellation(error) {
             return false

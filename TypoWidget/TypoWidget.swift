@@ -11,6 +11,7 @@ struct Provider: TimelineProvider {
             configuredTaskCount: 0,
             completedTaskCount: 0,
             historicalPendingCount: 0,
+            recentPlans: [],
             pendingReviewCount: 3,
             pendingDictationCount: 2
         )
@@ -54,6 +55,7 @@ struct Provider: TimelineProvider {
                 configuredTaskCount: 0,
                 completedTaskCount: 0,
                 historicalPendingCount: 0,
+                recentPlans: [],
                 pendingReviewCount: 0,
                 pendingDictationCount: 0
             )
@@ -66,6 +68,7 @@ struct Provider: TimelineProvider {
         var configuredTaskCount = 0
         var completedTaskCount = 0
         var historicalPendingCount = 0
+        var recentPlans: [RecentPlanProjection] = []
         if let allTasks = try? context.fetch(FetchDescriptor<TaskItem>()) {
             let today = Date()
             let taskExecutions = (try? context.fetch(FetchDescriptor<TaskExecutionRecord>())) ?? []
@@ -135,7 +138,9 @@ struct Provider: TimelineProvider {
                     )
                 }
             )
-            configuredTaskCount = deduplicatedTasks.filter { !$0.isArchived }.count
+            configuredTaskCount = deduplicatedTasks.filter {
+                !$0.isArchived && $0.timingMode == .scheduled
+            }.count
             let taskSections = TodayTaskSectionSnapshotBuilder.build(
                 from: taskItems,
                 taskID: { $0.task.id },
@@ -154,6 +159,14 @@ struct Provider: TimelineProvider {
                     totalPendingOccurrenceCount: $0.totalPendingOccurrenceCount
                 )
             }
+            recentPlans = RecentPlanSupport.visibleProjections(
+                from: deduplicatedTasks.map(TaskProjection.init),
+                executions: taskExecutions.map(TaskExecutionRecordProjection.init),
+                subtasks: subtasks.map(TaskSubitemProjection.init),
+                on: today,
+                includeCompletedToday: false,
+                calendar: calendar
+            )
         }
         
         var reviewsCount = 0
@@ -215,6 +228,7 @@ struct Provider: TimelineProvider {
             configuredTaskCount: configuredTaskCount,
             completedTaskCount: completedTaskCount,
             historicalPendingCount: historicalPendingCount,
+            recentPlans: recentPlans,
             pendingReviewCount: reviewsCount,
             pendingDictationCount: dictationsCount
         )
@@ -253,6 +267,7 @@ struct SimpleEntry: TimelineEntry {
     let configuredTaskCount: Int
     let completedTaskCount: Int
     let historicalPendingCount: Int
+    let recentPlans: [RecentPlanProjection]
     let pendingReviewCount: Int
     let pendingDictationCount: Int
 }
@@ -337,9 +352,66 @@ struct TypoWidgetEntryView : View {
             }
         }
     }
+
+    private func recentPlanColor(_ plan: RecentPlanProjection) -> Color {
+        switch plan.deadlineState.kind {
+        case .overdue:
+            return .red
+        case .dueToday:
+            return .orange
+        case .upcoming:
+            return plan.deadlineState.dayCount <= 7 ? .orange : .blue
+        }
+    }
+
+    private func recentPlanRow(_ plan: RecentPlanProjection, compact: Bool) -> some View {
+        HStack(spacing: compact ? 6 : 9) {
+            Image(systemName: "flag.fill")
+                .font(compact ? .caption2 : .caption)
+                .foregroundStyle(recentPlanColor(plan))
+
+            Text(plan.task.title)
+                .font(compact ? .caption.weight(.semibold) : .subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+
+            Spacer(minLength: 4)
+
+            Text(plan.deadlineState.statusText)
+                .font(compact ? .caption2.weight(.bold) : .caption.weight(.bold))
+                .foregroundStyle(recentPlanColor(plan))
+                .lineLimit(1)
+        }
+    }
+
+    @ViewBuilder
+    private func recentPlansSection(maxPlans: Int, compact: Bool) -> some View {
+        if !entry.recentPlans.isEmpty {
+            VStack(alignment: .leading, spacing: compact ? 5 : 8) {
+                HStack {
+                    Label("近期计划", systemImage: "calendar.badge.exclamationmark")
+                        .font(compact ? .caption2.weight(.bold) : .caption.weight(.bold))
+                        .foregroundStyle(.white.opacity(0.86))
+                    Spacer()
+                    if entry.recentPlans.count > maxPlans {
+                        Text("另有 \(entry.recentPlans.count - maxPlans) 项")
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.72))
+                    }
+                }
+
+                ForEach(Array(entry.recentPlans.prefix(maxPlans))) { plan in
+                    recentPlanRow(plan, compact: compact)
+                }
+            }
+            .padding(.horizontal, compact ? 8 : 10)
+            .padding(.vertical, compact ? 6 : 8)
+            .background(.white.opacity(0.14), in: RoundedRectangle(cornerRadius: compact ? 10 : 12))
+        }
+    }
     
     private var largeView: some View {
-        let maxTasks = 5
+        let maxTasks = entry.recentPlans.isEmpty ? 5 : 3
         return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: "checklist")
@@ -352,6 +424,8 @@ struct TypoWidgetEntryView : View {
                 MediumStatBox(title: "待复习", count: entry.pendingReviewCount, color: .orange)
                 MediumStatBox(title: "待听写", count: entry.pendingDictationCount, color: .teal)
             }
+
+            recentPlansSection(maxPlans: 2, compact: false)
             
             Divider()
                 .overlay(.white.opacity(0.6))
@@ -417,7 +491,7 @@ struct TypoWidgetEntryView : View {
     }
     
     private var mediumView: some View {
-        let maxTasks = 2
+        let maxTasks = entry.recentPlans.isEmpty ? 2 : 1
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: "checklist")
@@ -432,6 +506,8 @@ struct TypoWidgetEntryView : View {
                 }
             }
             .foregroundStyle(.white)
+
+            recentPlansSection(maxPlans: 1, compact: true)
             
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top) {
@@ -493,7 +569,7 @@ struct TypoWidgetEntryView : View {
     }
 
     private var extraLargeView: some View {
-        let maxTasks = 5
+        let maxTasks = entry.recentPlans.isEmpty ? 5 : 3
         return HStack(spacing: 24) {
             // Left Column: Stats & Meta
             VStack(alignment: .leading, spacing: 0) {
@@ -522,6 +598,8 @@ struct TypoWidgetEntryView : View {
             
             // Right Column: Tasks
             VStack(alignment: .leading, spacing: 14) {
+                recentPlansSection(maxPlans: 2, compact: false)
+
                 HStack(alignment: .top) {
                     Label("今日任务", systemImage: "list.bullet.clipboard.fill")
                         .font(.headline)

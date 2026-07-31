@@ -46,6 +46,7 @@ struct DashboardBoardView: View {
         let pendingDictationBoardItems: [BoardTextItem]
         let boardTaskItems: [TodayTaskDisplayItem]
         let totalPendingTaskCount: Int
+        let recentPlans: [RecentPlanProjection]
         let todaySchedules: [ScheduleItem]
         let todayHeadline: String
         let boardSettings: AppSettings?
@@ -98,6 +99,14 @@ struct DashboardBoardView: View {
                 BoardTextItem(id: entry.id, text: entry.content, detail: "")
             }
         let taskSnapshot = boardTaskSnapshot(on: date)
+        let recentPlans = RecentPlanSupport.visibleProjections(
+            from: TaskDedupSupport.deduplicatedTasks(allTasks).map(TaskProjection.init),
+            executions: taskExecutionRecords.map(TaskExecutionRecordProjection.init),
+            subtasks: taskSubitems.map(TaskSubitemProjection.init),
+            on: date,
+            includeCompletedToday: false,
+            calendar: calendar
+        )
         let todaySchedules = todaySchedules(on: date)
         let boardSettings = appSettingsStore.modelRepresentation
         let enabledMediaAssets = enabledPlaylist()
@@ -115,6 +124,9 @@ struct DashboardBoardView: View {
         if !pendingDictationBoardItems.isEmpty {
             parts.append("\(pendingDictationBoardItems.count) 条听写")
         }
+        if !recentPlans.isEmpty {
+            parts.append("\(recentPlans.count) 项近期计划")
+        }
 
         return BoardSnapshot(
             childName: childName,
@@ -123,6 +135,7 @@ struct DashboardBoardView: View {
             pendingDictationBoardItems: pendingDictationBoardItems,
             boardTaskItems: taskSnapshot.boardTaskItems,
             totalPendingTaskCount: taskSnapshot.totalPendingTaskCount,
+            recentPlans: recentPlans,
             todaySchedules: todaySchedules,
             todayHeadline: parts.isEmpty ? "\(childName) 今天都完成了" : "\(childName) 今天还有 \(parts.joined(separator: "、"))",
             boardSettings: boardSettings,
@@ -355,6 +368,10 @@ struct DashboardBoardView: View {
         .onChange(of: playbackCoordinator.currentAsset?.id) { _, _ in
             minimizedFullscreenVideoAssetID = nil
         }
+        .onReceive(NotificationCenter.default.publisher(for: .appDataDidChange)) { _ in
+            guard canRenderLiveContent else { return }
+            refreshBoardSnapshot(reason: "appDataDidChange")
+        }
     }
 
     private var boardLoadingView: some View {
@@ -563,6 +580,8 @@ struct DashboardBoardView: View {
                 boardMediaPanel(snapshot)
             }
 
+            boardRecentPlansBanner(snapshot)
+
             HStack(alignment: .top, spacing: 18) {
                 boardTaskColumn(snapshot)
 
@@ -587,6 +606,70 @@ struct DashboardBoardView: View {
                     }
                 )
             }
+        }
+    }
+
+    @ViewBuilder
+    private func boardRecentPlansBanner(_ snapshot: BoardSnapshot) -> some View {
+        if !snapshot.recentPlans.isEmpty {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Label("近期计划", systemImage: "calendar.badge.exclamationmark")
+                        .font(.system(size: 24, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                    Spacer()
+                    if snapshot.recentPlans.count > 3 {
+                        Text("还有 \(snapshot.recentPlans.count - 3) 项")
+                            .font(.headline)
+                            .foregroundStyle(.white.opacity(0.78))
+                    }
+                }
+
+                HStack(alignment: .top, spacing: 14) {
+                    ForEach(Array(snapshot.recentPlans.prefix(3))) { plan in
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text(plan.task.title)
+                                .font(.system(size: 22, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .lineLimit(2)
+
+                            HStack(spacing: 7) {
+                                Text("截止 \(plan.deadline.formatted(.dateTime.month().day()))")
+                                Text("·")
+                                Text(plan.deadlineState.statusText)
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(boardRecentPlanTint(plan.deadlineState))
+                            }
+                            .font(.system(size: 16, weight: .medium, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.78))
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 15)
+                        .background(
+                            boardRecentPlanTint(plan.deadlineState).opacity(0.17),
+                            in: RoundedRectangle(cornerRadius: 20)
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 20)
+                                .stroke(boardRecentPlanTint(plan.deadlineState).opacity(0.3), lineWidth: 1)
+                        }
+                    }
+                }
+            }
+            .padding(20)
+            .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 26))
+        }
+    }
+
+    private func boardRecentPlanTint(_ state: RecentPlanDeadlineState) -> Color {
+        switch state.kind {
+        case .overdue:
+            return .red
+        case .dueToday:
+            return .orange
+        case .upcoming:
+            return state.dayCount <= 7 ? .orange : .blue
         }
     }
 
@@ -1159,6 +1242,18 @@ struct DashboardBoardView: View {
 
         if snapshot.pendingDictationCount > 0 {
             parts.append("还有 \(snapshot.pendingDictationCount) 条待听写")
+        }
+
+        let urgentRecentPlans = snapshot.recentPlans.filter(\.isVoiceReminderEligible)
+        if !urgentRecentPlans.isEmpty {
+            let spokenPlans = urgentRecentPlans.prefix(3).map { plan in
+                "\(plan.task.title)，\(plan.deadlineState.statusText)"
+            }
+            var recentPlanText = "近期计划提醒：" + spokenPlans.joined(separator: "；")
+            if urgentRecentPlans.count > 3 {
+                recentPlanText += "；还有 \(urgentRecentPlans.count - 3) 项未播报"
+            }
+            parts.append(recentPlanText)
         }
 
         if parts.isEmpty {

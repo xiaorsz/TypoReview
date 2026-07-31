@@ -119,6 +119,10 @@ struct TaskDetailView: View {
         canRenderLiveContent && isDetailDataActive
     }
 
+    private var isRecentPlan: Bool {
+        taskProjection.timingMode == .flexibleDeadline
+    }
+
     private var pendingOccurrences: [TaskOccurrenceSnapshot] { occurrenceSnapshotState.pending }
     private var completedOccurrences: [TaskOccurrenceSnapshot] { occurrenceSnapshotState.completed }
     private var upcomingOccurrences: [TaskOccurrenceSnapshot] { occurrenceSnapshotState.upcoming }
@@ -238,25 +242,34 @@ struct TaskDetailView: View {
                 summarySection
 
                 if isDetailDataActive {
-                    occurrenceCalendarGrid
-
-                    if let snapshot = selectedSnapshot {
-                        currentOccurrenceSection(snapshot)
-                        subtasksSection
+                    if isRecentPlan {
+                        if let snapshot = selectedSnapshot {
+                            recentPlanStatusSection(snapshot)
+                            subtasksSection
+                        } else {
+                            emptyStateSection
+                        }
                     } else {
-                        emptyStateSection
-                    }
+                        occurrenceCalendarGrid
 
-                    if !pendingOccurrences.isEmpty {
-                        occurrenceSwitcherSection(title: "待处理记录", snapshots: pendingOccurrences)
-                    }
+                        if let snapshot = selectedSnapshot {
+                            currentOccurrenceSection(snapshot)
+                            subtasksSection
+                        } else {
+                            emptyStateSection
+                        }
 
-                    if !upcomingOccurrences.isEmpty {
-                        occurrenceSwitcherSection(title: "未来待办", snapshots: upcomingOccurrences)
-                    }
+                        if !pendingOccurrences.isEmpty {
+                            occurrenceSwitcherSection(title: "待处理记录", snapshots: pendingOccurrences)
+                        }
 
-                    if !occurrenceHistory.isEmpty {
-                        occurrenceHistorySection
+                        if !upcomingOccurrences.isEmpty {
+                            occurrenceSwitcherSection(title: "未来待办", snapshots: upcomingOccurrences)
+                        }
+
+                        if !occurrenceHistory.isEmpty {
+                            occurrenceHistorySection
+                        }
                     }
                 } else {
                     detailLoadingSection
@@ -397,20 +410,35 @@ struct TaskDetailView: View {
 
     @ViewBuilder
     private var summaryMetadata: some View {
-        Label(taskProjection.recurrenceLabel, systemImage: taskProjection.recurrence.kind == .once ? "1.circle" : "arrow.triangle.2.circlepath")
-            .font(.caption)
-            .foregroundStyle(.secondary)
+        if isRecentPlan {
+            Label("近期计划", systemImage: "calendar.badge.exclamationmark")
+                .font(.caption)
+                .foregroundStyle(.blue)
 
-        if let effectiveDateRangeLabel = taskProjection.effectiveDateRangeLabel {
-            Label(effectiveDateRangeLabel, systemImage: "calendar")
+            if let deadline = taskProjection.deadline {
+                Label(
+                    "截止 \(deadline.formatted(.dateTime.year().month().day()))",
+                    systemImage: "flag.checkered"
+                )
                 .font(.caption)
                 .foregroundStyle(.secondary)
-        }
-
-        if taskProjection.skipPolicy == .unskippable {
-            Label("不可跳过", systemImage: "exclamationmark.triangle.fill")
+            }
+        } else {
+            Label(taskProjection.recurrenceLabel, systemImage: taskProjection.recurrence.kind == .once ? "1.circle" : "arrow.triangle.2.circlepath")
                 .font(.caption)
-                .foregroundStyle(.orange)
+                .foregroundStyle(.secondary)
+
+            if let effectiveDateRangeLabel = taskProjection.effectiveDateRangeLabel {
+                Label(effectiveDateRangeLabel, systemImage: "calendar")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if taskProjection.skipPolicy == .unskippable {
+                Label("不可跳过", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
         }
     }
 
@@ -684,8 +712,69 @@ struct TaskDetailView: View {
         }
     }
 
+    private func recentPlanStatusSection(_ snapshot: TaskOccurrenceSnapshot) -> some View {
+        let deadline = taskProjection.deadline ?? taskProjection.startDate
+        let state = RecentPlanSupport.deadlineState(deadline: deadline)
+        let statusColor: Color = {
+            switch state.kind {
+            case .overdue:
+                return .red
+            case .dueToday:
+                return .orange
+            case .upcoming:
+                return state.dayCount <= 7 ? .orange : .blue
+            }
+        }()
+
+        return Section("计划状态") {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(deadline.formatted(.dateTime.year().month().day().weekday(.wide)))
+                            .font(.headline)
+                        Text(snapshot.isCompleted ? "已完成" : state.statusText)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(snapshot.isCompleted ? .green : statusColor)
+                    }
+
+                    Spacer()
+
+                    if !snapshot.hasSubtasks {
+                        Button {
+                            toggleOccurrenceCompletion(snapshot)
+                        } label: {
+                            Label(
+                                snapshot.isCompleted ? "重新打开" : "完成计划",
+                                systemImage: snapshot.isCompleted ? "arrow.uturn.backward.circle" : "checkmark.circle.fill"
+                            )
+                            .font(.subheadline.weight(.semibold))
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(snapshot.isCompleted ? .blue : .green)
+                    }
+                }
+
+                if snapshot.hasSubtasks, let subtaskProgressText {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(subtaskProgressText)
+                                .font(.caption.weight(.semibold))
+                            Spacer()
+                            Text(snapshot.isCompleted ? "计划已完成" : "完成全部子任务后自动完成")
+                                .font(.caption)
+                                .foregroundStyle(snapshot.isCompleted ? .green : .secondary)
+                        }
+                        ProgressView(value: subtaskProgressValue)
+                            .tint(snapshot.isCompleted ? .green : .blue)
+                    }
+                }
+            }
+            .padding(.vertical, 6)
+        }
+    }
+
     private var subtasksSection: some View {
-        Section("本次子任务") {
+        Section(isRecentPlan ? "计划子任务" : "本次子任务") {
             if !isCreatingSubtask {
                 Button { startQuickSubtaskCreation() } label: {
                     HStack(spacing: 12) {
@@ -695,9 +784,13 @@ struct TaskDetailView: View {
                             .frame(width: 40, height: 40)
 
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("添加本次子任务")
+                            Text(isRecentPlan ? "添加计划子任务" : "添加本次子任务")
                                 .foregroundStyle(.primary)
-                            Text("这条子任务只属于 \((quickSubtaskOccurrenceDate ?? currentOccurrenceDate)?.formatted(.dateTime.month().day()) ?? "当前日期")")
+                            Text(
+                                isRecentPlan
+                                    ? "完成全部子任务后，近期计划会自动完成"
+                                    : "这条子任务只属于 \((quickSubtaskOccurrenceDate ?? currentOccurrenceDate)?.formatted(.dateTime.month().day()) ?? "当前日期")"
+                            )
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -714,7 +807,11 @@ struct TaskDetailView: View {
             }
 
             if currentOccurrenceSubtasks.isEmpty {
-                Text("这一天还没有子任务。你可以先添加需要执行的步骤，再逐条完成。")
+                Text(
+                    isRecentPlan
+                        ? "还没有计划子任务，可以添加执行步骤并逐条完成。"
+                        : "这一天还没有子任务。你可以先添加需要执行的步骤，再逐条完成。"
+                )
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {

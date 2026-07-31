@@ -23,6 +23,7 @@
 		2565C3B7A83CAD548F0CEA7C /* ECDICT_LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = D1DDC0F05B6852054C207F83 /* ECDICT_LICENSE.txt */; };
 		27CD033589B8502762E72EAE /* TaskCompletion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D7771FE4082F787A64A1D4D /* TaskCompletion.swift */; };
 		2A7CAA439DC94CE3F611031F /* DictationEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0F396BBF587A380BEE3F397 /* DictationEntry.swift */; };
+		2D434E4251F2688EAE99E723 /* RecentPlanTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63F776DE25F295465EA6C345 /* RecentPlanTests.swift */; };
 		2E1F7231B968C31E01B33689 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B43E29B6728FBAA1D22D769 /* AppSettings.swift */; };
 		306CEB94A3A077245DAFD545 /* TasksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08B33BBC82EF65E89FA0551B /* TasksView.swift */; };
 		33ABD76890827A3B0D6FB67D /* DictationHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31BDBB729EB669636A559549 /* DictationHomeView.swift */; };
@@ -152,6 +153,7 @@
 		58DA378CBD575240BAB65E55 /* ServerAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAPI.swift; sourceTree = "<group>"; };
 		618E15EAB427191F7A67F687 /* DailyQuoteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DailyQuoteTests.swift; sourceTree = "<group>"; };
 		639EFA48907D78F1554913B1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		63F776DE25F295465EA6C345 /* RecentPlanTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentPlanTests.swift; sourceTree = "<group>"; };
 		67CBEE4738C53CAF8BFD0E09 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		68697C00FBC6375BFCE2DC7D /* Grade5ChineseDictationPlanImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Grade5ChineseDictationPlanImporter.swift; sourceTree = "<group>"; };
 		69297C3450DFB660ED1F3DE2 /* ObjectiveCExceptionCatcher.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ObjectiveCExceptionCatcher.m; sourceTree = "<group>"; };
@@ -281,6 +283,7 @@
 				618E15EAB427191F7A67F687 /* DailyQuoteTests.swift */,
 				FC14A829652113A150E05B1A /* Grade5ChineseDictationPlanImporterTests.swift */,
 				7D30746825CCB6331C055DBD /* Grade5EnglishDictationPlanImporterTests.swift */,
+				63F776DE25F295465EA6C345 /* RecentPlanTests.swift */,
 				3B5B13F8AB47E2DB03305856 /* ReviewSchedulerTests.swift */,
 				ED7FA063181E8D04AE43CABA /* ServerSyncCoordinatorTests.swift */,
 			);
@@ -554,6 +557,7 @@
 				D093460C6713385132B3E8AC /* DailyQuoteTests.swift in Sources */,
 				F806FCD140EADB3FA9BB9620 /* Grade5ChineseDictationPlanImporterTests.swift in Sources */,
 				0C54AB9F68BF65DBEBD1214A /* Grade5EnglishDictationPlanImporterTests.swift in Sources */,
+				2D434E4251F2688EAE99E723 /* RecentPlanTests.swift in Sources */,
 				625D57263F5433D997BF62C9 /* ReviewSchedulerTests.swift in Sources */,
 				E61FD3E4BC7F8F3DA0286DA1 /* ServerSyncCoordinatorTests.swift in Sources */,
 			);

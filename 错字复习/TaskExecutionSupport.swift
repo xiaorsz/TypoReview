@@ -17,6 +17,10 @@ struct TaskProjection: Sendable {
     let endDate: Date?
     let recurrence: TaskRecurrence
     let skipPolicy: TaskSkipPolicy
+    let timingMode: TaskTimingMode
+    let deadline: Date?
+    let isArchived: Bool
+    let updatedAt: Date
     let pauseIntervals: [TaskPauseInterval]
     let pauseStartedAt: Date?
 
@@ -29,6 +33,10 @@ struct TaskProjection: Sendable {
         endDate = task.endDate
         recurrence = task.recurrence
         skipPolicy = task.skipPolicy
+        timingMode = task.timingMode
+        deadline = task.deadline
+        isArchived = task.isArchived
+        updatedAt = task.updatedAt
         pauseIntervals = task.pauseIntervals
         pauseStartedAt = task.pauseStartedAt
     }
@@ -42,6 +50,10 @@ struct TaskProjection: Sendable {
         endDate: Date? = nil,
         recurrence: TaskRecurrence = .once,
         skipPolicy: TaskSkipPolicy = .skippable,
+        timingMode: TaskTimingMode = .scheduled,
+        deadline: Date? = nil,
+        isArchived: Bool = false,
+        updatedAt: Date = .now,
         pauseIntervals: [TaskPauseInterval] = [],
         pauseStartedAt: Date? = nil
     ) {
@@ -53,6 +65,10 @@ struct TaskProjection: Sendable {
         self.endDate = endDate
         self.recurrence = recurrence
         self.skipPolicy = skipPolicy
+        self.timingMode = timingMode
+        self.deadline = deadline
+        self.isArchived = isArchived
+        self.updatedAt = updatedAt
         self.pauseIntervals = pauseIntervals
         self.pauseStartedAt = pauseStartedAt
     }
@@ -69,6 +85,10 @@ struct TaskProjection: Sendable {
         self.endDate = task.endDate
         self.recurrence = task.recurrence
         self.skipPolicy = task.skipPolicy
+        self.timingMode = task.timingMode
+        self.deadline = task.deadline
+        self.isArchived = task.isArchived
+        self.updatedAt = task.updatedAt
         self.pauseIntervals = task.pauseIntervals
         self.pauseStartedAt = task.pauseStartedAt
     }
@@ -87,6 +107,7 @@ struct TaskProjection: Sendable {
     }
 
     func occurs(on date: Date, calendar: Calendar = .current) -> Bool {
+        guard timingMode == .scheduled else { return false }
         let day = calendar.startOfDay(for: date)
         let start = calendar.startOfDay(for: startDate)
         guard day >= start else { return false }
@@ -213,6 +234,205 @@ struct TaskProjection: Sendable {
 
     func originShortText(for pendingDate: Date) -> String {
         pendingDate.formatted(.dateTime.month().day())
+    }
+}
+
+enum RecentPlanDeadlineKind: Sendable {
+    case upcoming
+    case dueToday
+    case overdue
+}
+
+struct RecentPlanDeadlineState: Sendable {
+    let kind: RecentPlanDeadlineKind
+    let dayCount: Int
+
+    var statusText: String {
+        switch kind {
+        case .upcoming:
+            return "还剩 \(dayCount) 天"
+        case .dueToday:
+            return "今天截止"
+        case .overdue:
+            return "已逾期 \(dayCount) 天"
+        }
+    }
+
+    var isVoiceReminderEligible: Bool {
+        switch kind {
+        case .overdue, .dueToday:
+            return true
+        case .upcoming:
+            return dayCount <= 7
+        }
+    }
+
+    var urgencyRank: Int {
+        switch kind {
+        case .overdue:
+            return 0
+        case .dueToday:
+            return 1
+        case .upcoming:
+            return 2
+        }
+    }
+}
+
+struct RecentPlanProjection: Identifiable, Sendable {
+    let task: TaskProjection
+    let deadline: Date
+    let deadlineState: RecentPlanDeadlineState
+    let isCompleted: Bool
+    let completedAt: Date?
+    let totalSubtaskCount: Int
+    let completedSubtaskCount: Int
+
+    var id: UUID { task.id }
+
+    var isVoiceReminderEligible: Bool {
+        !isCompleted && deadlineState.isVoiceReminderEligible
+    }
+
+    var hasSubtasks: Bool {
+        totalSubtaskCount > 0
+    }
+}
+
+enum RecentPlanSupport {
+    static func visibilityStart(
+        for deadline: Date,
+        calendar: Calendar = .current
+    ) -> Date {
+        let deadlineDay = calendar.startOfDay(for: deadline)
+        return calendar.startOfDay(
+            for: calendar.date(byAdding: .month, value: -1, to: deadlineDay) ?? deadlineDay
+        )
+    }
+
+    static func deadlineState(
+        deadline: Date,
+        on referenceDate: Date = .now,
+        calendar: Calendar = .current
+    ) -> RecentPlanDeadlineState {
+        let today = calendar.startOfDay(for: referenceDate)
+        let deadlineDay = calendar.startOfDay(for: deadline)
+        let difference = calendar.dateComponents([.day], from: today, to: deadlineDay).day ?? 0
+
+        if difference < 0 {
+            return RecentPlanDeadlineState(kind: .overdue, dayCount: abs(difference))
+        }
+        if difference == 0 {
+            return RecentPlanDeadlineState(kind: .dueToday, dayCount: 0)
+        }
+        return RecentPlanDeadlineState(kind: .upcoming, dayCount: difference)
+    }
+
+    static func isInHomeVisibilityWindow(
+        deadline: Date,
+        on referenceDate: Date = .now,
+        calendar: Calendar = .current
+    ) -> Bool {
+        calendar.startOfDay(for: referenceDate) >= visibilityStart(for: deadline, calendar: calendar)
+    }
+
+    static func allProjections(
+        from tasks: [TaskProjection],
+        executions: [TaskExecutionRecordProjection],
+        subtasks: [TaskSubitemProjection],
+        on referenceDate: Date = .now,
+        calendar: Calendar = .current
+    ) -> [RecentPlanProjection] {
+        let executionsByTaskID = Dictionary(grouping: executions, by: \.taskID)
+        let subtasksByExecutionID = Dictionary(
+            grouping: subtasks.filter { !$0.isArchived && $0.taskExecutionID != nil },
+            by: { $0.taskExecutionID! }
+        )
+
+        return tasks.compactMap { task in
+            guard task.timingMode == .flexibleDeadline,
+                  let deadline = task.deadline else {
+                return nil
+            }
+
+            let record = preferredExecution(in: executionsByTaskID[task.id] ?? [])
+            let planSubtasks = record.map { subtasksByExecutionID[$0.id] ?? [] } ?? []
+            let completedSubtaskCount = planSubtasks.filter { $0.status == .completed }.count
+            let isCompleted = planSubtasks.isEmpty
+                ? record?.status == .completed
+                : completedSubtaskCount == planSubtasks.count
+
+            return RecentPlanProjection(
+                task: task,
+                deadline: calendar.startOfDay(for: deadline),
+                deadlineState: deadlineState(
+                    deadline: deadline,
+                    on: referenceDate,
+                    calendar: calendar
+                ),
+                isCompleted: isCompleted,
+                completedAt: record?.completedAt,
+                totalSubtaskCount: planSubtasks.count,
+                completedSubtaskCount: completedSubtaskCount
+            )
+        }
+        .sorted(by: sort)
+    }
+
+    static func visibleProjections(
+        from tasks: [TaskProjection],
+        executions: [TaskExecutionRecordProjection],
+        subtasks: [TaskSubitemProjection],
+        on referenceDate: Date = .now,
+        includeCompletedToday: Bool,
+        calendar: Calendar = .current
+    ) -> [RecentPlanProjection] {
+        allProjections(
+            from: tasks,
+            executions: executions,
+            subtasks: subtasks,
+            on: referenceDate,
+            calendar: calendar
+        )
+        .filter { plan in
+            if plan.isCompleted {
+                guard includeCompletedToday, let completedAt = plan.completedAt else { return false }
+                return calendar.isDate(completedAt, inSameDayAs: referenceDate)
+            }
+            guard !plan.task.isArchived else { return false }
+            return isInHomeVisibilityWindow(
+                deadline: plan.deadline,
+                on: referenceDate,
+                calendar: calendar
+            )
+        }
+    }
+
+    private static func preferredExecution(
+        in records: [TaskExecutionRecordProjection]
+    ) -> TaskExecutionRecordProjection? {
+        records.max { lhs, rhs in
+            if lhs.updatedAt != rhs.updatedAt {
+                return lhs.updatedAt < rhs.updatedAt
+            }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+    }
+
+    private static func sort(
+        _ lhs: RecentPlanProjection,
+        _ rhs: RecentPlanProjection
+    ) -> Bool {
+        if lhs.isCompleted != rhs.isCompleted {
+            return !lhs.isCompleted
+        }
+        if lhs.deadlineState.urgencyRank != rhs.deadlineState.urgencyRank {
+            return lhs.deadlineState.urgencyRank < rhs.deadlineState.urgencyRank
+        }
+        if lhs.deadline != rhs.deadline {
+            return lhs.deadline < rhs.deadline
+        }
+        return lhs.task.createdAt < rhs.task.createdAt
     }
 }
 
@@ -843,7 +1063,9 @@ enum TaskExecutionSupport {
         let subtasksByTask = Dictionary(grouping: validSubtasks, by: \.parentTaskID)
         let executionsByTask = Dictionary(grouping: executions, by: \.taskID)
 
-        return tasks.flatMap { task -> [TodayTaskDisplayItem] in
+        return tasks
+            .filter { $0.timingMode == .scheduled }
+            .flatMap { task -> [TodayTaskDisplayItem] in
             let snapshots = occurrenceSnapshots(
                 for: task,
                 executions: executionsByTask[task.id] ?? [],
@@ -1362,7 +1584,9 @@ enum TodayTaskProjectionBuilder {
         let executionsByTask = Dictionary(grouping: executions, by: \.taskID)
         let subtasksByTask = Dictionary(grouping: subtasks, by: \.parentTaskID)
 
-        return tasks.flatMap { task -> [TodayTaskProjectionResult] in
+        return tasks
+            .filter { $0.timingMode == .scheduled }
+            .flatMap { task -> [TodayTaskProjectionResult] in
             let snapshots = occurrenceSnapshots(
                 for: task,
                 executions: executionsByTask[task.id] ?? [],

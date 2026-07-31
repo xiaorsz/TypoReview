@@ -63,6 +63,22 @@ enum TaskSkipPolicy: String, Codable, CaseIterable, Identifiable, Sendable {
     var id: String { rawValue }
 }
 
+enum TaskTimingMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case scheduled
+    case flexibleDeadline
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .scheduled:
+            return "普通任务"
+        case .flexibleDeadline:
+            return "近期计划"
+        }
+    }
+}
+
 enum ScheduleRepeatRule: String, Codable, CaseIterable, Identifiable, Sendable {
     case once = "单次"
     case daily = "每天"

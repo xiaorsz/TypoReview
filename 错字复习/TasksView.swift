@@ -377,6 +377,32 @@ struct TasksView: View {
         pageSnapshot.activeTaskIDs.compactMap { pageSnapshot.taskProjectionsByID[$0] }
     }
 
+    private var regularTasks: [TaskProjection] {
+        allTasks.filter { $0.timingMode == .scheduled }
+    }
+
+    private var activeRecentPlans: [TaskProjection] {
+        allTasks
+            .filter {
+                guard $0.timingMode == .flexibleDeadline, let deadline = $0.deadline else {
+                    return false
+                }
+                return RecentPlanSupport.isInHomeVisibilityWindow(deadline: deadline)
+            }
+            .sorted(by: sortRecentPlans)
+    }
+
+    private var laterRecentPlans: [TaskProjection] {
+        allTasks
+            .filter {
+                guard $0.timingMode == .flexibleDeadline, let deadline = $0.deadline else {
+                    return false
+                }
+                return !RecentPlanSupport.isInHomeVisibilityWindow(deadline: deadline)
+            }
+            .sorted(by: sortRecentPlans)
+    }
+
     private var todaySchedules: [ScheduleItemProjection] {
         pageSnapshot.todayScheduleIDs.compactMap { pageSnapshot.scheduleProjectionsByID[$0] }
     }
@@ -529,12 +555,20 @@ struct TasksView: View {
             todayTaskSection("未来一周", items: upcomingPending)
         }
 
+        if !activeRecentPlans.isEmpty {
+            recentPlanSection("近期计划", plans: activeRecentPlans)
+        }
+
+        if !laterRecentPlans.isEmpty {
+            recentPlanSection("稍后计划", plans: laterRecentPlans)
+        }
+
         if !todayDone.isEmpty {
             todayTaskSection("今日已完成", items: todayDone)
         }
 
-        if !allTasks.isEmpty {
-            otherTaskSection("任务管理", tasks: allTasks)
+        if !regularTasks.isEmpty {
+            otherTaskSection("任务管理", tasks: regularTasks)
         }
 
         if !otherSchedules.isEmpty {
@@ -614,20 +648,23 @@ struct TasksView: View {
                 Text(task.title)
                     .strikethrough()
                     .foregroundStyle(.secondary)
-                Text(task.recurrenceLabel)
+                Text(archivedTaskMetadata(task))
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
         }
         .iOS17SafeSwipeActions {
             if let liveTask = taskModelsByID[task.id] {
-                Button("恢复", systemImage: "arrow.uturn.backward") {
-                    liveTask.isArchived = false
+                Button(
+                    task.timingMode == .flexibleDeadline ? "重新打开" : "恢复",
+                    systemImage: "arrow.uturn.backward"
+                ) {
+                    restoreArchivedTask(liveTask)
                     pageSnapshot = TasksPageSnapshot(
                         displayItems: pageSnapshot.displayItems,
                         taskProjectionsByID: pageSnapshot.taskProjectionsByID,
                         scheduleProjectionsByID: pageSnapshot.scheduleProjectionsByID,
-                        activeTaskIDs: pageSnapshot.activeTaskIDs.filter { $0 != task.id },
+                        activeTaskIDs: [task.id] + pageSnapshot.activeTaskIDs.filter { $0 != task.id },
                         archivedTaskIDs: pageSnapshot.archivedTaskIDs.filter { $0 != task.id },
                         todayScheduleIDs: pageSnapshot.todayScheduleIDs,
                         otherScheduleIDs: pageSnapshot.otherScheduleIDs,
@@ -642,6 +679,43 @@ struct TasksView: View {
                 }
             }
         }
+    }
+
+    private func archivedTaskMetadata(_ task: TaskProjection) -> String {
+        guard task.timingMode == .flexibleDeadline else {
+            return task.recurrenceLabel
+        }
+        if let deadline = task.deadline {
+            return "近期计划 · 截止 \(deadline.formatted(.dateTime.year().month().day()))"
+        }
+        return "近期计划"
+    }
+
+    private func restoreArchivedTask(_ task: TaskItem) {
+        if task.timingMode == .flexibleDeadline {
+            let taskID = task.id
+            let executions = (try? modelContext.fetch(
+                FetchDescriptor<TaskExecutionRecord>(
+                    predicate: #Predicate<TaskExecutionRecord> { $0.taskID == taskID }
+                )
+            )) ?? []
+            if executions.contains(where: { $0.status == .completed }) {
+                TaskExecutionSupport.reopenTaskCompletion(
+                    task: task,
+                    occurrenceDate: task.startDate,
+                    existingExecutions: executions,
+                    modelContext: modelContext
+                )
+            } else {
+                task.isArchived = false
+            }
+        } else {
+            task.isArchived = false
+        }
+        task.updatedAt = .now
+        try? modelContext.save()
+        WidgetCenter.shared.reloadAllTimelinesInBackground()
+        AppDataChangeCenter.post()
     }
 
     private func scheduleSection(_ title: LocalizedStringKey, schedules: [ScheduleItemProjection]) -> some View {
@@ -672,6 +746,34 @@ struct TasksView: View {
                 )
             }
         }
+    }
+
+    private func recentPlanSection(_ title: LocalizedStringKey, plans: [TaskProjection]) -> some View {
+        Section(title) {
+            ForEach(plans, id: \.id) { plan in
+                taskRow(
+                    plan,
+                    liveTask: taskModelsByID[plan.id],
+                    isDone: false,
+                    showActions: false,
+                    allowsArchive: true
+                )
+            }
+        }
+    }
+
+    private func sortRecentPlans(_ lhs: TaskProjection, _ rhs: TaskProjection) -> Bool {
+        guard let lhsDeadline = lhs.deadline else { return false }
+        guard let rhsDeadline = rhs.deadline else { return true }
+        let lhsState = RecentPlanSupport.deadlineState(deadline: lhsDeadline)
+        let rhsState = RecentPlanSupport.deadlineState(deadline: rhsDeadline)
+        if lhsState.urgencyRank != rhsState.urgencyRank {
+            return lhsState.urgencyRank < rhsState.urgencyRank
+        }
+        if lhsDeadline != rhsDeadline {
+            return lhsDeadline < rhsDeadline
+        }
+        return lhs.createdAt < rhs.createdAt
     }
     
     private func requestSnapshotRefresh(reason: String, delay: TimeInterval = 0.08) {
@@ -927,11 +1029,27 @@ struct TasksView: View {
                             .foregroundStyle(isDone ? .secondary : .primary)
 
                         HStack(spacing: 3) {
-                            Text(task.recurrenceShortLabel)
+                            Text(task.timingMode == .flexibleDeadline ? "近期计划" : task.recurrenceShortLabel)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
 
-                            if let _ = task.effectiveDateRangeLabel {
+                            if task.timingMode == .flexibleDeadline, let deadline = task.deadline {
+                                Text("·")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+
+                                Text("截止 \(deadline.formatted(.dateTime.month().day()))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+
+                                Text("·")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+
+                                Text(RecentPlanSupport.deadlineState(deadline: deadline).statusText)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(recentPlanStatusColor(deadline: deadline))
+                            } else if let _ = task.effectiveDateRangeLabel {
                                 Text("·")
                                     .font(.caption2)
                                     .foregroundStyle(.tertiary)
@@ -941,7 +1059,7 @@ struct TasksView: View {
                                     .foregroundStyle(.secondary)
                             }
 
-                            if task.skipPolicy == .unskippable {
+                            if task.timingMode == .scheduled && task.skipPolicy == .unskippable {
                                 Text("·")
                                     .font(.caption2)
                                     .foregroundStyle(.tertiary)
@@ -1007,7 +1125,7 @@ struct TasksView: View {
         .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
         .iOS17SafeSwipeActions(edge: .trailing, allowsFullSwipe: false) {
             if let liveTask {
-                if showActions, !isDone, let occurrenceDate {
+                if task.timingMode == .scheduled, showActions, !isDone, let occurrenceDate {
                     Button("跳过", systemImage: "forward.end") {
                         skipTask(liveTask, occurrenceDate: occurrenceDate)
                     }
@@ -1030,6 +1148,17 @@ struct TasksView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func recentPlanStatusColor(deadline: Date) -> Color {
+        switch RecentPlanSupport.deadlineState(deadline: deadline).kind {
+        case .overdue:
+            return .red
+        case .dueToday:
+            return .orange
+        case .upcoming:
+            return RecentPlanSupport.deadlineState(deadline: deadline).dayCount <= 7 ? .orange : .blue
         }
     }
 

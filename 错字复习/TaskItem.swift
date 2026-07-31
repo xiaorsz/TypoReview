@@ -52,8 +52,10 @@ final class TaskItem {
     var note: String = ""
     var recurrenceJSON: String?
     var skipPolicyRawValue: String?
+    var timingModeRawValue: String?
     var startDate: Date = Date()
     var endDate: Date?
+    var deadline: Date?
     var pauseIntervalsJSON: String?
     var pauseStartedAt: Date?
     var isArchived: Bool = false
@@ -66,8 +68,10 @@ final class TaskItem {
         note: String = "",
         recurrence: TaskRecurrence = .once,
         skipPolicy: TaskSkipPolicy = .skippable,
+        timingMode: TaskTimingMode = .scheduled,
         startDate: Date = .now,
         endDate: Date? = nil,
+        deadline: Date? = nil,
         pauseIntervalsJSON: String? = nil,
         pauseStartedAt: Date? = nil,
         isArchived: Bool = false,
@@ -79,8 +83,10 @@ final class TaskItem {
         self.note = note
         self.recurrenceJSON = recurrence.toJSON()
         self.skipPolicyRawValue = skipPolicy.rawValue
+        self.timingModeRawValue = timingMode.rawValue
         self.startDate = startDate
         self.endDate = endDate
+        self.deadline = deadline
         self.pauseIntervalsJSON = pauseIntervalsJSON
         self.pauseStartedAt = pauseStartedAt
         self.isArchived = isArchived
@@ -102,6 +108,18 @@ final class TaskItem {
             return TaskSkipPolicy(rawValue: raw) ?? .skippable
         }
         set { skipPolicyRawValue = newValue.rawValue }
+    }
+
+    var timingMode: TaskTimingMode {
+        get {
+            guard let raw = timingModeRawValue else { return .scheduled }
+            return TaskTimingMode(rawValue: raw) ?? .scheduled
+        }
+        set { timingModeRawValue = newValue.rawValue }
+    }
+
+    var isFlexibleDeadlinePlan: Bool {
+        timingMode == .flexibleDeadline
     }
 
     var pauseIntervals: [TaskPauseInterval] {
