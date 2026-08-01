@@ -1,7 +1,13 @@
 import unittest
 from datetime import datetime, timezone
 
-from app.domain import SETTINGS_RECORD_ID, apply_review_result, canonicalize_settings, is_due
+from app.domain import (
+    SETTINGS_RECORD_ID,
+    apply_review_result,
+    canonicalize_settings,
+    is_due,
+    should_apply_sync_delete,
+)
 
 
 def item(stage: int = 0, next_review_at: str = "2026-07-23T00:00:00.000Z") -> dict:
@@ -18,6 +24,11 @@ def item(stage: int = 0, next_review_at: str = "2026-07-23T00:00:00.000Z") -> di
 
 
 class DomainTests(unittest.TestCase):
+    def test_sync_delete_requires_explicit_intent(self):
+        self.assertFalse(should_apply_sync_delete(None))
+        self.assertFalse(should_apply_sync_delete("inferred"))
+        self.assertTrue(should_apply_sync_delete("explicit"))
+
     def test_settings_use_one_stable_record_id(self):
         payload = canonicalize_settings({"id": "11111111-1111-1111-1111-111111111111", "dailyLimit": 50})
         self.assertEqual(payload["id"], str(SETTINGS_RECORD_ID))

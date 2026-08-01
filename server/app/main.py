@@ -24,6 +24,7 @@ from .domain import (
     is_due,
     isoformat,
     parse_datetime,
+    should_apply_sync_delete,
     unique_ids,
 )
 
@@ -134,6 +135,7 @@ class Mutation(BaseModel):
     operation: Literal["upsert", "delete"]
     updatedAt: datetime
     payload: dict[str, Any] | None = None
+    deletionIntent: Literal["explicit"] | None = None
 
 
 class MutationBatch(BaseModel):
@@ -693,6 +695,13 @@ async def push_mutations(
                 mutation.mutationID,
             )
             if claimed is None:
+                continue
+            if mutation.operation == "delete" and not should_apply_sync_delete(mutation.deletionIntent):
+                # Legacy clients inferred deletes whenever a record was absent
+                # from their local snapshot. A partial store must never erase the
+                # authoritative family data. Acknowledge the mutation so the
+                # client can continue with its pull, but keep the record intact.
+                applied.append(str(mutation.mutationID))
                 continue
             if mutation.entityType == "settings" and mutation.operation == "delete":
                 # Settings are a per-account singleton. A device that previously

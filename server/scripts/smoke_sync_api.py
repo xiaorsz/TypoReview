@@ -30,7 +30,14 @@ def call(path: str, payload: dict) -> tuple[int, dict]:
         return error.code, json.load(error)
 
 
-def mutation(entity: str, record_id: str, operation: str, payload: Optional[dict] = None) -> dict:
+def mutation(
+    entity: str,
+    record_id: str,
+    operation: str,
+    payload: Optional[dict] = None,
+    *,
+    explicit_delete: bool = True,
+) -> dict:
     value = {
         "mutationID": str(uuid4()),
         "entityType": entity,
@@ -40,6 +47,8 @@ def mutation(entity: str, record_id: str, operation: str, payload: Optional[dict
     }
     if payload is not None:
         value["payload"] = payload
+    if operation == "delete" and explicit_delete:
+        value["deletionIntent"] = "explicit"
     return value
 
 
@@ -80,6 +89,10 @@ def main() -> None:
     duplicate_record = {**first_record, "id": duplicate_record_id}
 
     created_status, _ = call("/v1/sync/push", {"mutations": [mutation("reviewItems", item_id, "upsert", item)]})
+    inferred_delete_status, _ = call(
+        "/v1/sync/push",
+        {"mutations": [mutation("reviewItems", item_id, "delete", explicit_delete=False)]},
+    )
     first_status, _ = call(
         "/v1/sync/push",
         {"mutations": [mutation("reviewRecords", first_record_id, "upsert", first_record)]},
@@ -98,6 +111,7 @@ def main() -> None:
     )
     result = {
         "createStatus": created_status,
+        "inferredDeleteStatus": inferred_delete_status,
         "firstReviewStatus": first_status,
         "duplicateReviewStatus": duplicate_status,
         "duplicateReason": duplicate_body.get("detail", {}).get("reason"),
@@ -106,6 +120,7 @@ def main() -> None:
     print(json.dumps(result, ensure_ascii=False))
     if result != {
         "createStatus": 200,
+        "inferredDeleteStatus": 200,
         "firstReviewStatus": 200,
         "duplicateReviewStatus": 409,
         "duplicateReason": "item_already_reviewed_today",

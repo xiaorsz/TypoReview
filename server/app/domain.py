@@ -27,6 +27,16 @@ ENTITY_KEYS = (
 )
 
 
+def should_apply_sync_delete(deletion_intent: str | None) -> bool:
+    """Only explicit tombstones may delete server records.
+
+    Older clients inferred deletion from an incomplete local snapshot. Those
+    requests omit deletionIntent and must be acknowledged without being applied
+    so the client can proceed to download the authoritative server snapshot.
+    """
+    return deletion_intent == "explicit"
+
+
 def canonicalize_settings(payload: dict[str, Any]) -> dict[str, Any]:
     return {**payload, "id": str(SETTINGS_RECORD_ID)}
 

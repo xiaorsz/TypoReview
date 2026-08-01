@@ -57,6 +57,29 @@ final class ServerSyncCoordinatorTests: XCTestCase {
         XCTAssertEqual(records[recordID.uuidString]?["note"] as? String, "newer")
     }
 
+    func testStructuredSnapshotDoesNotInferDeletesFromMissingLocalRecords() throws {
+        let payload = DataBackupPayload(
+            settings: nil,
+            reviewItems: [],
+            reviewRecords: [],
+            taskItems: [],
+            taskCompletions: [],
+            taskSubitems: [],
+            taskExecutionRecords: [],
+            taskSubitemExecutionRecords: [],
+            dictationSessions: [],
+            dictationEntries: [],
+            scheduleItems: []
+        )
+        let snapshot = try ServerSyncCoordinator.StructuredSnapshot(payload: payload)
+        let missingID = UUID().uuidString
+        let baseline = ["reviewItems": [missingID: "previous-hash"]]
+
+        let mutations = try snapshot.mutations(comparedWith: baseline)
+
+        XCTAssertTrue(mutations.isEmpty)
+    }
+
     func testCanonicalPointEntriesKeepOneRecordPerIdempotencyKey() {
         let sharedKey = "dictation-entry-shared"
         let earlier = PointLedgerEntry(

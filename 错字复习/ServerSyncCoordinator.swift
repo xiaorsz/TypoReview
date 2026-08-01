@@ -385,15 +385,12 @@ final class ServerSyncCoordinator {
                         "payload": currentRecords[id]!,
                     ])
                 }
-                for id in previousHashes.keys.sorted() where currentRecords[id] == nil {
-                    mutations.append([
-                        "mutationID": UUID().uuidString,
-                        "entityType": entity,
-                        "recordID": id,
-                        "operation": "delete",
-                        "updatedAt": timestamp,
-                    ])
-                }
+                // A missing local record is not proof that the user explicitly
+                // deleted it. The local store can be incomplete during a schema
+                // migration, restore, reinstall, or multi-device bootstrap. The
+                // previous implementation inferred deletes here and could erase
+                // a complete server snapshot from one partial device. Explicit
+                // deletion tombstones must use a separate protocol instead.
             }
             return mutations
         }
