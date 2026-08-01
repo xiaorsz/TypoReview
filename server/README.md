@@ -25,7 +25,9 @@ PYTHONPATH=. python3 -m unittest discover -s tests
 
 - App 通过公开只读接口 `GET /v1/content/daily-quote` 获取服务器当天的内容。
 - 日期固定按北京时间计算；同一天始终返回同一条，已分配内容永不重复使用。
-- 首批 110 条内容位于 `app/daily_quotes.json`，每条包含正文、出处、白话解释和行动建议。
+- 当前 150 条内容位于 `app/daily_quotes.json`：保留首批 110 条古代名句，并追加
+  20 条近现代名人名言和 20 条英文句子；三类内容在未使用队列中交错展示。
+- 每条内容都包含正文、出处、白话解释和行动建议。
 - 全部用完后接口返回 `status: "exhausted"`，App 显示“已用完”，不会回退到 AI 或 App 内置句库。
 
 查看库存：

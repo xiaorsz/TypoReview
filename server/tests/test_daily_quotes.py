@@ -28,17 +28,40 @@ class QueueConnection:
 
 
 class DailyQuoteSeedTests(unittest.TestCase):
-    def test_initial_library_has_110_complete_unique_entries(self):
+    def test_library_has_150_complete_unique_entries(self):
         quotes = load_seed_daily_quotes()
 
-        self.assertEqual(len(quotes), 110)
-        self.assertEqual(len({quote["id"] for quote in quotes}), 110)
-        self.assertEqual(len({quote["sortOrder"] for quote in quotes}), 110)
-        self.assertEqual(len({quote["text"] for quote in quotes}), 110)
+        self.assertEqual(len(quotes), 150)
+        self.assertEqual(len({quote["id"] for quote in quotes}), 150)
+        self.assertEqual(len({quote["sortOrder"] for quote in quotes}), 150)
+        self.assertEqual(len({quote["text"] for quote in quotes}), 150)
         self.assertTrue(all(quote["text"] for quote in quotes))
         self.assertTrue(all(quote["attribution"] for quote in quotes if quote["kind"] == "verified"))
         self.assertTrue(all(quote["explanation"] for quote in quotes))
         self.assertTrue(all(quote["action"] for quote in quotes))
+
+    def test_library_adds_modern_and_english_quotes_without_replacing_classics(self):
+        quotes = load_seed_daily_quotes()
+        ids = {quote["id"] for quote in quotes}
+
+        self.assertEqual(len([quote_id for quote_id in ids if quote_id.startswith("classic-")]), 110)
+        self.assertEqual(len([quote_id for quote_id in ids if quote_id.startswith("modern-")]), 20)
+        self.assertEqual(len([quote_id for quote_id in ids if quote_id.startswith("english-")]), 20)
+        self.assertIn("classic-001", ids)
+        self.assertIn("classic-110", ids)
+
+    def test_unassigned_queue_interleaves_all_three_quote_types(self):
+        quotes = sorted(load_seed_daily_quotes(), key=lambda quote: quote["sortOrder"])
+        first_eighty_unassigned = quotes[1:81]
+        prefixes = [quote["id"].split("-", 1)[0] for quote in first_eighty_unassigned]
+
+        self.assertEqual(prefixes.count("classic"), 40)
+        self.assertEqual(prefixes.count("modern"), 20)
+        self.assertEqual(prefixes.count("english"), 20)
+        self.assertEqual(
+            prefixes[:8],
+            ["classic", "modern", "classic", "english"] * 2,
+        )
 
 
 class DailyQuoteAssignmentTests(unittest.IsolatedAsyncioTestCase):
