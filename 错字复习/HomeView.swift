@@ -1867,6 +1867,7 @@ struct HomeView: View {
             #endif
             let referenceDate = Date()
             let snapshot = await Task.detached(priority: .utility) {
+                PersistentStoreAccessGate.withAccess {
                 let calendar = Calendar.current
 
                 // SwiftData models can be invalidated by a concurrent delete or CloudKit merge.
@@ -2009,6 +2010,7 @@ struct HomeView: View {
                 }
 
                 return snapshot
+                }
             }.value
 
             guard !Task.isCancelled else { return }

@@ -113,6 +113,10 @@ final class ServerSyncCoordinator {
             isApplyingRemoteSnapshot = true
             defer { isApplyingRemoteSnapshot = false }
 
+            // Give SwiftUI one update cycle to unmount data-heavy views and
+            // cancel their snapshot tasks before the exclusive store rewrite.
+            await Task.yield()
+
             try await DataBackupService.restoreStructuredDataInBatches(
                 payload,
                 into: modelContext,

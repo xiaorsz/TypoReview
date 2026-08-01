@@ -526,6 +526,7 @@ struct DictationHomeView: View {
             DebugPerf.mark("DictationHomeView snapshot fetch begin")
             #endif
             let refreshedSnapshot = await Task.detached(priority: .utility) {
+                PersistentStoreAccessGate.withAccess {
                 #if DEBUG
                 DebugPerf.mark("DictationHomeView background fetch begin")
                 #endif
@@ -540,6 +541,7 @@ struct DictationHomeView: View {
                 DebugPerf.mark("DictationHomeView background fetch end sessions=\(sessions.count) entries=\(entries.count)")
                 #endif
                 return DictationHomeSnapshot.make(sessions: sessions, entries: entries)
+                }
             }.value
 
             guard !Task.isCancelled else { return }

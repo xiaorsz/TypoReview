@@ -374,60 +374,16 @@ enum DataBackupService {
         into modelContext: ModelContext,
         settingsStore: AppSettingsStore
     ) async throws {
-        try await deleteAllInBatches(ReviewItem.self, in: modelContext)
-        try await deleteAllInBatches(ReviewRecord.self, in: modelContext)
-        try await deleteAllInBatches(ReviewDailyPlan.self, in: modelContext)
-        try await deleteAllInBatches(TaskItem.self, in: modelContext)
-        try await deleteAllInBatches(TaskCompletion.self, in: modelContext)
-        try await deleteAllInBatches(TaskSubitem.self, in: modelContext)
-        try await deleteAllInBatches(TaskExecutionRecord.self, in: modelContext)
-        try await deleteAllInBatches(TaskSubitemExecutionRecord.self, in: modelContext)
-        try await deleteAllInBatches(DictationSession.self, in: modelContext)
-        try await deleteAllInBatches(DictationEntry.self, in: modelContext)
-        try await deleteAllInBatches(ScheduleItem.self, in: modelContext)
-        try await deleteAllInBatches(PointLedgerEntry.self, in: modelContext)
-        try await deleteAllInBatches(PointRewardState.self, in: modelContext)
-
-        await insertInBatches(payload.reviewItems, into: modelContext) { $0.makeModel() }
-        await insertInBatches(payload.reviewRecords, into: modelContext) { $0.makeModel() }
-        await insertInBatches(payload.taskItems, into: modelContext) { $0.makeModel() }
-        await insertInBatches(payload.taskCompletions, into: modelContext) { $0.makeModel() }
-        await insertInBatches(payload.taskSubitems, into: modelContext) { $0.makeModel() }
-
-        let restoredTaskExecutions: [TaskExecutionRecord] = {
-            if payload.taskExecutionRecords.isEmpty {
-                return payload.taskCompletions.map { snapshot in
-                    TaskExecutionRecord(
-                        id: snapshot.id,
-                        taskID: snapshot.taskID,
-                        occurrenceDate: snapshot.completedDate,
-                        detail: "",
-                        status: .completed,
-                        completedAt: snapshot.completedAt,
-                        createdAt: snapshot.completedAt,
-                        updatedAt: snapshot.completedAt
-                    )
-                }
-            }
-            return payload.taskExecutionRecords.map { $0.makeModel() }
-        }()
-        await insertInBatches(restoredTaskExecutions, into: modelContext) { $0 }
-        await insertInBatches(payload.taskSubitemExecutionRecords, into: modelContext) { $0.makeModel() }
-        await insertInBatches(payload.dictationSessions, into: modelContext) { $0.makeModel() }
-        await insertInBatches(payload.dictationEntries, into: modelContext) { $0.makeModel() }
-        await insertInBatches(payload.scheduleItems, into: modelContext) { $0.makeModel() }
-        await insertInBatches(payload.pointLedgerEntries, into: modelContext) { $0.makeModel() }
-        await insertInBatches(payload.pointRewardStates, into: modelContext) { $0.makeModel() }
-
-        TaskExecutionSupport.migrateLegacySubtasksIfNeeded(in: modelContext)
-        await Task.yield()
-        _ = try TaskExecutionSupport.deduplicateSubtasks(in: modelContext)
-        _ = try ReviewScheduler.normalizeStoredReviewDates(in: modelContext)
-
-        if modelContext.hasChanges {
-            try modelContext.save()
+        try PersistentStoreAccessGate.withAccess {
+            // Do not yield while the shared context contains deleted models.
+            // Yielding allowed unrelated tasks to read invalidated SwiftData
+            // backing objects and caused SIGTRAP crashes during server pull.
+            try restoreStructuredData(
+                payload,
+                into: modelContext,
+                settingsStore: settingsStore
+            )
         }
-        settingsStore.restore(from: payload.settings, using: modelContext)
     }
 
     @MainActor

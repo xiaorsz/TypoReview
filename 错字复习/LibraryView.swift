@@ -263,20 +263,22 @@ struct LibraryView: View {
             guard !Task.isCancelled else { return }
 
             let refreshedSnapshot = await Task.detached(priority: .utility) {
-                let backgroundContext = ModelContext(container)
-                let descriptor = FetchDescriptor<ReviewItem>(
-                    sortBy: [SortDescriptor(\ReviewItem.updatedAt, order: .reverse)]
-                )
-                let items = ((try? backgroundContext.fetch(descriptor)) ?? [])
-                    .map(LibraryItemProjection.init)
+                PersistentStoreAccessGate.withAccess {
+                    let backgroundContext = ModelContext(container)
+                    let descriptor = FetchDescriptor<ReviewItem>(
+                        sortBy: [SortDescriptor(\ReviewItem.updatedAt, order: .reverse)]
+                    )
+                    let items = ((try? backgroundContext.fetch(descriptor)) ?? [])
+                        .map(LibraryItemProjection.init)
 
-                return Self.makeViewSnapshot(
-                    from: items,
-                    filter: requestedFilter,
-                    stageFilter: requestedStageFilter,
-                    searchText: requestedSearchText,
-                    displayedItemLimit: requestedLimit
-                )
+                    return Self.makeViewSnapshot(
+                        from: items,
+                        filter: requestedFilter,
+                        stageFilter: requestedStageFilter,
+                        searchText: requestedSearchText,
+                        displayedItemLimit: requestedLimit
+                    )
+                }
             }.value
 
             guard !Task.isCancelled, isViewVisible, scenePhase == .active else { return }

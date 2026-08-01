@@ -56,10 +56,14 @@ struct RootTabView: View {
 
     var body: some View {
         Group {
-            if #available(iOS 18.0, *) {
-                modernTabView
+            if ServerSyncCoordinator.shared.isApplyingRemoteSnapshot {
+                serverRestoreView
             } else {
-                legacyTabView
+                if #available(iOS 18.0, *) {
+                    modernTabView
+                } else {
+                    legacyTabView
+                }
             }
         }
         .onChange(of: selectedLegacyTab) { _, newTab in
@@ -133,20 +137,22 @@ struct RootTabView: View {
                 guard !Task.isCancelled else { return }
                 guard canRefreshLiveAppState else { return }
                 let reconciliationError = await Task.detached(priority: .utility) {
-                    let backgroundContext = ModelContext(container)
-                    do {
-                        _ = try Grade5EnglishDictationPlanImporter.deduplicateImportedPlan(
-                            in: backgroundContext
-                        )
-                        _ = try ReviewScheduler.reconcileStandardReviewProgress(in: backgroundContext)
-                        _ = try ReviewScheduler.deduplicateDailyReviewPlans(in: backgroundContext)
-                        _ = try PointLedgerService.reconcileMissingAutomaticRewards(in: backgroundContext)
-                        if backgroundContext.hasChanges {
-                            try backgroundContext.save()
+                    PersistentStoreAccessGate.withAccess {
+                        let backgroundContext = ModelContext(container)
+                        do {
+                            _ = try Grade5EnglishDictationPlanImporter.deduplicateImportedPlan(
+                                in: backgroundContext
+                            )
+                            _ = try ReviewScheduler.reconcileStandardReviewProgress(in: backgroundContext)
+                            _ = try ReviewScheduler.deduplicateDailyReviewPlans(in: backgroundContext)
+                            _ = try PointLedgerService.reconcileMissingAutomaticRewards(in: backgroundContext)
+                            if backgroundContext.hasChanges {
+                                try backgroundContext.save()
+                            }
+                            return nil as String?
+                        } catch {
+                            return error.localizedDescription
                         }
-                        return nil as String?
-                    } catch {
-                        return error.localizedDescription
                     }
                 }.value
                 guard !Task.isCancelled else { return }
@@ -178,6 +184,19 @@ struct RootTabView: View {
                 settingsStore: appSettingsStore
             )
         }
+    }
+
+    private var serverRestoreView: some View {
+        VStack(spacing: 14) {
+            ProgressView()
+            Text("正在安全更新本机数据…")
+                .font(.headline)
+            Text("请保持 App 在前台")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemGroupedBackground))
     }
 
     @available(iOS 18.0, *)
@@ -339,6 +358,9 @@ struct RootTabView: View {
         serverPullTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: delayNanoseconds)
             guard !Task.isCancelled, canRefreshLiveAppState else { return }
+            refreshAppStateTask?.cancel()
+            remoteChangeDebounceTask?.cancel()
+            startupMaintenanceTask?.cancel()
             await ServerSyncCoordinator.shared.synchronize(
                 modelContext: modelContext,
                 settingsStore: appSettingsStore

@@ -813,6 +813,7 @@ struct TasksView: View {
             }
             
             let refreshedSnapshot = await Task.detached(priority: .utility) {
+                PersistentStoreAccessGate.withAccess {
                 #if DEBUG
                 DebugPerf.mark("TasksView background snapshot begin")
                 #endif
@@ -947,6 +948,7 @@ struct TasksView: View {
                     otherScheduleIDs: otherScheduleIDs,
                     archivedScheduleIDs: archivedScheduleIDs
                 )
+                }
             }.value
 
             guard !Task.isCancelled else {

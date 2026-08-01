@@ -3,6 +3,35 @@ import XCTest
 
 @MainActor
 final class ServerSyncCoordinatorTests: XCTestCase {
+    func testPersistentStoreAccessGateSerializesConcurrentWork() {
+        let firstEntered = DispatchSemaphore(value: 0)
+        let releaseFirst = DispatchSemaphore(value: 0)
+        let secondEntered = DispatchSemaphore(value: 0)
+        let queue = DispatchQueue(
+            label: "PersistentStoreAccessGateTests",
+            attributes: .concurrent
+        )
+
+        queue.async(execute: DispatchWorkItem(qos: .default, flags: [], block: {
+            PersistentStoreAccessGate.withAccess {
+                _ = firstEntered.signal()
+                _ = releaseFirst.wait(timeout: .now() + 2)
+            }
+        }))
+
+        XCTAssertEqual(firstEntered.wait(timeout: .now() + 1), .success)
+
+        queue.async(execute: DispatchWorkItem(qos: .default, flags: [], block: {
+            PersistentStoreAccessGate.withAccess {
+                _ = secondEntered.signal()
+            }
+        }))
+
+        XCTAssertEqual(secondEntered.wait(timeout: .now() + 0.1), .timedOut)
+        releaseFirst.signal()
+        XCTAssertEqual(secondEntered.wait(timeout: .now() + 1), .success)
+    }
+
     func testServerSyncModeIsNotReportedAsLocalFallback() {
         let store = SyncStatusStore()
         store.configure(cloudKitEnabled: false, serverSyncEnabled: true)

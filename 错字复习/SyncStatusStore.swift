@@ -177,20 +177,22 @@ final class SyncStatusStore {
         #endif
 
         let result = await Task.detached(priority: .utility) {
-            let backgroundContext = ModelContext(container)
+            PersistentStoreAccessGate.withAccess {
+                let backgroundContext = ModelContext(container)
 
-            do {
-                let counts = LocalDataCounts(
-                    reviewItemCount: try backgroundContext.fetchCount(FetchDescriptor<ReviewItem>()),
-                    reviewRecordCount: try backgroundContext.fetchCount(FetchDescriptor<ReviewRecord>()),
-                    taskCount: try backgroundContext.fetchCount(FetchDescriptor<TaskItem>()),
-                    scheduleCount: try backgroundContext.fetchCount(FetchDescriptor<ScheduleItem>()),
-                    dictationSessionCount: try backgroundContext.fetchCount(FetchDescriptor<DictationSession>()),
-                    dictationEntryCount: try backgroundContext.fetchCount(FetchDescriptor<DictationEntry>())
-                )
-                return LocalDataSummaryResult(counts: counts, errorDescription: nil)
-            } catch {
-                return LocalDataSummaryResult(counts: nil, errorDescription: error.localizedDescription)
+                do {
+                    let counts = LocalDataCounts(
+                        reviewItemCount: try backgroundContext.fetchCount(FetchDescriptor<ReviewItem>()),
+                        reviewRecordCount: try backgroundContext.fetchCount(FetchDescriptor<ReviewRecord>()),
+                        taskCount: try backgroundContext.fetchCount(FetchDescriptor<TaskItem>()),
+                        scheduleCount: try backgroundContext.fetchCount(FetchDescriptor<ScheduleItem>()),
+                        dictationSessionCount: try backgroundContext.fetchCount(FetchDescriptor<DictationSession>()),
+                        dictationEntryCount: try backgroundContext.fetchCount(FetchDescriptor<DictationEntry>())
+                    )
+                    return LocalDataSummaryResult(counts: counts, errorDescription: nil)
+                } catch {
+                    return LocalDataSummaryResult(counts: nil, errorDescription: error.localizedDescription)
+                }
             }
         }.value
 

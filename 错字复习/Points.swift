@@ -1139,8 +1139,10 @@ struct PointsDashboardView: View {
         balanceRefreshID = refreshID
         let container = modelContext.container
         let refreshedBalance = await Task.detached(priority: .utility) {
-            let backgroundContext = ModelContext(container)
-            return PointLedgerService.currentBalance(in: backgroundContext)
+            PersistentStoreAccessGate.withAccess {
+                let backgroundContext = ModelContext(container)
+                return PointLedgerService.currentBalance(in: backgroundContext)
+            }
         }.value
 
         guard !Task.isCancelled, balanceRefreshID == refreshID else { return }

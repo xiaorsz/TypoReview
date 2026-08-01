@@ -6,17 +6,18 @@ enum HomeDashboardDataLoader {
         from container: ModelContainer,
         referenceDate: Date
     ) -> HomeDashboardSourceSnapshot {
-        let context = ModelContext(container)
-        let calendar = Calendar.current
-        let todayPlanKey = ReviewDailyPlan.dayKey(for: referenceDate, calendar: calendar)
-        let weekInterval = calendar.dateInterval(of: .weekOfYear, for: referenceDate)
-        let weekStart = weekInterval?.start ?? calendar.startOfDay(for: referenceDate)
-        let weekEnd = weekInterval?.end
-            ?? calendar.date(byAdding: .day, value: 7, to: weekStart)
-            ?? referenceDate
+        PersistentStoreAccessGate.withAccess {
+            let context = ModelContext(container)
+            let calendar = Calendar.current
+            let todayPlanKey = ReviewDailyPlan.dayKey(for: referenceDate, calendar: calendar)
+            let weekInterval = calendar.dateInterval(of: .weekOfYear, for: referenceDate)
+            let weekStart = weekInterval?.start ?? calendar.startOfDay(for: referenceDate)
+            let weekEnd = weekInterval?.end
+                ?? calendar.date(byAdding: .day, value: 7, to: weekStart)
+                ?? referenceDate
 
-        var source = HomeDashboardSourceSnapshot.empty
-        try? context.transaction {
+            var source = HomeDashboardSourceSnapshot.empty
+            try? context.transaction {
             let reviewItems = ((try? context.fetch(FetchDescriptor<ReviewItem>())) ?? [])
                 .map(HomeReviewItemProjection.init)
             let weeklyReviewRecords = ReviewScheduler.canonicalReviewRecords(
@@ -91,7 +92,8 @@ enum HomeDashboardDataLoader {
                     .reduce(0) { $0 + $1.amount },
                 currentPointStreak: currentPointStreak
             )
+            }
+            return source
         }
-        return source
     }
 }

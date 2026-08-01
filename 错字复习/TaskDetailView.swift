@@ -1473,6 +1473,7 @@ struct TaskDetailView: View {
             )
             
             let results: RefreshResult? = await Task.detached(priority: .userInitiated) {
+                PersistentStoreAccessGate.withAccess {
                 let backgroundStartedAt = CACurrentMediaTime()
                 Self.perfMark("refresh bg begin id=\(refreshID)")
                 let ctx = ModelContext(container)
@@ -1567,6 +1568,7 @@ struct TaskDetailView: View {
                     "refresh bg end id=\(refreshID) elapsed=\(Self.perfMillis(since: backgroundStartedAt)) taskID=\(t.id.uuidString.prefix(6)) archived=\(t.isArchived) start=\(Self.perfDateLabel(t.startDate)) end=\(Self.perfDateLabel(t.endDate)) scheduledToday=\(scheduledToday) snapshots=\(snapshotSummary) records=\(recordSummary) subtasks=\(subtasks.count) currentSubtasks=\(curSubProjections.count)"
                 )
                 return (taskProjection, snapshots, subProjections, recProjections, curSubProjections, curRec, resolvedSelectedDate)
+                }
             }.value
             
             guard !Task.isCancelled, let res = results else {
