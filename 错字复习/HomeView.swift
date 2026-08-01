@@ -2039,9 +2039,9 @@ struct HomeView: View {
 
                     todayScheduleCard(snapshot)
 
-                    recentPlansCard(snapshot)
-
                     todayTasksCard(snapshot)
+
+                    recentPlansCard(snapshot)
 
                     learningCalendarCard(snapshot)
 
