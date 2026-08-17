@@ -14,7 +14,14 @@ import asyncpg
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 
-from .db import Database, fetch_or_assign_daily_quote, tombstone_record, upsert_point_ledger_entry, upsert_record
+from .db import (
+    Database,
+    fetch_or_assign_daily_quote,
+    record_has_changed_after,
+    tombstone_record,
+    upsert_point_ledger_entry,
+    upsert_record,
+)
 from .domain import (
     ENTITY_KEYS,
     SETTINGS_RECORD_ID,
@@ -140,6 +147,7 @@ class Mutation(BaseModel):
 
 class MutationBatch(BaseModel):
     mutations: list[Mutation] = Field(max_length=1000)
+    baseCursor: int | None = Field(default=None, ge=0)
 
 
 class DailyPlanRequest(BaseModel):
@@ -683,6 +691,25 @@ async def push_mutations(
     applied: list[str] = []
     server_scheduled_item_ids: set[UUID] = set()
     async with pool.acquire() as connection, connection.transaction():
+        if batch.baseCursor is not None:
+            for mutation in batch.mutations:
+                if await record_has_changed_after(
+                    connection,
+                    account_id=account_id,
+                    entity_type=mutation.entityType,
+                    record_id=mutation.recordID,
+                    base_cursor=batch.baseCursor,
+                    proposed_payload=mutation.payload,
+                    is_delete=mutation.operation == "delete",
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "reason": "sync_record_changed",
+                            "entityType": mutation.entityType,
+                            "recordID": str(mutation.recordID),
+                        },
+                    )
         for mutation in batch.mutations:
             claimed = await connection.fetchval(
                 """

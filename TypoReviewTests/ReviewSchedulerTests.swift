@@ -661,6 +661,26 @@ final class ReviewDailyPlanTests: XCTestCase {
         XCTAssertEqual(Array(reconciledIDs.prefix(9)), reviewedIDs)
         XCTAssertEqual(reconciledIDs.filter { !Set(reviewedIDs).contains($0) }.count, 41)
     }
+
+    func testReconciledPlanReplacesEntriesMadeStaleByIncrementalSync() {
+        let stillDueIDs = (0..<19).map { _ in UUID() }
+        let staleIDs = (0..<31).map { _ in UUID() }
+        let replacementIDs = (0..<31).map { _ in UUID() }
+        let existingPlan = stillDueIDs + staleIDs
+        let availableDueIDs = stillDueIDs + replacementIDs
+
+        let reconciledIDs = ReviewDailyPlan.reconciledItemIDs(
+            existingItemIDs: existingPlan,
+            reviewedTodayItemIDs: [],
+            availableDueItemIDs: availableDueIDs,
+            dailyLimit: 50
+        )
+
+        XCTAssertEqual(reconciledIDs.count, 50)
+        XCTAssertEqual(Array(reconciledIDs.prefix(19)), stillDueIDs)
+        XCTAssertTrue(Set(staleIDs).isDisjoint(with: reconciledIDs))
+        XCTAssertEqual(Set(reconciledIDs), Set(availableDueIDs))
+    }
 }
 
 final class ScheduleDedupSupportTests: XCTestCase {

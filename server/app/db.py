@@ -219,6 +219,38 @@ async def upsert_record(
     return status.endswith("1")
 
 
+async def record_has_changed_after(
+    connection: asyncpg.Connection,
+    *,
+    account_id: UUID,
+    entity_type: str,
+    record_id: UUID,
+    base_cursor: int,
+    proposed_payload: dict[str, Any] | None,
+    is_delete: bool,
+) -> bool:
+    """Return whether a mutation was based on a stale server record.
+
+    An identical upsert is safe to acknowledge even when its version is newer;
+    this keeps retries and server-canonicalized review updates idempotent.
+    """
+    row = await connection.fetchrow(
+        """
+        SELECT payload, server_version, deleted_at
+        FROM records
+        WHERE account_id=$1 AND entity_type=$2 AND record_id=$3
+        """,
+        account_id,
+        entity_type,
+        record_id,
+    )
+    if row is None or row["server_version"] <= base_cursor:
+        return False
+    if not is_delete and row["deleted_at"] is None and row["payload"] == proposed_payload:
+        return False
+    return True
+
+
 async def upsert_point_ledger_entry(
     connection: asyncpg.Connection,
     *,

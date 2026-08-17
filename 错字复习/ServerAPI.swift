@@ -259,6 +259,69 @@ struct ServerDailyQuoteResponse: Decodable, Sendable {
     }
 }
 
+enum ServerJSONValue: Codable, Sendable {
+    case object([String: ServerJSONValue])
+    case array([ServerJSONValue])
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case null
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode([String: ServerJSONValue].self) {
+            self = .object(value)
+        } else if let value = try? container.decode([ServerJSONValue].self) {
+            self = .array(value)
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported JSON value"
+            )
+        }
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .object(let value): try container.encode(value)
+        case .array(let value): try container.encode(value)
+        case .string(let value): try container.encode(value)
+        case .number(let value): try container.encode(value)
+        case .bool(let value): try container.encode(value)
+        case .null: try container.encodeNil()
+        }
+    }
+}
+
+struct ServerChange: Decodable, Sendable {
+    let entityType: String
+    let recordID: UUID
+    let payload: ServerJSONValue?
+    let updatedAt: Date
+    let serverVersion: Int64
+    let deletedAt: Date?
+
+    func decodePayload<Value: Decodable>(_ type: Value.Type) throws -> Value {
+        guard let payload else { throw ServerAPIError.invalidResponse }
+        let data = try JSONEncoder().encode(payload)
+        return try JSONDecoder.typoReviewISO8601.decode(type, from: data)
+    }
+}
+
+struct ServerChangeBatch: Decodable, Sendable {
+    let changes: [ServerChange]
+    let cursor: Int64
+}
+
 actor ServerAPIClient {
     static let shared = ServerAPIClient()
 
@@ -329,6 +392,17 @@ actor ServerAPIClient {
         try await request(path: "/v1/migration/export", method: "GET")
     }
 
+    func changes(after cursor: Int64, limit: Int = 1_000) async throws -> ServerChangeBatch {
+        try await request(
+            path: "/v1/sync/changes",
+            method: "GET",
+            queryItems: [
+                URLQueryItem(name: "after", value: String(cursor)),
+                URLQueryItem(name: "limit", value: String(limit)),
+            ]
+        )
+    }
+
     func deepSeekAPIKey() async throws -> ServerSecretValueResponse {
         try await request(path: "/v1/secrets/deepseek-api-key", method: "GET")
     }
@@ -385,12 +459,23 @@ actor ServerAPIClient {
         body: Data? = nil,
         authorized: Bool = true,
         cachePolicy: URLRequest.CachePolicy = .useProtocolCachePolicy,
-        timeoutInterval: TimeInterval? = nil
+        timeoutInterval: TimeInterval? = nil,
+        queryItems: [URLQueryItem] = []
     ) async throws -> Response {
         guard let baseURL = configuration?.baseURL ?? ServerAPIConfiguration.serverURL else {
             throw ServerAPIError.notConfigured
         }
-        let url = baseURL.appending(path: path)
+        let baseRequestURL = baseURL.appending(path: path)
+        var components = URLComponents(
+            url: baseRequestURL,
+            resolvingAgainstBaseURL: false
+        )
+        if !queryItems.isEmpty {
+            components?.queryItems = queryItems
+        }
+        guard let url = components?.url else {
+            throw ServerAPIError.invalidResponse
+        }
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.httpBody = body

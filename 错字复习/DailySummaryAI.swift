@@ -71,7 +71,7 @@ struct DailySummaryInput: Codable, Equatable {
         guard hasActivity else {
             return DailySummaryResult(
                 title: "今天还没有完成记录",
-                message: "先从一小组复习、听写或任务开始，完成后这里会自动整理今日小结。",
+                message: "先从一小组复习、听写或任务开始吧。每一次开始，都在让自己慢慢变得更厉害。",
                 highlights: [],
                 tomorrowFocus: "今天先完成一个小目标就很好。"
             )
@@ -93,11 +93,15 @@ struct DailySummaryInput: Codable, Equatable {
 
         let message: String
         if metrics.reviewCompleted > 0 {
-            message = "\(name) 今天完成得很扎实，复习正确率 \(metrics.reviewAccuracyText)，继续保持这个节奏。"
+            if metrics.reviewWrong > 0 {
+                message = "\(name) 今天完成得很扎实，复习正确率 \(metrics.reviewAccuracyText)。错题不可怕，每次订正都在进步。"
+            } else {
+                message = "\(name) 今天完成得很扎实，复习正确率 \(metrics.reviewAccuracyText)。今天的认真，正在成为成长的底气。"
+            }
         } else if metrics.dictationReviewedEntries > 0 {
-            message = "\(name) 今天完成了听写判定，已经把练习结果记录下来了。"
+            message = "\(name) 今天完成了听写判定，也认真记下了练习结果。一点点积累，也会带来很大的进步。"
         } else {
-            message = "\(name) 今天的任务有推进，稳定完成比一次做很多更重要。"
+            message = "\(name) 今天的任务有推进，稳定完成比一次做很多更重要。每个小小的完成，都值得点赞。"
         }
 
         let focus = metrics.reviewWrong > 0
@@ -593,8 +597,10 @@ struct DeepSeekSummaryClient {
         let systemPrompt = """
         你是一个给小学生家长看的学习助手。请只根据用户提供的 JSON 事实写今日小结，不要编造数字。
         输出必须是严格 JSON object，字段为 title、message、highlights、tomorrowFocus。
-        JSON 输出格式示例：{"title":"今日小结","message":"今天完成了计划中的学习内容。","highlights":["完成复习"],"tomorrowFocus":"下一次重点回看错项。"}
+        JSON 输出格式示例：{"title":"今日小结","message":"今天完成了计划中的学习内容。每一次认真投入，都在为成长积蓄力量。","highlights":["完成复习"],"tomorrowFocus":"下一次重点回看错项。"}
         message 只总结今天已经完成的内容和当前状态，不要写“明天”，不要说今天失败了，也不要承诺今天一定还能完成。
+        message 末尾加入一句简短、自然的鼓励语，类似成长型的暖心寄语；要贴合当天表现，每次可换一种表达，避免空泛说教、夸大成果或制造压力。
+        有错项时强调“发现问题也是进步、订正会带来成长”；全对或完成较多时肯定认真与坚持；完成较少时鼓励从小目标和持续积累开始。
         如果 tasksCompleted 为 0 且 tasksPending 大于 0，可以温和表达“还有待办未完成”，不要写“今天没有完成任务”。
         tomorrowFocus 只写下一次可以关注什么，不要再出现“今天还能/今天可以/一起完成今天”这类表达。
         语气温和、鼓励、具体，中文简体。message 不超过 55 个汉字，tomorrowFocus 不超过 30 个汉字，highlights 最多 3 条。

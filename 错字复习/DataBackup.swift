@@ -275,9 +275,9 @@ enum DataBackupService {
         settingsStore: AppSettingsStore,
         mediaLibraryStore: MediaLibraryStore
     ) throws {
-        try restoreStructuredData(
+        try restoreStructuredDataUsingIsolatedContext(
             payload,
-            into: modelContext,
+            basedOn: modelContext,
             settingsStore: settingsStore
         )
         try mediaLibraryStore.replaceAll(with: payload.mediaAssets.map { $0.makeModel() })
@@ -366,21 +366,40 @@ enum DataBackupService {
         settingsStore.restore(from: payload.settings, using: modelContext)
     }
 
-    /// Server bootstrap path. Keeping the work in small batches prevents a large
-    /// first snapshot from monopolizing the iOS main thread.
+    /// Server bootstrap path. The actual replacement uses a short-lived context
+    /// so a long-lived SwiftUI context cannot contribute stale object versions.
     @MainActor
     static func restoreStructuredDataInBatches(
         _ payload: DataBackupPayload,
         into modelContext: ModelContext,
         settingsStore: AppSettingsStore
     ) async throws {
+        try restoreStructuredDataUsingIsolatedContext(
+            payload,
+            basedOn: modelContext,
+            settingsStore: settingsStore
+        )
+    }
+
+    @MainActor
+    private static func restoreStructuredDataUsingIsolatedContext(
+        _ payload: DataBackupPayload,
+        basedOn modelContext: ModelContext,
+        settingsStore: AppSettingsStore
+    ) throws {
+        let container = modelContext.container
         try PersistentStoreAccessGate.withAccess {
-            // Do not yield while the shared context contains deleted models.
-            // Yielding allowed unrelated tasks to read invalidated SwiftData
-            // backing objects and caused SIGTRAP crashes during server pull.
+            // The SwiftUI environment context can retain an older Core Data
+            // generation after another context saves. Deleting those stale
+            // registered models makes save() hit an optimistic-locking trap.
+            // Fetch and replace through a newly-created context while holding
+            // the store gate so every deleted object starts at the latest
+            // committed generation.
+            let restorationContext = ModelContext(container)
+            restorationContext.autosaveEnabled = false
             try restoreStructuredData(
                 payload,
-                into: modelContext,
+                into: restorationContext,
                 settingsStore: settingsStore
             )
         }

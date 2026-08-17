@@ -10,6 +10,8 @@ struct DictationSessionView: View {
     @State private var navigateToReview = false
     @State private var isContentRevealed = false
     @State private var hasAutoSpokenInitialEntry = false
+    @State private var isFinishing = false
+    @State private var saveErrorMessage: String?
     @StateObject private var speaker = DictationSpeaker()
 
     let session: DictationSession
@@ -79,6 +81,14 @@ struct DictationSessionView: View {
         }
         .onDisappear {
             speaker.stop()
+        }
+        .alert("听写进度保存失败", isPresented: Binding(
+            get: { saveErrorMessage != nil },
+            set: { if !$0 { saveErrorMessage = nil } }
+        )) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text(saveErrorMessage ?? "")
         }
     }
 
@@ -271,10 +281,11 @@ struct DictationSessionView: View {
                 }
                 .buttonStyle(ResultButtonStyle(color: .blue))
             } else {
-                Button("进入统一判卷") {
+                Button(isFinishing ? "正在保存…" : "完成听写并进入判卷") {
                     finishSession()
                 }
                 .buttonStyle(ResultButtonStyle(color: .green))
+                .disabled(isFinishing)
             }
         }
         .padding(.horizontal, isWide ? 32 : 20)
@@ -284,11 +295,23 @@ struct DictationSessionView: View {
     }
 
     private func finishSession() {
+        guard !isFinishing else { return }
+        isFinishing = true
+
         let now = Date()
         session.finishedAt = now
         session.updatedAt = now
-        try? modelContext.save()
-        AppDataChangeCenter.post()
-        navigateToReview = true
+
+        do {
+            try PersistentStoreAccessGate.withAccess {
+                try modelContext.save()
+            }
+            isFinishing = false
+            AppDataChangeCenter.post()
+            navigateToReview = true
+        } catch {
+            isFinishing = false
+            saveErrorMessage = "本次听写尚未标记为完成，请保持 App 在前台后重试。\(error.localizedDescription)"
+        }
     }
 }

@@ -183,7 +183,9 @@ final class ReviewDailyPlan {
     ) -> [UUID] {
         var seen = Set<UUID>()
         var result: [UUID] = []
-        let uniqueReviewedCount = Set(reviewedTodayItemIDs).count
+        let reviewedTodaySet = Set(reviewedTodayItemIDs)
+        let availableDueSet = Set(availableDueItemIDs)
+        let uniqueReviewedCount = reviewedTodaySet.count
         let targetCount = max(max(dailyLimit, 0), uniqueReviewedCount)
 
         func appendUntilFull(_ itemIDs: [UUID]) {
@@ -195,7 +197,13 @@ final class ReviewDailyPlan {
         }
 
         appendUntilFull(reviewedTodayItemIDs)
-        appendUntilFull(existingItemIDs)
+        // A plan may be created before an incremental pull updates ReviewItem
+        // state. Keep completed-today entries for quota accounting and still-due
+        // entries for continuity, but discard stale IDs so newly due work can fill
+        // the vacated slots.
+        appendUntilFull(existingItemIDs.filter {
+            reviewedTodaySet.contains($0) || availableDueSet.contains($0)
+        })
         appendUntilFull(availableDueItemIDs)
         return result
     }

@@ -2069,6 +2069,9 @@ struct HomeView: View {
                 .frame(maxWidth: 960, alignment: .center)
                 .frame(maxWidth: .infinity)
             }
+            .refreshable {
+                await refreshFromServer()
+            }
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("首页")
             .navigationBarTitleDisplayMode(.large)
@@ -2114,10 +2117,23 @@ struct HomeView: View {
                 .frame(maxWidth: 960, alignment: .center)
                 .frame(maxWidth: .infinity)
             }
+            .refreshable {
+                await refreshFromServer()
+            }
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("首页")
             .navigationBarTitleDisplayMode(.large)
         }
+    }
+
+    @MainActor
+    private func refreshFromServer() async {
+        await ServerSyncCoordinator.shared.synchronize(
+            modelContext: modelContext,
+            settingsStore: appSettingsStore
+        )
+        requestDashboardSnapshotRefresh(reason: "pull to refresh", delay: 0)
+        refreshDailyQuote()
     }
 
     private var loadingHeroCard: some View {

@@ -12,7 +12,7 @@ try:
 except ModuleNotFoundError:
     sys.modules["asyncpg"] = SimpleNamespace(Connection=object, Pool=object)
 
-from app.db import upsert_point_ledger_entry
+from app.db import record_has_changed_after, upsert_point_ledger_entry
 
 
 ACCOUNT_ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -117,3 +117,46 @@ class PointLedgerUpsertTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(changed)
         self.assertFalse(duplicate)
         self.assertEqual(len(connection.execute_calls), 1)
+
+
+class SyncConflictTests(unittest.IsolatedAsyncioTestCase):
+    async def test_newer_different_server_payload_is_a_conflict(self):
+        record_id = uuid4()
+        connection = FakeConnection(existing={
+            "payload": {"id": str(record_id), "title": "server"},
+            "server_version": 12,
+            "deleted_at": None,
+        })
+
+        conflict = await record_has_changed_after(
+            connection,
+            account_id=ACCOUNT_ID,
+            entity_type="dictationSessions",
+            record_id=record_id,
+            base_cursor=10,
+            proposed_payload={"id": str(record_id), "title": "local"},
+            is_delete=False,
+        )
+
+        self.assertTrue(conflict)
+
+    async def test_newer_identical_server_payload_is_safe_retry(self):
+        record_id = uuid4()
+        payload = {"id": str(record_id), "title": "same"}
+        connection = FakeConnection(existing={
+            "payload": payload,
+            "server_version": 12,
+            "deleted_at": None,
+        })
+
+        conflict = await record_has_changed_after(
+            connection,
+            account_id=ACCOUNT_ID,
+            entity_type="dictationSessions",
+            record_id=record_id,
+            base_cursor=10,
+            proposed_payload=payload,
+            is_delete=False,
+        )
+
+        self.assertFalse(conflict)

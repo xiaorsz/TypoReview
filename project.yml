@@ -58,7 +58,7 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: 错字复习/TypoReview-Bridging-Header.h
         PRODUCT_NAME: TypoReview
         PRODUCT_BUNDLE_IDENTIFIER: cc.xiaorsz.typo-review
-        MARKETING_VERSION: 1.6.0
+        MARKETING_VERSION: 1.7.0
         CURRENT_PROJECT_VERSION: 3
         ALWAYS_SEARCH_USER_PATHS: NO
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -120,7 +120,7 @@ targets:
     info:
       path: TypoWidget/Info.plist
       properties:
-        CFBundleShortVersionString: "1.6.0"
+        CFBundleShortVersionString: "1.7.0"
         CFBundleVersion: "3"
         CFBundleDisplayName: "听写复习本"
         NSExtension:
@@ -136,7 +136,7 @@ targets:
         PRODUCT_NAME: TypoWidget
         PRODUCT_BUNDLE_IDENTIFIER: cc.xiaorsz.typo-review.TypoWidget
         DEVELOPMENT_TEAM: FCAW792CJD
-        MARKETING_VERSION: 1.6.0
+        MARKETING_VERSION: 1.7.0
         CURRENT_PROJECT_VERSION: 3
         ALWAYS_SEARCH_USER_PATHS: NO
       configs:

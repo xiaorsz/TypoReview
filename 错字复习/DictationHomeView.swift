@@ -158,6 +158,7 @@ struct DeferredDictationHomeView: View {
 struct DictationHomeView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
+    @Environment(AppSettingsStore.self) private var appSettingsStore
 
     @State private var previewSession: DictationSessionProjection?
     @State private var activeRoute: DictationRoute?
@@ -320,6 +321,13 @@ struct DictationHomeView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .refreshable {
+            await ServerSyncCoordinator.shared.refreshFromServer(
+                modelContext: modelContext,
+                settingsStore: appSettingsStore
+            )
+            requestSnapshotRefresh(reason: "pull to refresh", delay: 0)
+        }
         .background(Color(uiColor: .systemGroupedBackground))
         .navigationTitle("听写安排")
         .navigationBarTitleDisplayMode(.large)
