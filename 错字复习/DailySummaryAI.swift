@@ -35,6 +35,16 @@ struct DailySummaryInput: Codable, Equatable {
         let tasksPending: Int
         let pointsEarnedToday: Int
         let currentStreak: Int
+        let calculationCompleted: Bool
+        let calculationFirstRoundCorrect: Int
+        let calculationFirstRoundTotal: Int
+        let calculationRoundsSubmitted: Int
+
+        var calculationFirstRoundAccuracyText: String {
+            guard calculationFirstRoundTotal > 0 else { return "--" }
+            let value = Double(calculationFirstRoundCorrect) / Double(calculationFirstRoundTotal) * 100
+            return "\(Int(value.rounded()))%"
+        }
     }
 
     struct Highlights: Codable, Equatable {
@@ -52,7 +62,8 @@ struct DailySummaryInput: Codable, Equatable {
     var hasActivity: Bool {
         metrics.reviewCompleted > 0 ||
         metrics.dictationReviewedEntries > 0 ||
-        metrics.tasksCompleted > 0
+        metrics.tasksCompleted > 0 ||
+        metrics.calculationRoundsSubmitted > 0
     }
 
     func stableHash() -> String {
@@ -87,6 +98,11 @@ struct DailySummaryInput: Codable, Equatable {
         if metrics.tasksCompleted > 0 {
             highlights.append("任务完成 \(metrics.tasksCompleted) 项")
         }
+        if metrics.calculationCompleted {
+            highlights.append("每日计算完成，首轮正确率 \(metrics.calculationFirstRoundAccuracyText)")
+        } else if metrics.calculationRoundsSubmitted > 0 {
+            highlights.append("每日计算已完成 \(metrics.calculationRoundsSubmitted) 轮，继续补练")
+        }
         if metrics.pointsEarnedToday > 0 {
             highlights.append("获得 \(metrics.pointsEarnedToday) 积分")
         }
@@ -100,13 +116,22 @@ struct DailySummaryInput: Codable, Equatable {
             }
         } else if metrics.dictationReviewedEntries > 0 {
             message = "\(name) 今天完成了听写判定，也认真记下了练习结果。一点点积累，也会带来很大的进步。"
+        } else if metrics.calculationRoundsSubmitted > 0 {
+            message = metrics.calculationCompleted
+                ? "\(name) 今天完成了每日计算，首轮正确率 \(metrics.calculationFirstRoundAccuracyText)。先求准确，再慢慢提高速度。"
+                : "\(name) 今天已经开始计算训练，继续把补练这一轮全部做对，就能完成今天的小目标。"
         } else {
             message = "\(name) 今天的任务有推进，稳定完成比一次做很多更重要。每个小小的完成，都值得点赞。"
         }
 
-        let focus = metrics.reviewWrong > 0
-            ? "明天重点回看今天答错的 \(metrics.reviewWrong) 个内容。"
-            : "明天继续按计划少量复习，保持手感。"
+        let focus: String
+        if metrics.reviewWrong > 0 {
+            focus = "明天重点回看今天答错的 \(metrics.reviewWrong) 个内容。"
+        } else if metrics.calculationFirstRoundTotal > metrics.calculationFirstRoundCorrect {
+            focus = "明天继续留意今天计算中容易出错的题型，先验算再提交。"
+        } else {
+            focus = "明天继续按计划少量复习，保持手感。"
+        }
 
         return DailySummaryResult(
             title: "今日小结",

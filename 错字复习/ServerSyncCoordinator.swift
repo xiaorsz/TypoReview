@@ -45,6 +45,7 @@ final class ServerSyncCoordinator {
         "dictationSessions",
         "dictationEntries",
         "scheduleItems",
+        "calculationRounds",
         "pointLedgerEntries",
         "pointRewardStates",
         "settings",
@@ -386,6 +387,7 @@ final class ServerSyncCoordinator {
             var dictationSessions: [UUID: DictationSession] = [:]
             var dictationEntries: [UUID: DictationEntry] = [:]
             var scheduleItems: [UUID: ScheduleItem] = [:]
+            var calculationRounds: [UUID: CalculationRound] = [:]
             var pointEntries: [UUID: PointLedgerEntry] = [:]
             var pointStates: [UUID: PointRewardState] = [:]
             var settingsSnapshot: AppSettingsSnapshot?
@@ -553,6 +555,33 @@ final class ServerSyncCoordinator {
                         model.effectiveStartDate = value.effectiveStartDate
                         model.effectiveEndDate = value.effectiveEndDate
                         model.isArchived = value.isArchived
+                        model.createdAt = value.createdAt
+                        model.updatedAt = value.updatedAt
+                    }
+                case "calculationRounds":
+                    if loadedEntities.insert(change.entityType).inserted {
+                        calculationRounds = modelsByID(
+                            try context.fetch(FetchDescriptor<CalculationRound>()),
+                            id: \.id
+                        )
+                    }
+                    try apply(
+                        change,
+                        deleting: isDeletion,
+                        as: CalculationRoundSnapshot.self,
+                        in: context,
+                        cache: &calculationRounds,
+                        makeModel: { $0.makeModel() }
+                    ) { value, model in
+                        model.dayKey = value.dayKey
+                        model.roundIndex = value.roundIndex
+                        model.generatorVersion = value.generatorVersion
+                        model.questionsRawValue = value.questionsRawValue
+                        model.answersRawValue = value.answersRawValue
+                        model.correctCount = value.correctCount
+                        model.startedAt = value.startedAt
+                        model.submittedAt = value.submittedAt
+                        model.durationSeconds = value.durationSeconds
                         model.createdAt = value.createdAt
                         model.updatedAt = value.updatedAt
                     }
@@ -923,7 +952,7 @@ final class ServerSyncCoordinator {
     }
 
     private static func dataSummary(for payload: DataBackupPayload) -> String {
-        "题库 \(payload.reviewItems.count) 条，复习记录 \(payload.reviewRecords.count) 条，听写 \(payload.dictationSessions.count) 组 / \(payload.dictationEntries.count) 条"
+        "题库 \(payload.reviewItems.count) 条，复习记录 \(payload.reviewRecords.count) 条，听写 \(payload.dictationSessions.count) 组 / \(payload.dictationEntries.count) 条，计算 \(payload.calculationRounds.count) 轮"
     }
 
     private func synchronizeDeepSeekAPIKey() async {
@@ -1056,6 +1085,7 @@ final class ServerSyncCoordinator {
             "dictationSessions": "updatedAt",
             "dictationEntries": "updatedAt",
             "scheduleItems": "updatedAt",
+            "calculationRounds": "updatedAt",
             "pointLedgerEntries": "createdAt",
             "pointRewardStates": "updatedAt",
             "settings": "updatedAt",

@@ -52,7 +52,8 @@ struct TypoReviewApp: App {
             ScheduleItem.self,
             MediaAsset.self,
             PointLedgerEntry.self,
-            PointRewardState.self
+            PointRewardState.self,
+            CalculationRound.self
         ])
 
         if AppStorePreviewMode.isEnabled {
@@ -890,7 +891,7 @@ struct TypoReviewApp: App {
             #if DEBUG
             if result.totalAdded > 0 {
                 DebugPerf.mark(
-                    "TypoReviewApp reconciled point rewards reviews=\(result.reviewRewardsAdded) dictation=\(result.dictationRewardsAdded) accuracy=\(result.dictationAccuracyBonusesAdded)"
+                    "TypoReviewApp reconciled point rewards reviews=\(result.reviewRewardsAdded) dictation=\(result.dictationRewardsAdded) accuracy=\(result.dictationAccuracyBonusesAdded) calculation=\(result.dailyCalculationRewardsAdded)"
                 )
             }
             #endif

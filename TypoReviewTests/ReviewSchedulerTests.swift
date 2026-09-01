@@ -431,6 +431,7 @@ final class ReviewSchedulerTests: XCTestCase {
         let container = try ModelContainer(
             for: PointLedgerEntry.self,
             PointRewardState.self,
+            CalculationRound.self,
             ReviewRecord.self,
             DictationEntry.self,
             DictationSession.self,

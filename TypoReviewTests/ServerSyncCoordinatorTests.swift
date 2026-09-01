@@ -107,6 +107,54 @@ final class ServerSyncCoordinatorTests: XCTestCase {
         XCTAssertEqual(updated.finishedAt, Date(timeIntervalSince1970: 180))
     }
 
+    func testIncrementalChangeRestoresCalculationRoundSnapshot() throws {
+        let container = try makeFullModelContainer()
+        let questions = CalculationGenerator.generateInitialRound(dayKey: "2026-08-17")
+        let answers = questions.map {
+            CalculationAnswer(
+                questionID: $0.id,
+                value: "\($0.expectedValue)",
+                remainder: $0.expectedRemainder.map(String.init) ?? "",
+                isCorrect: true
+            )
+        }
+        let submittedAt = Date(timeIntervalSince1970: 200)
+        let remote = CalculationRound(
+            id: CalculationGenerator.roundID(dayKey: "2026-08-17", roundIndex: 0),
+            dayKey: "2026-08-17",
+            roundIndex: 0,
+            questions: questions,
+            answers: answers,
+            correctCount: 5,
+            startedAt: Date(timeIntervalSince1970: 100),
+            submittedAt: submittedAt,
+            durationSeconds: 100,
+            createdAt: Date(timeIntervalSince1970: 100),
+            updatedAt: submittedAt
+        )
+        let change = try makeServerChange(
+            entityType: "calculationRounds",
+            recordID: remote.id,
+            snapshot: CalculationRoundSnapshot(remote)
+        )
+
+        try ServerSyncCoordinator.shared.applyIncrementalChanges(
+            [change],
+            to: container,
+            settingsStore: AppSettingsStore()
+        )
+
+        let context = ModelContext(container)
+        let restored = try XCTUnwrap(
+            try context.fetch(FetchDescriptor<CalculationRound>()).first
+        )
+        XCTAssertEqual(restored.dayKey, "2026-08-17")
+        XCTAssertEqual(restored.questions, questions)
+        XCTAssertEqual(restored.answers, answers)
+        XCTAssertTrue(restored.isPerfect)
+        XCTAssertEqual(restored.durationSeconds, 100)
+    }
+
     func testUnchangedServerSnapshotDoesNotRequireDestructiveRestore() {
         let hashes = [
             "dictationSessions": ["session-id": "same-hash"],
@@ -360,7 +408,8 @@ final class ServerSyncCoordinatorTests: XCTestCase {
             ScheduleItem.self,
             MediaAsset.self,
             PointLedgerEntry.self,
-            PointRewardState.self
+            PointRewardState.self,
+            CalculationRound.self
         ])
         return try ModelContainer(
             for: schema,

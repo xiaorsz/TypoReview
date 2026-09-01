@@ -17,6 +17,7 @@ enum PointLedgerSourceType: String, Codable, CaseIterable, Identifiable {
     case reviewAccuracyBonus = "复习正确率"
     case dictationAccuracyBonus = "听写正确率"
     case taskExecution = "待办"
+    case dailyCalculation = "每日计算"
     case dailyStreak = "连续学习"
     case manualRedemption = "手动兑换"
     case manualAdjustment = "手动调整"
@@ -119,9 +120,13 @@ struct PointRewardReconciliationResult {
     let reviewRewardsAdded: Int
     let dictationRewardsAdded: Int
     let dictationAccuracyBonusesAdded: Int
+    let dailyCalculationRewardsAdded: Int
 
     var totalAdded: Int {
-        reviewRewardsAdded + dictationRewardsAdded + dictationAccuracyBonusesAdded
+        reviewRewardsAdded
+            + dictationRewardsAdded
+            + dictationAccuracyBonusesAdded
+            + dailyCalculationRewardsAdded
     }
 }
 
@@ -129,6 +134,7 @@ enum PointLedgerService {
     static let reviewRewardAmount = 1
     static let dictationRewardAmount = 1
     static let taskRewardAmount = 5
+    static let dailyCalculationRewardAmount = 5
 
     static func canonicalEntries(_ entries: [PointLedgerEntry]) -> [PointLedgerEntry] {
         Dictionary(grouping: entries) { entry in
@@ -159,7 +165,9 @@ enum PointLedgerService {
             guard entry.amount > 0,
                   !entry.isReversal,
                   !reversedEntryIDs.contains(entry.id.uuidString),
-                  entry.sourceType == .reviewRecord || entry.sourceType == .dictationEntry else {
+                  entry.sourceType == .reviewRecord
+                    || entry.sourceType == .dictationEntry
+                    || entry.sourceType == .dailyCalculation else {
                 return nil
             }
             return entry.createdAt
@@ -382,6 +390,7 @@ enum PointLedgerService {
         var reviewRewardsAdded = 0
         var dictationRewardsAdded = 0
         var dictationAccuracyBonusesAdded = 0
+        var dailyCalculationRewardsAdded = 0
 
         let reviewRecords = ReviewRecord.canonicalRecords(
             try modelContext.fetch(FetchDescriptor<ReviewRecord>())
@@ -444,10 +453,30 @@ enum PointLedgerService {
             }
         }
 
+        let completedCalculationRounds = try modelContext.fetch(FetchDescriptor<CalculationRound>())
+            .filter(\.isPerfect)
+            .sorted {
+                ($0.submittedAt ?? $0.updatedAt) < ($1.submittedAt ?? $1.updatedAt)
+            }
+        var rewardedCalculationDays = Set<String>()
+        for round in completedCalculationRounds where rewardedCalculationDays.insert(round.dayKey).inserted {
+            let key = "daily-calculation-\(round.dayKey)"
+            guard !knownKeys.contains(key) else { continue }
+            if awardDailyCalculation(
+                dayKey: round.dayKey,
+                completedAt: round.submittedAt ?? round.updatedAt,
+                in: modelContext
+            ) != nil {
+                knownKeys.insert(key)
+                dailyCalculationRewardsAdded += 1
+            }
+        }
+
         return PointRewardReconciliationResult(
             reviewRewardsAdded: reviewRewardsAdded,
             dictationRewardsAdded: dictationRewardsAdded,
-            dictationAccuracyBonusesAdded: dictationAccuracyBonusesAdded
+            dictationAccuracyBonusesAdded: dictationAccuracyBonusesAdded,
+            dailyCalculationRewardsAdded: dailyCalculationRewardsAdded
         )
     }
 
@@ -505,6 +534,27 @@ enum PointLedgerService {
             note: trimmedTitle.isEmpty ? "完成待办" : "完成待办：\(trimmedTitle)",
             createdAt: record.completedAt ?? .now,
             countsAsActiveDay: false,
+            in: modelContext
+        )
+    }
+
+    @discardableResult
+    static func awardDailyCalculation(
+        dayKey: String,
+        completedAt: Date = .now,
+        in modelContext: ModelContext
+    ) -> PointLedgerEntry? {
+        let normalizedDayKey = dayKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedDayKey.isEmpty else { return nil }
+        return awardIfNeeded(
+            amount: dailyCalculationRewardAmount,
+            kind: .reward,
+            sourceType: .dailyCalculation,
+            sourceIDRawValue: normalizedDayKey,
+            idempotencyKey: "daily-calculation-\(normalizedDayKey)",
+            note: "完成每日计算",
+            createdAt: completedAt,
+            countsAsActiveDay: true,
             in: modelContext
         )
     }

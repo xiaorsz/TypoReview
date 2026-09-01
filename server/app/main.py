@@ -49,6 +49,7 @@ UPDATED_AT_FIELD = {
     "dictationSessions": "updatedAt",
     "dictationEntries": "updatedAt",
     "scheduleItems": "updatedAt",
+    "calculationRounds": "updatedAt",
     "pointLedgerEntries": "createdAt",
     "pointRewardStates": "updatedAt",
 }
@@ -111,7 +112,7 @@ def pairing_code_hash(value: str) -> str:
 
 
 class SnapshotImport(BaseModel):
-    version: int = 4
+    version: int = 5
     exportedAt: datetime
     appVersion: str = "unknown"
     settings: dict[str, Any] | None = None
@@ -125,6 +126,7 @@ class SnapshotImport(BaseModel):
     dictationSessions: list[dict[str, Any]] = Field(default_factory=list)
     dictationEntries: list[dict[str, Any]] = Field(default_factory=list)
     scheduleItems: list[dict[str, Any]] = Field(default_factory=list)
+    calculationRounds: list[dict[str, Any]] = Field(default_factory=list)
     mediaAssets: list[dict[str, Any]] = Field(default_factory=list)
     pointLedgerEntries: list[dict[str, Any]] = Field(default_factory=list)
     pointRewardStates: list[dict[str, Any]] = Field(default_factory=list)
@@ -136,6 +138,7 @@ class Mutation(BaseModel):
         "reviewItems", "reviewRecords", "taskItems", "taskCompletions",
         "taskSubitems", "taskExecutionRecords", "taskSubitemExecutionRecords",
         "dictationSessions", "dictationEntries", "scheduleItems",
+        "calculationRounds",
         "pointLedgerEntries", "pointRewardStates", "settings",
     ]
     recordID: UUID
@@ -545,7 +548,7 @@ async def import_snapshot(
     snapshot: SnapshotImport,
     account_id: UUID = Depends(require_account),
 ) -> dict[str, Any]:
-    if snapshot.version > 4:
+    if snapshot.version > 5:
         raise HTTPException(status_code=422, detail="unsupported backup version")
     pool = database.require_pool()
     inserted_or_updated: dict[str, int] = {}
@@ -634,7 +637,7 @@ async def export_snapshot(account_id: UUID = Depends(require_account)) -> dict[s
             account_id,
         )
     result: dict[str, Any] = {
-        "version": 4,
+        "version": 5,
         "exportedAt": isoformat(datetime.now(timezone.utc)),
         "appVersion": "server-1.0",
         "settings": canonicalize_settings(settings) if settings is not None else None,

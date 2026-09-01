@@ -7,6 +7,101 @@ import AVKit
 import WidgetKit
 import UIKit
 
+enum HomeLearningStatusTone: Equatable {
+    case completed
+    case pending
+    case notRequired
+}
+
+struct HomeLearningStatus: Equatable {
+    let tone: HomeLearningStatusTone
+    let text: String
+    let detail: String
+}
+
+enum HomeLearningStatusSupport {
+    static func task(
+        pendingCount: Int,
+        historicalPendingCount: Int,
+        completedTodayCount: Int
+    ) -> HomeLearningStatus {
+        if pendingCount > 0 {
+            let detail = historicalPendingCount > 0
+                ? "待\(pendingCount)项 · 历\(historicalPendingCount)"
+                : "待\(pendingCount)项"
+            return HomeLearningStatus(tone: .pending, text: "未完成", detail: detail)
+        }
+        if completedTodayCount > 0 {
+            return HomeLearningStatus(
+                tone: .completed,
+                text: "已完成",
+                detail: "完成\(completedTodayCount)项"
+            )
+        }
+        return HomeLearningStatus(tone: .notRequired, text: "无任务", detail: "今日无需")
+    }
+
+    static func review(pendingCount: Int, plannedCount: Int) -> HomeLearningStatus {
+        if pendingCount > 0 {
+            return HomeLearningStatus(tone: .pending, text: "未完成", detail: "待\(pendingCount)项")
+        }
+        if plannedCount > 0 {
+            return HomeLearningStatus(
+                tone: .completed,
+                text: "已完成",
+                detail: "完成\(plannedCount)项"
+            )
+        }
+        return HomeLearningStatus(tone: .notRequired, text: "无复习", detail: "今日无需")
+    }
+
+    static func dictation(
+        pendingSessionCount: Int,
+        pendingEntryCount: Int,
+        hasAwaitingReview: Bool,
+        completedToday: Bool,
+        reviewedEntryCount: Int
+    ) -> HomeLearningStatus {
+        if pendingSessionCount > 0 {
+            if hasAwaitingReview {
+                return HomeLearningStatus(
+                    tone: .pending,
+                    text: "待批改",
+                    detail: pendingSessionCount > 1 ? "待\(pendingSessionCount)组" : "听写已提交"
+                )
+            }
+            return HomeLearningStatus(
+                tone: .pending,
+                text: "未完成",
+                detail: pendingEntryCount > 0 ? "待\(pendingEntryCount)条" : "待\(pendingSessionCount)组"
+            )
+        }
+        if completedToday {
+            return HomeLearningStatus(
+                tone: .completed,
+                text: "已完成",
+                detail: reviewedEntryCount > 0 ? "批改\(reviewedEntryCount)条" : "已批改"
+            )
+        }
+        return HomeLearningStatus(tone: .notRequired, text: "无听写", detail: "今日无需")
+    }
+
+    static func calculation(completed: Bool, submittedRoundCount: Int) -> HomeLearningStatus {
+        if completed {
+            return HomeLearningStatus(
+                tone: .completed,
+                text: "已完成",
+                detail: submittedRoundCount > 0 ? "共\(submittedRoundCount)轮" : "全部正确"
+            )
+        }
+        return HomeLearningStatus(
+            tone: .pending,
+            text: "未完成",
+            detail: submittedRoundCount > 0 ? "第\(submittedRoundCount + 1)轮补练" : "首轮5题"
+        )
+    }
+}
+
 struct HomeReviewItemProjection: Identifiable, Hashable {
     let id: UUID
     let type: ReviewItemType
@@ -361,6 +456,10 @@ struct HomeDashboardSourceSnapshot {
     let pointBalance: Int
     let pointsEarnedToday: Int
     let currentPointStreak: Int
+    let calculationCompletedToday: Bool
+    let calculationFirstRoundCorrect: Int
+    let calculationFirstRoundTotal: Int
+    let calculationRoundsSubmitted: Int
 
     static let empty = HomeDashboardSourceSnapshot(
         reviewItems: [],
@@ -374,7 +473,11 @@ struct HomeDashboardSourceSnapshot {
         taskSubtasks: [],
         pointBalance: 0,
         pointsEarnedToday: 0,
-        currentPointStreak: 0
+        currentPointStreak: 0,
+        calculationCompletedToday: false,
+        calculationFirstRoundCorrect: 0,
+        calculationFirstRoundTotal: 0,
+        calculationRoundsSubmitted: 0
     )
 }
 
@@ -475,6 +578,8 @@ private enum DailyQuotePresentationState: Equatable {
 struct HomeView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(SyncStatusStore.self) private var syncStatusStore: SyncStatusStore
     @Environment(AppSettingsStore.self) private var appSettingsStore
     
@@ -560,6 +665,8 @@ struct HomeView: View {
         let todayCorrectCount: Int
         let todayAccuracyText: String
         let todayDictationReviewedEntryCount: Int
+        let dictationCompletedToday: Bool
+        let hasDictationAwaitingReview: Bool
         let pendingDictationCount: Int
         let pendingDictationSessionCount: Int
         let latestDictationSession: HomeDictationSessionProjection?
@@ -578,6 +685,10 @@ struct HomeView: View {
         let pointBalance: Int
         let pointsEarnedToday: Int
         let currentPointStreak: Int
+        let calculationCompletedToday: Bool
+        let calculationFirstRoundCorrect: Int
+        let calculationFirstRoundTotal: Int
+        let calculationRoundsSubmitted: Int
         let wrongReviewSamples: [String]
         let heroSubtitle: String
         let heroGradientColors: [Color]
@@ -611,6 +722,10 @@ struct HomeView: View {
             pointBalance: Int,
             pointsEarnedToday: Int,
             currentPointStreak: Int,
+            calculationCompletedToday: Bool,
+            calculationFirstRoundCorrect: Int,
+            calculationFirstRoundTotal: Int,
+            calculationRoundsSubmitted: Int,
             referenceDate: Date = .now
         ) -> DashboardSnapshot {
             let name = childName.isEmpty ? "小朋友" : childName
@@ -731,6 +846,8 @@ struct HomeView: View {
                     return session.id
                 }
             )
+            let dictationCompletedToday = !todayReviewedSessionIDs.isEmpty
+            let hasDictationAwaitingReview = pendingSessions.contains(where: \.isFinished)
             var pendingDictationEntryCount = 0
             var latestDictationEntryCount = 0
             var todayDictationReviewedEntryCount = 0
@@ -836,6 +953,8 @@ struct HomeView: View {
                 todayCorrectCount: tCorrect,
                 todayAccuracyText: tAccuracy,
                 todayDictationReviewedEntryCount: todayDictationReviewedEntryCount,
+                dictationCompletedToday: dictationCompletedToday,
+                hasDictationAwaitingReview: hasDictationAwaitingReview,
                 pendingDictationCount: pendingDictationEntryCount,
                 pendingDictationSessionCount: pendingDictationSessionCount,
                 latestDictationSession: latestDS,
@@ -854,6 +973,10 @@ struct HomeView: View {
                 pointBalance: pointBalance,
                 pointsEarnedToday: pointsEarnedToday,
                 currentPointStreak: currentPointStreak,
+                calculationCompletedToday: calculationCompletedToday,
+                calculationFirstRoundCorrect: calculationFirstRoundCorrect,
+                calculationFirstRoundTotal: calculationFirstRoundTotal,
+                calculationRoundsSubmitted: calculationRoundsSubmitted,
                 wrongReviewSamples: wrongSamples,
                 heroSubtitle: hSubtitle,
                 heroGradientColors: hGradient
@@ -1086,7 +1209,11 @@ struct HomeView: View {
                 tasksCompleted: snapshot.todayCompletedTaskCount,
                 tasksPending: snapshot.totalPendingTaskCount,
                 pointsEarnedToday: snapshot.pointsEarnedToday,
-                currentStreak: snapshot.currentPointStreak
+                currentStreak: snapshot.currentPointStreak,
+                calculationCompleted: snapshot.calculationCompletedToday,
+                calculationFirstRoundCorrect: snapshot.calculationFirstRoundCorrect,
+                calculationFirstRoundTotal: snapshot.calculationFirstRoundTotal,
+                calculationRoundsSubmitted: snapshot.calculationRoundsSubmitted
             ),
             highlights: DailySummaryInput.Highlights(
                 completedTaskTitles: Array(snapshot.todayCompletedTasks.map(\.task.title).prefix(5)),
@@ -1185,6 +1312,13 @@ struct HomeView: View {
     }
 
     private func heroCard(_ snapshot: DashboardSnapshot) -> some View {
+        VStack(spacing: 12) {
+            heroSummaryBanner(snapshot)
+            heroLearningStatusModule(snapshot)
+        }
+    }
+
+    private func heroSummaryBanner(_ snapshot: DashboardSnapshot) -> some View {
         let summaryInput = makeDailySummaryInput(from: snapshot)
         let summaryHash = summaryInput.stableHash()
         let summaryResult = dailySummaryPresentation?.inputHash == summaryHash
@@ -1237,8 +1371,6 @@ struct HomeView: View {
                     )
                 }
             }
-
-            heroMetricStrip(snapshot)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
@@ -1253,6 +1385,10 @@ struct HomeView: View {
                 )
                 .saturation(0.82)
         )
+    }
+
+    private func heroLearningStatusModule(_ snapshot: DashboardSnapshot) -> some View {
+        heroMetricStrip(snapshot)
     }
 
     private func dailySummarySourceBadge(isAIResult: Bool, isLoading: Bool, errorMessage: String?) -> some View {
@@ -1286,102 +1422,167 @@ struct HomeView: View {
     }
 
     private func heroMetricStrip(_ snapshot: DashboardSnapshot) -> some View {
-        HStack(spacing: 8) {
-            heroMetricTile(
-                icon: "checklist",
+        let taskStatus = HomeLearningStatusSupport.task(
+            pendingCount: snapshot.totalPendingTaskCount,
+            historicalPendingCount: snapshot.historicalPendingTaskCount,
+            completedTodayCount: snapshot.todayCompletedTaskCount
+        )
+        let reviewStatus = HomeLearningStatusSupport.review(
+            pendingCount: snapshot.dueItems.count,
+            plannedCount: snapshot.dailyReviewPlanItemIDs.count
+        )
+        let dictationStatus = HomeLearningStatusSupport.dictation(
+            pendingSessionCount: snapshot.pendingDictationSessionCount,
+            pendingEntryCount: snapshot.pendingDictationCount,
+            hasAwaitingReview: snapshot.hasDictationAwaitingReview,
+            completedToday: snapshot.dictationCompletedToday,
+            reviewedEntryCount: snapshot.todayDictationReviewedEntryCount
+        )
+        let calculationStatus = HomeLearningStatusSupport.calculation(
+            completed: snapshot.calculationCompletedToday,
+            submittedRoundCount: snapshot.calculationRoundsSubmitted
+        )
+        let columnCount = dynamicTypeSize.isAccessibilitySize ? 2 : 4
+        let columns = Array(
+            repeating: GridItem(.flexible(minimum: 0), spacing: 6),
+            count: columnCount
+        )
+
+        return LazyVGrid(columns: columns, spacing: 6) {
+            heroLearningStatusTile(
                 title: "任务",
-                value: "\(snapshot.totalPendingTaskCount)",
-                caption: snapshot.historicalPendingTaskCount > 0
-                    ? "含历史 \(snapshot.historicalPendingTaskCount)"
-                    : "待完成"
+                icon: "list.bullet.rectangle.portrait",
+                status: taskStatus
             )
 
             Button {
                 activeReviewRoute = HomeReviewRoute(itemIDs: snapshot.dueItemIDs, style: reviewStyle)
             } label: {
-                heroMetricTile(
-                    icon: "book.closed",
+                heroLearningStatusTile(
                     title: "复习",
-                    value: "\(snapshot.dueItems.count)",
-                    caption: snapshot.hasReachedDailyReviewLimit
-                        ? "今日额度已完成"
-                        : snapshot.allDueCount > snapshot.dueItems.count
-                            ? "到期 \(snapshot.allDueCount)"
-                            : "待复习",
-                    showsDisclosureIndicator: true
+                    icon: "book.closed",
+                    status: reviewStatus
                 )
             }
             .buttonStyle(.plain)
             .frame(maxWidth: .infinity)
+            .accessibilityLabel("复习，\(reviewStatus.text)，\(reviewStatus.detail)")
             .accessibilityHint("进入今日复习")
 
             Button {
                 openDictationHome(source: "home hero metric")
             } label: {
-                heroMetricTile(
-                    icon: "text.book.closed",
+                heroLearningStatusTile(
                     title: "听写",
-                    value: "\(snapshot.pendingDictationCount)",
-                    caption: "待听写",
-                    showsDisclosureIndicator: true
+                    icon: "text.book.closed",
+                    status: dictationStatus
                 )
             }
             .buttonStyle(.plain)
             .frame(maxWidth: .infinity)
+            .accessibilityLabel("听写，\(dictationStatus.text)，\(dictationStatus.detail)")
             .accessibilityHint("进入听写页面")
+
+            NavigationLink {
+                DailyCalculationView()
+            } label: {
+                heroLearningStatusTile(
+                    title: "计算",
+                    icon: "function",
+                    status: calculationStatus
+                )
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity)
+            .accessibilityLabel("计算，\(calculationStatus.text)，\(calculationStatus.detail)")
+            .accessibilityHint("进入每日计算")
         }
     }
 
-    private func heroMetricTile(
-        icon: String,
+    private func heroLearningStatusTile(
         title: String,
-        value: String,
-        caption: String,
-        showsDisclosureIndicator: Bool = false
+        icon: String,
+        status: HomeLearningStatus
     ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 5) {
+        let statusColor = heroStatusColor(status.tone)
+        let titleColor = Color(uiColor: .secondaryLabel)
+        let detailColor = Color(uiColor: .tertiaryLabel)
+        let cardBackground = Color(uiColor: .secondarySystemGroupedBackground)
+        let borderColor = Color(uiColor: .separator)
+            .opacity(colorScheme == .dark ? 0.5 : 0.22)
+        let statusBackground = statusColor.opacity(colorScheme == .dark ? 0.18 : 0.10)
+        let shadowColor = Color.black.opacity(colorScheme == .dark ? 0.22 : 0.06)
+
+        return VStack(spacing: 2) {
+            HStack(spacing: 3) {
                 Image(systemName: icon)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.white.opacity(0.9))
-                    .frame(width: 18, height: 18)
-                    .background(.white.opacity(0.12), in: Circle())
-
-                Text(title)
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.88))
-                    .lineLimit(1)
-
-                if showsDisclosureIndicator {
-                    Spacer(minLength: 0)
-
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.72))
-                }
+                    .foregroundStyle(titleColor)
+                Text(title)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(titleColor)
             }
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
 
-            Text(value)
-                .font(.system(.title2, design: .rounded, weight: .bold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-                .contentTransition(.numericText())
+            HStack(spacing: 2) {
+                Image(systemName: heroStatusSystemImage(status.tone))
+                    .font(.caption2.weight(.bold))
 
-            Text(caption)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.white.opacity(0.78))
+                Text(status.text)
+                    .font(.caption.weight(.bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 0.6 : 0.9)
+            }
+            .foregroundStyle(statusColor)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(statusBackground, in: Capsule())
+            .padding(.top, 3)
+
+            Text(status.detail)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(detailColor)
                 .lineLimit(1)
-                .minimumScaleFactor(0.75)
+                .minimumScaleFactor(0.78)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(.white.opacity(0.1), lineWidth: 1)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: dynamicTypeSize.isAccessibilitySize ? 84 : 62,
+            alignment: .center
         )
+        .padding(.horizontal, 4)
+        .padding(.vertical, dynamicTypeSize.isAccessibilitySize ? 8 : 5)
+        .background(cardBackground, in: RoundedRectangle(cornerRadius: 13))
+        .overlay(
+            RoundedRectangle(cornerRadius: 13)
+                .stroke(borderColor, lineWidth: 1)
+        )
+        .shadow(color: shadowColor, radius: 3, x: 0, y: 1)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title)，\(status.text)，\(status.detail)")
+    }
+
+    private func heroStatusColor(_ tone: HomeLearningStatusTone) -> Color {
+        switch tone {
+        case .completed:
+            return Color(uiColor: .systemGreen)
+        case .pending:
+            return Color(uiColor: .systemOrange)
+        case .notRequired:
+            return Color(uiColor: .systemGray)
+        }
+    }
+
+    private func heroStatusSystemImage(_ tone: HomeLearningStatusTone) -> String {
+        switch tone {
+        case .completed:
+            return "checkmark.circle.fill"
+        case .pending:
+            return "exclamationmark.circle.fill"
+        case .notRequired:
+            return "minus.circle.fill"
+        }
     }
 
     private func heroSummaryText(_ snapshot: DashboardSnapshot, result: DailySummaryResult?) -> String {
@@ -1984,6 +2185,10 @@ struct HomeView: View {
                     pointBalance: source.pointBalance,
                     pointsEarnedToday: source.pointsEarnedToday,
                     currentPointStreak: source.currentPointStreak,
+                    calculationCompletedToday: source.calculationCompletedToday,
+                    calculationFirstRoundCorrect: source.calculationFirstRoundCorrect,
+                    calculationFirstRoundTotal: source.calculationFirstRoundTotal,
+                    calculationRoundsSubmitted: source.calculationRoundsSubmitted,
                     referenceDate: referenceDate
                 )
 
@@ -2043,6 +2248,8 @@ struct HomeView: View {
 
                     recentPlansCard(snapshot)
 
+                    DailyCalculationHomeCard()
+
                     learningCalendarCard(snapshot)
 
                     pointsSummaryCard(snapshot)
@@ -2087,6 +2294,8 @@ struct HomeView: View {
                     loadingHeroCard
 
                     dailyQuoteCard
+
+                    DailyCalculationHomeCard()
 
                     if isWide {
                         HStack(spacing: 12) {
@@ -2619,10 +2828,13 @@ struct HomeView: View {
     }
 
     private func reviewEntryLabel(_ snapshot: DashboardSnapshot) -> some View {
-        HStack(alignment: .center) {
+        let isCompleted = snapshot.dueItems.isEmpty
+            && !snapshot.dailyReviewPlanItemIDs.isEmpty
+
+        return HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Image(systemName: "play.fill")
+                    Image(systemName: isCompleted ? "checkmark.seal.fill" : "play.fill")
                     Text("开始今天复习")
                 }
                 .font(.title3.weight(.semibold))
@@ -2655,9 +2867,11 @@ struct HomeView: View {
         .padding(16)
         .background(
             LinearGradient(
-                colors: snapshot.dueItems.isEmpty
-                    ? [.gray, .gray.opacity(0.8)]
-                    : [.accentColor, .accentColor.opacity(0.8)],
+                colors: isCompleted
+                    ? [.green.opacity(0.95), .green.opacity(0.72)]
+                    : snapshot.dueItems.isEmpty
+                        ? [.gray, .gray.opacity(0.8)]
+                        : [.accentColor, .accentColor.opacity(0.8)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -2672,14 +2886,17 @@ struct HomeView: View {
     }
 
     private func dictationEntryButton(_ snapshot: DashboardSnapshot) -> some View {
-        HStack(alignment: .center, spacing: 12) {
+        let isCompleted = snapshot.pendingDictationSessionCount == 0
+            && snapshot.dictationCompletedToday
+
+        return HStack(alignment: .center, spacing: 12) {
             Button {
                 openDictationHome(source: "home dictation card")
             } label: {
                 HStack(alignment: .center) {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Image(systemName: "text.book.closed.fill")
+                            Image(systemName: isCompleted ? "checkmark.seal.fill" : "text.book.closed.fill")
                             Text("进入今日听写")
                         }
                         .font(.title3.weight(.semibold))
@@ -2720,7 +2937,9 @@ struct HomeView: View {
         .padding(16)
         .background(
             LinearGradient(
-                colors: [.blue.opacity(0.92), .teal.opacity(0.82)],
+                colors: isCompleted
+                    ? [.green.opacity(0.95), .green.opacity(0.72)]
+                    : [.blue.opacity(0.92), .teal.opacity(0.82)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -3246,6 +3465,8 @@ struct HomeView: View {
                 todayCorrectCount: snapshot.todayCorrectCount,
                 todayAccuracyText: snapshot.todayAccuracyText,
                 todayDictationReviewedEntryCount: snapshot.todayDictationReviewedEntryCount,
+                dictationCompletedToday: snapshot.dictationCompletedToday,
+                hasDictationAwaitingReview: snapshot.hasDictationAwaitingReview,
                 pendingDictationCount: snapshot.pendingDictationCount,
                 pendingDictationSessionCount: snapshot.pendingDictationSessionCount,
                 latestDictationSession: snapshot.latestDictationSession,
@@ -3264,6 +3485,10 @@ struct HomeView: View {
                 pointBalance: snapshot.pointBalance + PointLedgerService.taskRewardAmount,
                 pointsEarnedToday: snapshot.pointsEarnedToday + PointLedgerService.taskRewardAmount,
                 currentPointStreak: snapshot.currentPointStreak,
+                calculationCompletedToday: snapshot.calculationCompletedToday,
+                calculationFirstRoundCorrect: snapshot.calculationFirstRoundCorrect,
+                calculationFirstRoundTotal: snapshot.calculationFirstRoundTotal,
+                calculationRoundsSubmitted: snapshot.calculationRoundsSubmitted,
                 wrongReviewSamples: snapshot.wrongReviewSamples,
                 heroSubtitle: snapshot.heroSubtitle,
                 heroGradientColors: snapshot.heroGradientColors

@@ -45,7 +45,8 @@ struct Provider: TimelineProvider {
             DictationEntry.self,
             ScheduleItem.self,
             PointLedgerEntry.self,
-            PointRewardState.self
+            PointRewardState.self,
+            CalculationRound.self
         ])
 
         guard let container = widgetModelContainer(for: schema) else {

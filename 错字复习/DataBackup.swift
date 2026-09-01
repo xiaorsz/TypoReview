@@ -47,7 +47,7 @@ struct DataBackupDocument: FileDocument {
 }
 
 struct DataBackupPayload: Codable, @unchecked Sendable {
-    static let currentVersion = 4
+    static let currentVersion = 5
 
     let version: Int
     let exportedAt: Date
@@ -66,6 +66,7 @@ struct DataBackupPayload: Codable, @unchecked Sendable {
     let mediaAssets: [MediaAssetSnapshot]
     let pointLedgerEntries: [PointLedgerEntrySnapshot]
     let pointRewardStates: [PointRewardStateSnapshot]
+    let calculationRounds: [CalculationRoundSnapshot]
 
     enum CodingKeys: String, CodingKey {
         case version
@@ -85,6 +86,7 @@ struct DataBackupPayload: Codable, @unchecked Sendable {
         case mediaAssets
         case pointLedgerEntries
         case pointRewardStates
+        case calculationRounds
     }
 
     init(
@@ -104,7 +106,8 @@ struct DataBackupPayload: Codable, @unchecked Sendable {
         scheduleItems: [ScheduleItemSnapshot],
         mediaAssets: [MediaAssetSnapshot] = [],
         pointLedgerEntries: [PointLedgerEntrySnapshot] = [],
-        pointRewardStates: [PointRewardStateSnapshot] = []
+        pointRewardStates: [PointRewardStateSnapshot] = [],
+        calculationRounds: [CalculationRoundSnapshot] = []
     ) {
         self.version = version
         self.exportedAt = exportedAt
@@ -123,6 +126,7 @@ struct DataBackupPayload: Codable, @unchecked Sendable {
         self.mediaAssets = mediaAssets
         self.pointLedgerEntries = pointLedgerEntries
         self.pointRewardStates = pointRewardStates
+        self.calculationRounds = calculationRounds
     }
 
     init(from decoder: any Decoder) throws {
@@ -144,6 +148,7 @@ struct DataBackupPayload: Codable, @unchecked Sendable {
         mediaAssets = try container.decodeIfPresent([MediaAssetSnapshot].self, forKey: .mediaAssets) ?? []
         pointLedgerEntries = try container.decodeIfPresent([PointLedgerEntrySnapshot].self, forKey: .pointLedgerEntries) ?? []
         pointRewardStates = try container.decodeIfPresent([PointRewardStateSnapshot].self, forKey: .pointRewardStates) ?? []
+        calculationRounds = try container.decodeIfPresent([CalculationRoundSnapshot].self, forKey: .calculationRounds) ?? []
     }
 
     static var placeholder: DataBackupPayload {
@@ -161,7 +166,8 @@ struct DataBackupPayload: Codable, @unchecked Sendable {
             scheduleItems: [],
             mediaAssets: [],
             pointLedgerEntries: [],
-            pointRewardStates: []
+            pointRewardStates: [],
+            calculationRounds: []
         )
     }
 
@@ -189,6 +195,7 @@ struct DataBackupPayload: Codable, @unchecked Sendable {
             try modelContext.fetch(FetchDescriptor<PointLedgerEntry>())
         ).map(PointLedgerEntrySnapshot.init)
         let pointRewardStates = try modelContext.fetch(FetchDescriptor<PointRewardState>()).map(PointRewardStateSnapshot.init)
+        let calculationRounds = try modelContext.fetch(FetchDescriptor<CalculationRound>()).map(CalculationRoundSnapshot.init)
 
         return DataBackupPayload(
             settings: settings,
@@ -204,7 +211,8 @@ struct DataBackupPayload: Codable, @unchecked Sendable {
             scheduleItems: scheduleItems,
             mediaAssets: mediaAssetSnapshots,
             pointLedgerEntries: pointLedgerEntries,
-            pointRewardStates: pointRewardStates
+            pointRewardStates: pointRewardStates,
+            calculationRounds: calculationRounds
         )
     }
 
@@ -245,7 +253,8 @@ struct DataBackupPayload: Codable, @unchecked Sendable {
             "听写条目 \(dictationEntries.count) 条",
             "日程 \(scheduleItems.count) 条",
             "晨读资源 \(mediaAssets.count) 条",
-            "积分流水 \(pointLedgerEntries.count) 条"
+            "积分流水 \(pointLedgerEntries.count) 条",
+            "计算练习 \(calculationRounds.count) 轮"
         ]
         .compactMap { $0 }
         .joined(separator: "，")
@@ -303,6 +312,7 @@ enum DataBackupService {
         try deleteAll(ScheduleItem.self, in: modelContext)
         try deleteAll(PointLedgerEntry.self, in: modelContext)
         try deleteAll(PointRewardState.self, in: modelContext)
+        try deleteAll(CalculationRound.self, in: modelContext)
 
         payload.reviewItems
             .map { $0.makeModel() }
@@ -353,6 +363,9 @@ enum DataBackupService {
             .map { $0.makeModel() }
             .forEach { modelContext.insert($0) }
         payload.pointRewardStates
+            .map { $0.makeModel() }
+            .forEach { modelContext.insert($0) }
+        payload.calculationRounds
             .map { $0.makeModel() }
             .forEach { modelContext.insert($0) }
 
@@ -1225,5 +1238,55 @@ struct PointRewardStateSnapshot: Codable {
             longestStreak: longestStreak,
             updatedAt: updatedAt
         )
+    }
+}
+
+struct CalculationRoundSnapshot: Codable, Sendable {
+    let id: UUID
+    let dayKey: String
+    let roundIndex: Int
+    let generatorVersion: Int
+    let questionsRawValue: String
+    let answersRawValue: String
+    let correctCount: Int
+    let startedAt: Date
+    let submittedAt: Date?
+    let durationSeconds: Double
+    let createdAt: Date
+    let updatedAt: Date
+
+    init(_ round: CalculationRound) {
+        id = round.id
+        dayKey = round.dayKey
+        roundIndex = round.roundIndex
+        generatorVersion = round.generatorVersion
+        questionsRawValue = round.questionsRawValue
+        answersRawValue = round.answersRawValue
+        correctCount = round.correctCount
+        startedAt = round.startedAt
+        submittedAt = round.submittedAt
+        durationSeconds = round.durationSeconds
+        createdAt = round.createdAt
+        updatedAt = round.updatedAt
+    }
+
+    func makeModel() -> CalculationRound {
+        let round = CalculationRound(
+            id: id,
+            dayKey: dayKey,
+            roundIndex: roundIndex,
+            generatorVersion: generatorVersion,
+            questions: [],
+            answers: [],
+            correctCount: correctCount,
+            startedAt: startedAt,
+            submittedAt: submittedAt,
+            durationSeconds: durationSeconds,
+            createdAt: createdAt,
+            updatedAt: updatedAt
+        )
+        round.questionsRawValue = questionsRawValue
+        round.answersRawValue = answersRawValue
+        return round
     }
 }

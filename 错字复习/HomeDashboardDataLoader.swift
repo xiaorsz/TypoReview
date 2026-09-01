@@ -75,6 +75,11 @@ enum HomeDashboardDataLoader {
             } else {
                 currentPointStreak = 0
             }
+            let calculationRounds = ((try? context.fetch(FetchDescriptor<CalculationRound>())) ?? [])
+                .filter { $0.dayKey == todayPlanKey }
+                .sorted { $0.roundIndex < $1.roundIndex }
+            let firstCalculationRound = calculationRounds.first { $0.roundIndex == 0 && $0.isSubmitted }
+            let submittedCalculationRounds = calculationRounds.filter(\.isSubmitted)
 
             source = HomeDashboardSourceSnapshot(
                 reviewItems: reviewItems,
@@ -90,7 +95,11 @@ enum HomeDashboardDataLoader {
                 pointsEarnedToday: pointAmountsAndDates
                     .filter { $0.amount > 0 && calendar.isDate($0.createdAt, inSameDayAs: referenceDate) }
                     .reduce(0) { $0 + $1.amount },
-                currentPointStreak: currentPointStreak
+                currentPointStreak: currentPointStreak,
+                calculationCompletedToday: calculationRounds.contains(where: \.isPerfect),
+                calculationFirstRoundCorrect: firstCalculationRound?.correctCount ?? 0,
+                calculationFirstRoundTotal: firstCalculationRound?.questions.count ?? 0,
+                calculationRoundsSubmitted: submittedCalculationRounds.count
             )
             }
             return source

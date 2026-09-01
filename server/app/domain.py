@@ -22,6 +22,7 @@ ENTITY_KEYS = (
     "dictationSessions",
     "dictationEntries",
     "scheduleItems",
+    "calculationRounds",
     "pointLedgerEntries",
     "pointRewardStates",
 )
