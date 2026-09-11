@@ -1,4 +1,14 @@
 CREATE SEQUENCE IF NOT EXISTS record_version_seq;
+
+-- Serialize record writers before defaults/row locks are evaluated. Sequence
+-- allocation must follow commit order, otherwise an incremental reader can
+-- advance past a version that is still in an uncommitted transaction.
+CREATE OR REPLACE FUNCTION lock_record_writes() RETURNS trigger AS $$
+BEGIN
+    PERFORM pg_advisory_xact_lock(9120260910);
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS accounts (
@@ -21,6 +31,11 @@ CREATE TABLE IF NOT EXISTS records (
 
 CREATE INDEX IF NOT EXISTS records_changes_idx
     ON records(account_id, server_version);
+
+DROP TRIGGER IF EXISTS records_serialize_writes ON records;
+CREATE TRIGGER records_serialize_writes
+BEFORE INSERT OR UPDATE OR DELETE ON records
+FOR EACH STATEMENT EXECUTE FUNCTION lock_record_writes();
 CREATE INDEX IF NOT EXISTS records_entity_idx
     ON records(account_id, entity_type) WHERE deleted_at IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS settings_singleton_idx

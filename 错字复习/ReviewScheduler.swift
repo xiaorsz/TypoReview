@@ -321,7 +321,7 @@ struct ReviewScheduler {
                 .filter { record in
                     record.mode == .scheduled
                         && record.oldStage == item.stage
-                        && record.reviewedAt > storedReviewDate
+                        && reviewSyncSecond(record.reviewedAt) > reviewSyncSecond(storedReviewDate)
                         && record.reviewedAt >= scheduledDay
                 }
                 .max { $0.reviewedAt < $1.reviewedAt }
@@ -355,10 +355,16 @@ struct ReviewScheduler {
             guard let latestRecord = latestRecordByItemID[item.id] else { continue }
 
             let storedReviewDate = item.lastReviewedAt ?? .distantPast
-            let recordIsNewer = storedReviewDate < latestRecord.reviewedAt
-            let stateDisagreesAtSameReview = storedReviewDate == latestRecord.reviewedAt
+            // Uploads use whole-second ISO-8601 dates, but migrated history can
+            // retain fractions. Comparing raw Dates repairs the same answer on
+            // every server echo and changes updatedAt forever. Compare at wire
+            // precision without modifying either stored timestamp.
+            let storedSecond = reviewSyncSecond(storedReviewDate)
+            let recordSecond = reviewSyncSecond(latestRecord.reviewedAt)
+            let recordIsNewer = storedSecond < recordSecond
+            let stateDisagreesAtSameReview = storedSecond == recordSecond
                 && item.stage != latestRecord.newStage
-            let stateComesFromSupersededRecord = storedReviewDate > latestRecord.reviewedAt
+            let stateComesFromSupersededRecord = storedSecond > recordSecond
                 && item.stage == latestRecord.newStage
             guard recordIsNewer || stateDisagreesAtSameReview || stateComesFromSupersededRecord else {
                 continue
@@ -370,6 +376,10 @@ struct ReviewScheduler {
         }
 
         return changedCount
+    }
+
+    private static func reviewSyncSecond(_ date: Date) -> TimeInterval {
+        date.timeIntervalSince1970.rounded(.down)
     }
 
     private static func applyStandardProgress(

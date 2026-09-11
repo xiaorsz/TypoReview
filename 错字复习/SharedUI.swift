@@ -922,3 +922,17 @@ extension DictationSpeaker: @preconcurrency AVSpeechSynthesizerDelegate {
         isSpeaking = false
     }
 }
+
+// A failed manual refresh must not silently look like a successful update.
+extension View {
+    func serverRefreshError(_ message: Binding<String?>) -> some View {
+        alert("刷新未完成", isPresented: Binding(
+            get: { message.wrappedValue != nil },
+            set: { if !$0 { message.wrappedValue = nil } }
+        )) {
+            Button("知道了", role: .cancel) { message.wrappedValue = nil }
+        } message: {
+            Text(message.wrappedValue ?? "")
+        }
+    }
+}

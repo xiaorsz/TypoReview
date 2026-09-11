@@ -136,7 +136,7 @@ struct RootTabView: View {
                 try? await Task.sleep(nanoseconds: 750_000_000)
                 guard !Task.isCancelled else { return }
                 guard canRefreshLiveAppState else { return }
-                let reconciliationError = await Task.detached(priority: .utility) {
+                let reconciliation = await Task.detached(priority: .utility) {
                     PersistentStoreAccessGate.withAccess {
                         let backgroundContext = ModelContext(container)
                         do {
@@ -146,17 +146,18 @@ struct RootTabView: View {
                             _ = try ReviewScheduler.reconcileStandardReviewProgress(in: backgroundContext)
                             _ = try ReviewScheduler.deduplicateDailyReviewPlans(in: backgroundContext)
                             _ = try PointLedgerService.reconcileMissingAutomaticRewards(in: backgroundContext)
-                            if backgroundContext.hasChanges {
+                            let didChange = backgroundContext.hasChanges
+                            if didChange {
                                 try backgroundContext.save()
                             }
-                            return nil as String?
+                            return (didChange: didChange, error: nil as String?)
                         } catch {
-                            return error.localizedDescription
+                            return (didChange: false, error: error.localizedDescription as String?)
                         }
                     }
                 }.value
                 guard !Task.isCancelled else { return }
-                if let reconciliationError {
+                if let reconciliationError = reconciliation.error {
                     #if DEBUG
                     DebugPerf.mark("RootTabView remote review reconciliation failed error=\(reconciliationError)")
                     #endif
@@ -168,7 +169,7 @@ struct RootTabView: View {
                 #if DEBUG
                 DebugPerf.mark("RootTabView posting appDataDidMutate from remote change")
                 #endif
-                AppDataChangeCenter.post()
+                AppDataChangeCenter.post(source: reconciliation.didChange ? .local : .server)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSUbiquitousKeyValueStore.didChangeExternallyNotification)) { _ in
@@ -177,8 +178,9 @@ struct RootTabView: View {
             appSettingsStore.refreshFromUbiquitousStoreIfPossible(using: modelContext)
             AppDataChangeCenter.post()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .appDataDidChange)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .appDataDidChange)) { notification in
             guard canRefreshLiveAppState else { return }
+            guard AppDataChangeCenter.requiresUpload(notification) else { return }
             ServerSyncCoordinator.shared.scheduleUpload(
                 from: modelContext,
                 settingsStore: appSettingsStore
@@ -361,10 +363,13 @@ struct RootTabView: View {
             refreshAppStateTask?.cancel()
             remoteChangeDebounceTask?.cancel()
             startupMaintenanceTask?.cancel()
-            await ServerSyncCoordinator.shared.synchronize(
+            let succeeded = await ServerSyncCoordinator.shared.synchronize(
                 modelContext: modelContext,
                 settingsStore: appSettingsStore
             )
+            if !succeeded {
+                ServerSyncCoordinator.shared.scheduleUpload(from: modelContext, settingsStore: appSettingsStore)
+            }
         }
     }
 

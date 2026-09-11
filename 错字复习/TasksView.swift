@@ -1431,7 +1431,7 @@ struct TasksView: View {
         .iOS17SafeSwipeActions(edge: .trailing, allowsFullSwipe: false) {
             if let liveSchedule = scheduleModelsByID[schedule.id] {
                 Button("删除", systemImage: "trash", role: .destructive) {
-                    modelContext.delete(liveSchedule)
+                    SyncDeletionStore.delete(liveSchedule, in: modelContext)
                     pageSnapshot = TasksPageSnapshot(
                         displayItems: pageSnapshot.displayItems,
                         taskProjectionsByID: pageSnapshot.taskProjectionsByID,
@@ -1514,7 +1514,7 @@ struct TasksView: View {
                 .tint(.blue)
 
                 Button("彻底删除", systemImage: "trash", role: .destructive) {
-                    modelContext.delete(liveSchedule)
+                    SyncDeletionStore.delete(liveSchedule, in: modelContext)
                     pageSnapshot = TasksPageSnapshot(
                         displayItems: pageSnapshot.displayItems,
                         taskProjectionsByID: pageSnapshot.taskProjectionsByID,
@@ -1550,19 +1550,19 @@ struct TasksView: View {
             let relatedSubtasks = try modelContext.fetch(subtasksDesc)
 
             for completion in relatedCompletions {
-                modelContext.delete(completion)
+                SyncDeletionStore.delete(completion, in: modelContext)
             }
             for subtaskExecution in allSubtaskEx where relatedExecutionIDs.contains(subtaskExecution.taskExecutionID) {
-                modelContext.delete(subtaskExecution)
+                SyncDeletionStore.delete(subtaskExecution, in: modelContext)
             }
             for execution in relatedExecutionRecords {
-                modelContext.delete(execution)
+                SyncDeletionStore.delete(execution, in: modelContext)
             }
             for subtask in relatedSubtasks {
-                modelContext.delete(subtask)
+                SyncDeletionStore.delete(subtask, in: modelContext)
             }
             
-            modelContext.delete(task)
+            SyncDeletionStore.delete(task, in: modelContext)
             pageSnapshot = TasksPageSnapshot(
                 displayItems: pageSnapshot.displayItems.filter { $0.task.id != taskID },
                 taskProjectionsByID: pageSnapshot.taskProjectionsByID.filter { $0.key != taskID },

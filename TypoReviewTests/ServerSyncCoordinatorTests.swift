@@ -392,10 +392,494 @@ final class ServerSyncCoordinatorTests: XCTestCase {
         XCTAssertEqual(entries.first?.id, earlier.id)
     }
 
+    func testRefreshWaitsForActiveUploadAndReadsLatestCursor() async throws {
+        let fixture = try makeSyncFixture()
+        let item = ReviewItem(type: .chineseCharacter, content: "新题", prompt: "新题")
+        fixture.context.insert(item)
+        try fixture.context.save()
+        let uploadEntered = expectation(description: "upload entered")
+        var resumeUpload: CheckedContinuation<Void, Never>?
+        fixture.api.onPush = { _ in
+            uploadEntered.fulfill()
+            await withCheckedContinuation { resumeUpload = $0 }
+        }
+        let upload = Task { await fixture.sync.uploadChanges(from: fixture.context, settingsStore: fixture.settings) }
+        await fulfillment(of: [uploadEntered], timeout: 5)
+
+        var refreshFinished = false
+        let refresh = Task {
+            await fixture.sync.refreshFromServer(modelContext: fixture.context, settingsStore: fixture.settings)
+            refreshFinished = true
+        }
+        await Task.yield()
+        XCTAssertFalse(refreshFinished, "Pull-to-refresh must wait instead of silently returning while uploading")
+        let readsBeforeRelease = fixture.api.requestedCursors.count
+        resumeUpload?.resume()
+        let uploadSucceeded = await upload.value
+        await refresh.value
+        XCTAssertTrue(uploadSucceeded)
+        XCTAssertTrue(refreshFinished)
+        XCTAssertGreaterThan(fixture.api.requestedCursors.count, readsBeforeRelease)
+    }
+
+    func testAutomaticUploadMergesAndRetriesConflictWithoutManualRefresh() async throws {
+        let fixture = try makeSyncFixture()
+        let item = ReviewItem(type: .chineseCharacter, content: "已复习", prompt: "已复习")
+        fixture.context.insert(item)
+        try fixture.context.save()
+        fixture.api.onPush = { [api = fixture.api] _ in
+            if api.uploadBodies.count == 1 {
+                throw ServerAPIError.rejected(statusCode: 409, message: "sync_record_changed")
+            }
+        }
+
+        let succeeded = await fixture.sync.uploadChanges(from: fixture.context, settingsStore: fixture.settings)
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(fixture.api.uploadBodies.count, 2)
+        XCTAssertEqual(fixture.api.events.prefix(4), ["pull", "push", "pull", "push"])
+        XCTAssertNil(fixture.sync.lastErrorDescription)
+    }
+
+    func testSaveDuringScheduledUploadIsSentInAnotherPassWithoutCancellation() async throws {
+        let fixture = try makeSyncFixture()
+        let first = ReviewItem(type: .chineseCharacter, content: "第一题", prompt: "第一题")
+        fixture.context.insert(first)
+        try fixture.context.save()
+        let entered = expectation(description: "first upload entered")
+        let secondUploaded = expectation(description: "second answer uploaded")
+        var resumeFirst: CheckedContinuation<Void, Never>?
+        let second = ReviewItem(type: .chineseCharacter, content: "第二题", prompt: "第二题")
+        fixture.api.onPush = { [api = fixture.api] body in
+            if api.uploadBodies.count == 1 {
+                entered.fulfill()
+                await withCheckedContinuation { resumeFirst = $0 }
+                XCTAssertFalse(Task.isCancelled)
+            } else if String(decoding: body, as: UTF8.self).contains(second.id.uuidString) {
+                secondUploaded.fulfill()
+            }
+        }
+        fixture.sync.scheduleUpload(from: fixture.context, settingsStore: fixture.settings, delayNanoseconds: 0)
+        await fulfillment(of: [entered], timeout: 5)
+        fixture.context.insert(second)
+        try fixture.context.save()
+        fixture.sync.scheduleUpload(from: fixture.context, settingsStore: fixture.settings, delayNanoseconds: 0)
+        resumeFirst?.resume()
+        await fulfillment(of: [secondUploaded], timeout: 5)
+        // Drain the queue before the in-memory store leaves this test.
+        _ = await fixture.sync.synchronize(modelContext: fixture.context, settingsStore: fixture.settings)
+        XCTAssertEqual(fixture.api.uploadBodies.count, 2)
+    }
+
+    func testConflictRetriesAreBoundedAndKeepUnsentWork() async throws {
+        let fixture = try makeSyncFixture()
+        let item = ReviewItem(type: .chineseCharacter, content: "保留", prompt: "保留")
+        fixture.context.insert(item)
+        try fixture.context.save()
+        fixture.api.onPush = { _ in
+            throw ServerAPIError.rejected(statusCode: 409, message: "sync_record_changed")
+        }
+        let succeeded = await fixture.sync.uploadChanges(from: fixture.context, settingsStore: fixture.settings)
+        XCTAssertFalse(succeeded)
+        XCTAssertEqual(fixture.api.uploadBodies.count, 3)
+        XCTAssertNotNil(fixture.sync.lastErrorDescription)
+        XCTAssertEqual(try fixture.context.fetchCount(FetchDescriptor<ReviewItem>()), 1)
+        fixture.api.onPush = nil
+        let retrySucceeded = await fixture.sync.uploadChanges(from: fixture.context, settingsStore: fixture.settings)
+        XCTAssertTrue(retrySucceeded)
+        XCTAssertEqual(fixture.api.uploadBodies.count, 4, "Failed work must still be pending")
+    }
+
+    func testRefreshDownloadsReviewedStateFromOtherDevice() async throws {
+        let fixture = try makeSyncFixture()
+        let remote = ReviewItem(type: .chineseCharacter, content: "完成", prompt: "完成")
+        remote.lastReviewedAt = Date(timeIntervalSince1970: 200)
+        remote.nextReviewAt = Date(timeIntervalSince1970: 1000)
+        remote.stage = 2
+        let change = try makeServerChange(entityType: "reviewItems", recordID: remote.id, snapshot: ReviewItemSnapshot(remote))
+        fixture.api.remoteChanges = [change]
+
+        await fixture.sync.refreshFromServer(modelContext: fixture.context, settingsStore: fixture.settings)
+
+        let freshContext = ModelContext(fixture.context.container)
+        let restored = try XCTUnwrap(try freshContext.fetch(FetchDescriptor<ReviewItem>()).first)
+        XCTAssertEqual(restored.lastReviewedAt, remote.lastReviewedAt)
+        XCTAssertEqual(restored.nextReviewAt, remote.nextReviewAt)
+        XCTAssertEqual(restored.stage, 2)
+        XCTAssertEqual(fixture.defaults.integer(forKey: "typo_review_server_change_cursor_v1"), 1)
+    }
+
+    func testFractionalHistoryConvergesWithoutUploadingServerEchoes() async throws {
+        let fixture = try makeSyncFixture()
+        let reviewedAt = Date(timeIntervalSince1970: 1_751_456_999)
+        let item = ReviewItem(type: .chineseCharacter, content: "已掌握", prompt: "已掌握",
+                              stage: 7, nextReviewAt: .distantFuture, lastReviewedAt: reviewedAt,
+                              createdAt: reviewedAt, updatedAt: reviewedAt)
+        let itemChange = try makeServerChange(entityType: "reviewItems", recordID: item.id, snapshot: ReviewItemSnapshot(item))
+        let record = ReviewRecord(itemID: item.id, reviewedAt: reviewedAt, result: .correct,
+                                  mode: .scheduled, oldStage: 6, newStage: 7)
+        let recordChange = try makeServerChange(entityType: "reviewRecords", recordID: record.id, snapshot: ReviewRecordSnapshot(record))
+        guard case .object(var payload) = recordChange.payload else {
+            XCTFail("Expected record object")
+            return
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        payload["reviewedAt"] = .string(formatter.string(from: reviewedAt.addingTimeInterval(0.370)))
+        fixture.api.remoteChanges = [
+            itemChange,
+            ServerChange(entityType: "reviewRecords", recordID: record.id, payload: .object(payload),
+                         updatedAt: reviewedAt, serverVersion: 2, deletedAt: nil)
+        ]
+
+        for _ in 0..<3 {
+            let succeeded = await fixture.sync.synchronize(modelContext: fixture.context, settingsStore: fixture.settings)
+            XCTAssertTrue(succeeded)
+            // Mirror the persistent-store notification handler after a pull.
+            let repairContext = ModelContext(fixture.context.container)
+            repairContext.autosaveEnabled = false
+            XCTAssertEqual(try ReviewScheduler.reconcileStandardReviewProgress(in: repairContext), 0)
+            XCTAssertFalse(repairContext.hasChanges)
+        }
+        XCTAssertTrue(fixture.api.uploadBodies.isEmpty, "Downloaded history must converge without producing new mutations")
+        XCTAssertFalse(fixture.sync.isSynchronizing)
+        XCTAssertNil(fixture.sync.lastErrorDescription)
+    }
+
+    func testServerChangeRefreshesViewsWithoutRequestingUpload() {
+        let center = NotificationCenter()
+        var sourcesRequiringUpload: [Bool] = []
+        let token = center.addObserver(forName: .appDataDidChange, object: nil, queue: nil) { notification in
+            sourcesRequiringUpload.append(AppDataChangeCenter.requiresUpload(notification))
+        }
+        defer { center.removeObserver(token) }
+        AppDataChangeCenter.post(source: .server, using: center)
+        AppDataChangeCenter.post(using: center)
+        XCTAssertEqual(sourcesRequiringUpload, [false, true])
+    }
+
+    func testManualRefreshRepairsMissedReviewEvenWhenCursorIsAlreadyCurrent() async throws {
+        let fixture = try makeSyncFixture()
+        let item = ReviewItem(type: .chineseCharacter, content: "漏同步", prompt: "漏同步", stage: 1)
+        fixture.context.insert(item)
+        try fixture.context.save()
+        try saveFixtureBaseline(fixture.context, settings: fixture.settings, defaults: fixture.defaults)
+        let remote = ReviewItem(type: .chineseCharacter, content: item.content, prompt: item.prompt,
+                                stage: 2, nextReviewAt: .distantFuture, lastReviewedAt: .now)
+        remote.id = item.id
+        fixture.api.remoteChanges = [try makeServerChange(entityType: "reviewItems", recordID: item.id, snapshot: ReviewItemSnapshot(remote))]
+        fixture.defaults.set(1, forKey: "typo_review_server_change_cursor_v1")
+
+        await fixture.sync.refreshFromServer(modelContext: fixture.context, settingsStore: fixture.settings)
+
+        let freshContext = ModelContext(fixture.context.container)
+        let updated = try XCTUnwrap(try freshContext.fetch(FetchDescriptor<ReviewItem>()).first)
+        XCTAssertEqual(updated.stage, 2)
+        XCTAssertEqual(updated.nextReviewAt, .distantFuture)
+        XCTAssertNotNil(updated.lastReviewedAt)
+        XCTAssertEqual(fixture.api.requestedCursors.first, 0, "Manual refresh must check existing rows as well as new versions")
+    }
+
+    func testManualRefreshRepairsMissedDictationWithoutLosingUnsentLocalWork() async throws {
+        let fixture = try makeSyncFixture()
+        let session = DictationSession(title: "待听写", type: .chineseCharacter)
+        fixture.context.insert(session)
+        try fixture.context.save()
+        try saveFixtureBaseline(fixture.context, settings: fixture.settings, defaults: fixture.defaults)
+        let unsent = ReviewItem(type: .chineseCharacter, content: "手机新增", prompt: "手机新增")
+        fixture.context.insert(unsent)
+        try fixture.context.save()
+        let remote = DictationSession(id: session.id, title: session.title, type: .chineseCharacter,
+                                      finishedAt: .now, reviewedAt: .now)
+        fixture.api.remoteChanges = [try makeServerChange(entityType: "dictationSessions", recordID: session.id, snapshot: DictationSessionSnapshot(remote))]
+        fixture.defaults.set(1, forKey: "typo_review_server_change_cursor_v1")
+
+        await fixture.sync.refreshFromServer(modelContext: fixture.context, settingsStore: fixture.settings)
+
+        let context = ModelContext(fixture.context.container)
+        let updated = try XCTUnwrap(try context.fetch(FetchDescriptor<DictationSession>()).first)
+        XCTAssertNotNil(updated.reviewedAt)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<ReviewItem>()).first?.id, unsent.id)
+        let succeeded = await fixture.sync.uploadChanges(from: fixture.context, settingsStore: fixture.settings)
+        XCTAssertTrue(succeeded)
+        XCTAssertTrue(fixture.api.uploadBodies.contains { String(decoding: $0, as: UTF8.self).contains(unsent.id.uuidString) })
+    }
+
+    func testRepeatedManualRefreshDoesNotRewriteUnchangedRows() async throws {
+        let fixture = try makeSyncFixture()
+        let item = ReviewItem(type: .chineseCharacter, content: "一致", prompt: "一致")
+        fixture.context.insert(item)
+        try fixture.context.save()
+        try saveFixtureBaseline(fixture.context, settings: fixture.settings, defaults: fixture.defaults)
+        fixture.api.remoteChanges = [try makeServerChange(entityType: "reviewItems", recordID: item.id, snapshot: ReviewItemSnapshot(item))]
+        // Install the daily plan first; later identical refreshes should be quiet.
+        await fixture.sync.refreshFromServer(modelContext: fixture.context, settingsStore: fixture.settings)
+        let unexpectedChange = expectation(description: "unchanged rows must not post a data change")
+        unexpectedChange.isInverted = true
+        let observer = NotificationCenter.default.addObserver(forName: .appDataDidChange, object: nil, queue: nil) { _ in
+            unexpectedChange.fulfill()
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        for _ in 0..<3 {
+            let succeeded = await fixture.sync.refreshFromServer(modelContext: fixture.context, settingsStore: fixture.settings)
+            XCTAssertTrue(succeeded)
+        }
+        await fulfillment(of: [unexpectedChange], timeout: 0.1)
+        XCTAssertTrue(fixture.api.uploadBodies.isEmpty)
+    }
+
+    func testManualRefreshPreservesNewerLocalEditOfSameRecord() async throws {
+        let fixture = try makeSyncFixture()
+        let item = ReviewItem(type: .chineseCharacter, content: "本地", prompt: "本地",
+                              updatedAt: Date(timeIntervalSince1970: 100))
+        fixture.context.insert(item)
+        try fixture.context.save()
+        try saveFixtureBaseline(fixture.context, settings: fixture.settings, defaults: fixture.defaults)
+        item.note = "手机尚未上传的修改"
+        item.updatedAt = Date(timeIntervalSince1970: 300)
+        try fixture.context.save()
+        let remote = ReviewItem(id: item.id, type: .chineseCharacter, content: "本地", prompt: "本地",
+                                updatedAt: Date(timeIntervalSince1970: 200))
+        fixture.api.remoteChanges = [try makeServerChange(entityType: "reviewItems", recordID: item.id, snapshot: ReviewItemSnapshot(remote))]
+        fixture.defaults.set(1, forKey: "typo_review_server_change_cursor_v1")
+
+        let succeeded = await fixture.sync.refreshFromServer(modelContext: fixture.context, settingsStore: fixture.settings)
+        XCTAssertTrue(succeeded)
+        let fresh = ModelContext(fixture.context.container)
+        XCTAssertEqual(try fresh.fetch(FetchDescriptor<ReviewItem>()).first?.note, item.note)
+        _ = await fixture.sync.uploadChanges(from: fixture.context, settingsStore: fixture.settings)
+        XCTAssertFalse(fixture.api.uploadBodies.isEmpty)
+    }
+
+    func testBoardReadUsesFreshContextAfterRemoteReviewAndDictationComplete() async throws {
+        let fixture = try makeSyncFixture()
+        let item = ReviewItem(type: .chineseCharacter, content: "看板", prompt: "看板", stage: 1)
+        let session = DictationSession(title: "看板听写", type: .chineseCharacter)
+        fixture.context.insert(item)
+        fixture.context.insert(session)
+        try fixture.context.save()
+        try saveFixtureBaseline(fixture.context, settings: fixture.settings, defaults: fixture.defaults)
+        let staleBoard = try BoardDataSource.load(from: fixture.context.container)
+        XCTAssertEqual(staleBoard.reviewItems.first?.stage, 1)
+        XCTAssertEqual(staleBoard.sessions.count, 1)
+        let reviewed = ReviewItem(id: item.id, type: .chineseCharacter, content: item.content, prompt: item.prompt,
+                                 stage: 7, nextReviewAt: .distantFuture, lastReviewedAt: .now)
+        let finished = DictationSession(id: session.id, title: session.title, type: .chineseCharacter, reviewedAt: .now)
+        let sessionChange = try makeServerChange(entityType: "dictationSessions", recordID: session.id, snapshot: DictationSessionSnapshot(finished))
+        fixture.api.remoteChanges = [
+            try makeServerChange(entityType: "reviewItems", recordID: item.id, snapshot: ReviewItemSnapshot(reviewed)),
+            ServerChange(entityType: sessionChange.entityType, recordID: sessionChange.recordID, payload: sessionChange.payload,
+                         updatedAt: sessionChange.updatedAt, serverVersion: 2, deletedAt: nil)
+        ]
+        let succeeded = await fixture.sync.checkForServerUpdates(modelContext: fixture.context, settingsStore: fixture.settings)
+        XCTAssertTrue(succeeded)
+        let freshBoard = try BoardDataSource.load(from: fixture.context.container)
+        XCTAssertEqual(freshBoard.reviewItems.first?.stage, 7)
+        XCTAssertEqual(freshBoard.reviewItems.first?.nextReviewAt, .distantFuture)
+        XCTAssertTrue(freshBoard.sessions.isEmpty)
+        XCTAssertFalse(staleBoard.context === freshBoard.context)
+        XCTAssertTrue(fixture.api.uploadBodies.isEmpty, "Idle board polling must not upload")
+    }
+
+    func testBoardPollingIsSerialAndStopsWhenCancelled() async {
+        var checks: [Bool] = []
+        var resumeFirst: CheckedContinuation<Void, Never>?
+        let started = expectation(description: "first poll starts immediately")
+        let second = expectation(description: "second incremental poll")
+        let polling = Task {
+            await BoardSyncPolling.run(intervalNanoseconds: 1_000_000) { isFirst in
+                checks.append(isFirst)
+                if isFirst {
+                    started.fulfill()
+                    await withCheckedContinuation { resumeFirst = $0 }
+                } else if checks.count == 2 {
+                    second.fulfill()
+                }
+            }
+        }
+        await fulfillment(of: [started], timeout: 2)
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        XCTAssertEqual(checks, [true], "A slow request must not overlap another poll")
+        resumeFirst?.resume()
+        await fulfillment(of: [second], timeout: 2)
+        polling.cancel()
+        await polling.value
+        let count = checks.count
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        XCTAssertEqual(checks.count, count)
+        XCTAssertFalse(checks.dropFirst().contains(true))
+    }
+
+    func testSettingsPullPreservesOfflineItem() async throws {
+        let f = try makeSyncFixture()
+        let item = ReviewItem(type: .chineseCharacter, content: "离线", prompt: "离线")
+        f.context.insert(item)
+        try f.context.save()
+        let result = await f.sync.pull(into: f.context, settingsStore: f.settings)
+        XCTAssertTrue(result)
+        XCTAssertEqual(try ModelContext(f.context.container).fetchCount(FetchDescriptor<ReviewItem>()), 1)
+        _ = await f.sync.synchronize(modelContext: f.context, settingsStore: f.settings)
+    }
+
+    func testBootstrapPreservesExistingLocalWork() async throws {
+        let f = try makeSyncFixture()
+        f.defaults.removeObject(forKey: "typo_review_server_sync_baseline_v1")
+        let item = ReviewItem(type: .chineseCharacter, content: "首次离线", prompt: "首次离线")
+        f.context.insert(item)
+        try f.context.save()
+        let result = await f.sync.synchronize(modelContext: f.context, settingsStore: f.settings)
+        XCTAssertTrue(result)
+        XCTAssertEqual(try ModelContext(f.context.container).fetchCount(FetchDescriptor<ReviewItem>()), 1)
+        XCTAssertTrue(f.api.uploadBodies.contains { String(decoding: $0, as: UTF8.self).contains(item.id.uuidString) })
+    }
+
+    func testOutboxSurvivesCoordinatorRestartWithSameMutationIDs() async throws {
+        let f = try makeSyncFixture()
+        f.context.insert(ReviewItem(type: .chineseCharacter, content: "重试", prompt: "重试"))
+        try f.context.save()
+        f.api.onPush = { _ in throw URLError(.networkConnectionLost) }
+        let first = await f.sync.synchronize(modelContext: f.context, settingsStore: f.settings)
+        XCTAssertFalse(first)
+        let original = try XCTUnwrap(f.api.uploadBodies.first)
+        f.api.onPush = nil
+        let restarted = ServerSyncCoordinator(client: f.api, defaults: f.defaults, enabled: { true })
+        let result = await restarted.synchronize(modelContext: f.context, settingsStore: f.settings)
+        XCTAssertTrue(result)
+        XCTAssertEqual(f.api.uploadBodies.last, original)
+        XCTAssertNil(f.defaults.data(forKey: "typo_review_sync_outbox_v2"))
+    }
+
+    func testExplicitDeletionSurvivesPullAndIsRetriedAfterFailure() async throws {
+        let f = try makeSyncFixture()
+        let item = ReviewItem(type: .chineseCharacter, content: "删除", prompt: "删除")
+        f.context.insert(item)
+        try f.context.save()
+        let change = try makeServerChange(entityType: "reviewItems", recordID: item.id, snapshot: ReviewItemSnapshot(item))
+        try saveFixtureBaseline(f.context, settings: f.settings, defaults: f.defaults)
+        SyncDeletionStore.delete(item, in: f.context)
+        try f.context.save()
+        f.api.remoteChanges = [change]
+        f.api.onPush = { _ in throw URLError(.notConnectedToInternet) }
+        let first = await f.sync.synchronize(modelContext: f.context, settingsStore: f.settings)
+        XCTAssertFalse(first)
+        XCTAssertEqual(try ModelContext(f.context.container).fetchCount(FetchDescriptor<ReviewItem>()), 0)
+        XCTAssertEqual(try ModelContext(f.context.container).fetchCount(FetchDescriptor<SyncDeletion>()), 1)
+        XCTAssertTrue(String(decoding: try XCTUnwrap(f.api.uploadBodies.first), as: UTF8.self).contains("explicit"))
+        f.api.onPush = nil
+        let retry = await f.sync.synchronize(modelContext: f.context, settingsStore: f.settings)
+        XCTAssertTrue(retry)
+        XCTAssertEqual(try ModelContext(f.context.container).fetchCount(FetchDescriptor<SyncDeletion>()), 0)
+    }
+
+    func testSuccessfulPollDoesNotHideUploadFailure() async throws {
+        let f = try makeSyncFixture()
+        f.context.insert(ReviewItem(type: .chineseCharacter, content: "失败", prompt: "失败"))
+        try f.context.save()
+        f.api.onPush = { _ in throw URLError(.notConnectedToInternet) }
+        _ = await f.sync.synchronize(modelContext: f.context, settingsStore: f.settings)
+        _ = await f.sync.checkForServerUpdates(modelContext: f.context, settingsStore: f.settings)
+        XCTAssertNotNil(f.sync.lastErrorDescription)
+    }
+
+    func testManifestUsesIncrementalOnceReceiptsAreVerified() async throws {
+        let f = try makeSyncFixture()
+        let item = ReviewItem(type: .chineseCharacter, content: "清单", prompt: "清单")
+        let change = try makeServerChange(entityType: "reviewItems", recordID: item.id, snapshot: ReviewItemSnapshot(item))
+        f.api.remoteChanges = [change]
+        _ = await f.sync.checkForServerUpdates(modelContext: f.context, settingsStore: f.settings)
+        f.api.manifest = ServerSyncManifest(protocolVersion: 2, cursor: change.serverVersion, records: [
+            .init(entityType: change.entityType, recordID: change.recordID, serverVersion: change.serverVersion, deleted: false)
+        ])
+        let start = f.api.requestedCursors.count
+        _ = await f.sync.refreshFromServer(modelContext: f.context, settingsStore: f.settings)
+        XCTAssertEqual(f.api.requestedCursors[start], change.serverVersion)
+        _ = await f.sync.synchronize(modelContext: f.context, settingsStore: f.settings)
+    }
+
+    func testRejectedRecordDoesNotBlockOtherUploadsOrLoseLocalData() async throws {
+        let f = try makeSyncFixture()
+        let held = ReviewItem(type: .chineseCharacter, content: "冲突", prompt: "冲突")
+        let accepted = ReviewItem(type: .chineseCharacter, content: "通过", prompt: "通过")
+        f.context.insert(held)
+        f.context.insert(accepted)
+        try f.context.save()
+        f.api.reply = { mutations in
+            let rejected = mutations.first { ($0["recordID"] as? String) == held.id.uuidString }!
+            let ids = mutations.filter { ($0["recordID"] as? String) != held.id.uuidString }
+                .map { UUID(uuidString: $0["mutationID"] as! String)! }
+            return ServerMutationResponse(appliedMutationIDs: ids, conflicts: [
+                .init(mutationID: UUID(uuidString: rejected["mutationID"] as! String)!, entityType: "reviewItems",
+                      recordID: held.id, statusCode: 409, reason: .string("conflicting review"))
+            ])
+        }
+        let first = await f.sync.synchronize(modelContext: f.context, settingsStore: f.settings)
+        XCTAssertTrue(first)
+        XCTAssertNotNil(f.sync.lastErrorDescription)
+        XCTAssertEqual(try ModelContext(f.context.container).fetchCount(FetchDescriptor<ReviewItem>()), 2)
+        let count = f.api.uploadBodies.count
+        _ = await f.sync.synchronize(modelContext: f.context, settingsStore: f.settings)
+        XCTAssertEqual(f.api.uploadBodies.count, count, "Unchanged conflicting data must not loop")
+        f.api.reply = nil
+        held.content = "修正后"
+        held.updatedAt = .now
+        try f.context.save()
+        _ = await f.sync.synchronize(modelContext: f.context, settingsStore: f.settings)
+        XCTAssertEqual(f.api.uploadBodies.count, count + 1)
+        XCTAssertNil(f.sync.lastErrorDescription)
+    }
+
+    func testManifestRepairsMissingLocalRowDespiteKnownReceipt() async throws {
+        let f = try makeSyncFixture()
+        let item = ReviewItem(type: .chineseCharacter, content: "补漏", prompt: "补漏")
+        let change = try makeServerChange(entityType: "reviewItems", recordID: item.id, snapshot: ReviewItemSnapshot(item))
+        f.api.remoteChanges = [change]
+        _ = await f.sync.checkForServerUpdates(modelContext: f.context, settingsStore: f.settings)
+        let context = ModelContext(f.context.container)
+        for row in try context.fetch(FetchDescriptor<ReviewItem>()) { context.delete(row) }
+        try context.save()
+        f.api.manifest = ServerSyncManifest(protocolVersion: 2, cursor: change.serverVersion, records: [
+            .init(entityType: change.entityType, recordID: change.recordID, serverVersion: change.serverVersion, deleted: false)
+        ])
+        let start = f.api.requestedCursors.count
+        _ = await f.sync.refreshFromServer(modelContext: f.context, settingsStore: f.settings)
+        XCTAssertEqual(f.api.requestedCursors[start], 0)
+        XCTAssertEqual(try ModelContext(f.context.container).fetchCount(FetchDescriptor<ReviewItem>()), 1)
+        _ = await f.sync.synchronize(modelContext: f.context, settingsStore: f.settings)
+    }
+
+    private func saveFixtureBaseline(_ context: ModelContext, settings: AppSettingsStore, defaults: UserDefaults) throws {
+        let snapshot = try ServerSyncCoordinator.StructuredSnapshot(
+            payload: DataBackupPayload.capture(from: context, settings: settings.snapshot, mediaAssets: [])
+        )
+        defaults.set(try JSONEncoder().encode(snapshot.hashes), forKey: "typo_review_server_sync_baseline_v1")
+    }
+
+    private func makeSyncFixture() throws -> (
+        sync: ServerSyncCoordinator, api: StubServerSyncAPI, context: ModelContext,
+        settings: AppSettingsStore, defaults: UserDefaults
+    ) {
+        let container = try makeFullModelContainer()
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        let settings = AppSettingsStore()
+        let suite = "ServerSyncTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let baseline = try ServerSyncCoordinator.StructuredSnapshot(
+            payload: DataBackupPayload.capture(from: context, settings: settings.snapshot, mediaAssets: [])
+        )
+        defaults.set(try JSONEncoder().encode(baseline.hashes), forKey: "typo_review_server_sync_baseline_v1")
+        defaults.set(0, forKey: "typo_review_server_change_cursor_v1")
+        let api = StubServerSyncAPI()
+        let sync = ServerSyncCoordinator(client: api, defaults: defaults, enabled: { true })
+        return (sync, api, context, settings, defaults)
+    }
+
     private func makeFullModelContainer() throws -> ModelContainer {
         let schema = Schema([
             ReviewItem.self,
             ReviewRecord.self,
+            SyncDeletion.self,
             ReviewDailyPlan.self,
             TaskItem.self,
             TaskCompletion.self,
@@ -436,5 +920,45 @@ final class ServerSyncCoordinatorTests: XCTestCase {
             serverVersion: 1,
             deletedAt: nil
         )
+    }
+}
+
+@MainActor
+private final class StubServerSyncAPI: ServerSyncAPI {
+    var remoteChanges: [ServerChange] = []
+    var requestedCursors: [Int64] = []
+    var uploadBodies: [Data] = []
+    var events: [String] = []
+    var reply: (([[String: Any]]) -> ServerMutationResponse)?
+    var manifest: ServerSyncManifest?
+    func syncManifest() async throws -> ServerSyncManifest? { manifest }
+    var onPush: ((Data) async throws -> Void)?
+    private let planID = UUID()
+
+    func health() async throws {}
+    func exportSnapshot() async throws -> DataBackupPayload { throw ServerAPIError.invalidResponse }
+    func deepSeekAPIKey() async throws -> ServerSecretValueResponse { throw ServerAPIError.notConfigured }
+    func saveDeepSeekAPIKey(_ value: String) async throws -> ServerSecretValueResponse { throw ServerAPIError.notConfigured }
+
+    func changes(after cursor: Int64, limit: Int) async throws -> ServerChangeBatch {
+        requestedCursors.append(cursor)
+        events.append("pull")
+        let changes = Array(remoteChanges.filter { $0.serverVersion > cursor }.prefix(limit))
+        return ServerChangeBatch(changes: changes, cursor: changes.last?.serverVersion ?? cursor)
+    }
+
+    func dailyPlan(day: String, dailyLimit: Int) async throws -> ServerDailyPlan {
+        ServerDailyPlan(id: planID, day: day, dailyLimit: dailyLimit,
+                        createdAt: Date(timeIntervalSince1970: 100), updatedAt: Date(timeIntervalSince1970: 100), items: [])
+    }
+
+    func pushMutations(_ body: Data) async throws -> ServerMutationResponse {
+        uploadBodies.append(body)
+        events.append("push")
+        try await onPush?(body)
+        let root = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+        let mutations = root["mutations"] as! [[String: Any]]
+        if let reply { return reply(mutations) }
+        return ServerMutationResponse(appliedMutationIDs: mutations.compactMap { UUID(uuidString: $0["mutationID"] as! String) })
     }
 }

@@ -506,6 +506,51 @@ final class ReviewSchedulerTests: XCTestCase {
         XCTAssertEqual(item.nextReviewAt, date(2026, 7, 26))
     }
 
+    func testReconciliationDoesNotReuploadFractionalTimestampAfterServerRoundTrip() throws {
+        let container = try ModelContainer(
+            for: ReviewItem.self, ReviewRecord.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        let seconds = date(2026, 7, 2, hour: 20)
+        let item = makeItem(stage: 7, nextReviewAt: .distantFuture)
+        item.lastReviewedAt = seconds
+        item.updatedAt = seconds
+        context.insert(item)
+        context.insert(makeRecord(itemID: item.id, reviewedAt: seconds.addingTimeInterval(0.370557), oldStage: 6, newStage: 7))
+        try context.save()
+
+        // Legacy exports retain fractional seconds on reviewRecords, while
+        // the sync uploader encodes ReviewItem.lastReviewedAt to whole seconds.
+        for _ in 0..<3 {
+            XCTAssertEqual(try ReviewScheduler.reconcileStandardReviewProgress(in: context), 0)
+            XCTAssertFalse(context.hasChanges)
+            XCTAssertEqual(item.updatedAt, seconds)
+            // Simulate the server echoing an uploaded item at wire precision.
+            item.lastReviewedAt = seconds
+            try context.save()
+        }
+    }
+
+    func testReconciliationStillRepairsWrongStageWithinSameSecond() throws {
+        let container = try ModelContainer(
+            for: ReviewItem.self, ReviewRecord.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = ModelContext(container)
+        let seconds = date(2026, 7, 2, hour: 20)
+        let item = makeItem(stage: 6, nextReviewAt: .distantFuture)
+        item.lastReviewedAt = seconds
+        context.insert(item)
+        context.insert(makeRecord(itemID: item.id, reviewedAt: seconds.addingTimeInterval(0.370557), oldStage: 6, newStage: 7))
+        try context.save()
+
+        XCTAssertEqual(try ReviewScheduler.reconcileStandardReviewProgress(in: context), 1)
+        XCTAssertEqual(item.stage, 7)
+        XCTAssertEqual(item.nextReviewAt, .distantFuture)
+    }
+
     func testDueDateUsesNaturalDayInsteadOfExactTime() {
         let reviewDate = date(2026, 7, 14)
 

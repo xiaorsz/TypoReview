@@ -322,7 +322,34 @@ struct ServerChangeBatch: Decodable, Sendable {
     let cursor: Int64
 }
 
-actor ServerAPIClient {
+struct ServerSyncManifest: Decodable, Sendable {
+    let protocolVersion: Int
+    let cursor: Int64
+    let records: [Record]
+    struct Record: Decodable, Sendable {
+        let entityType: String
+        let recordID: UUID
+        let serverVersion: Int64
+        let deleted: Bool
+    }
+}
+
+protocol ServerSyncAPI: Sendable {
+    func health() async throws
+    func syncManifest() async throws -> ServerSyncManifest?
+    func exportSnapshot() async throws -> DataBackupPayload
+    func changes(after cursor: Int64, limit: Int) async throws -> ServerChangeBatch
+    func dailyPlan(day: String, dailyLimit: Int) async throws -> ServerDailyPlan
+    func pushMutations(_ body: Data) async throws -> ServerMutationResponse
+    func deepSeekAPIKey() async throws -> ServerSecretValueResponse
+    func saveDeepSeekAPIKey(_ value: String) async throws -> ServerSecretValueResponse
+}
+
+extension ServerSyncAPI {
+    func syncManifest() async throws -> ServerSyncManifest? { nil }
+}
+
+actor ServerAPIClient: ServerSyncAPI {
     static let shared = ServerAPIClient()
 
     private let configuration: ServerAPIConfiguration?
@@ -403,6 +430,14 @@ actor ServerAPIClient {
         )
     }
 
+    func syncManifest() async throws -> ServerSyncManifest? {
+        do {
+            return try await request(path: "/v1/sync/manifest", method: "GET")
+        } catch ServerAPIError.rejected(let code, _) where code == 404 {
+            return nil
+        }
+    }
+
     func deepSeekAPIKey() async throws -> ServerSecretValueResponse {
         try await request(path: "/v1/secrets/deepseek-api-key", method: "GET")
     }
@@ -445,8 +480,8 @@ actor ServerAPIClient {
         )
     }
 
-    func pushMutations(_ body: Data) async throws {
-        let _: ServerMutationResponse = try await request(
+    func pushMutations(_ body: Data) async throws -> ServerMutationResponse {
+        try await request(
             path: "/v1/sync/push",
             method: "POST",
             body: body
@@ -512,8 +547,17 @@ private struct EmptyHealthResponse: Decodable {
     let status: String
 }
 
-private struct ServerMutationResponse: Decodable {
+struct ServerMutationResponse: Decodable, Sendable {
     let appliedMutationIDs: [UUID]
+    var conflicts: [ServerMutationConflict]? = nil
+}
+
+struct ServerMutationConflict: Codable, Sendable {
+    let mutationID: UUID
+    let entityType: String
+    let recordID: UUID
+    let statusCode: Int
+    let reason: ServerJSONValue
 }
 
 private struct ServerSecretDeletionResponse: Decodable {

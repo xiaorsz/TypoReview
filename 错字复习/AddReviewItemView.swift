@@ -556,7 +556,7 @@ struct AddReviewItemView: View {
                 for record in reviewRecords {
                     record.itemID = duplicateItem.id
                 }
-                modelContext.delete(existingItem)
+                SyncDeletionStore.delete(existingItem, in: modelContext)
             }
         } else {
             #if DEBUG

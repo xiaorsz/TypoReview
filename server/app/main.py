@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from .db import (
     Database,
+    lock_sync_writes,
     fetch_or_assign_daily_quote,
     record_has_changed_after,
     tombstone_record,
@@ -151,6 +152,7 @@ class Mutation(BaseModel):
 class MutationBatch(BaseModel):
     mutations: list[Mutation] = Field(max_length=1000)
     baseCursor: int | None = Field(default=None, ge=0)
+    isolateConflicts: bool = False
 
 
 class DailyPlanRequest(BaseModel):
@@ -554,6 +556,7 @@ async def import_snapshot(
     inserted_or_updated: dict[str, int] = {}
     exported_at = snapshot.exportedAt.astimezone(timezone.utc)
     async with pool.acquire() as connection, connection.transaction():
+        await lock_sync_writes(connection)
         if snapshot.settings is not None:
             settings_payload = canonicalize_settings(snapshot.settings)
             settings_payload.setdefault("updatedAt", isoformat(exported_at))
@@ -612,7 +615,7 @@ async def import_snapshot(
 @app.get("/v1/migration/export")
 async def export_snapshot(account_id: UUID = Depends(require_account)) -> dict[str, Any]:
     pool = database.require_pool()
-    async with pool.acquire() as connection:
+    async with pool.acquire() as connection, connection.transaction(isolation="repeatable_read", readonly=True):
         settings = await connection.fetchval(
             """
             SELECT payload
@@ -649,6 +652,22 @@ async def export_snapshot(account_id: UUID = Depends(require_account)) -> dict[s
         if row["entity_type"] in ENTITY_KEYS:
             result[row["entity_type"]].append(payload)
     return result
+
+
+@app.get("/v1/sync/manifest")
+async def sync_manifest(account_id: UUID = Depends(require_account)) -> dict[str, Any]:
+    """Small version inventory for verifying a device without sending payloads."""
+    async with database.require_pool().acquire() as connection:
+        rows = await connection.fetch(
+            "SELECT entity_type, record_id, server_version, deleted_at FROM records WHERE account_id=$1 ORDER BY server_version",
+            account_id,
+        )
+    return {
+        "protocolVersion": 2,
+        "cursor": max((r["server_version"] for r in rows), default=0),
+        "records": [{"entityType": r["entity_type"], "recordID": str(r["record_id"]),
+                     "serverVersion": r["server_version"], "deleted": r["deleted_at"] is not None} for r in rows],
+    }
 
 
 @app.get("/v1/sync/changes")
@@ -692,10 +711,24 @@ async def push_mutations(
 ) -> dict[str, Any]:
     pool = database.require_pool()
     applied: list[str] = []
+    conflicts: list[dict[str, Any]] = []
     server_scheduled_item_ids: set[UUID] = set()
+    rejected_review_item_ids: set[UUID] = set()
     async with pool.acquire() as connection, connection.transaction():
+        await lock_sync_writes(connection)
         if batch.baseCursor is not None:
             for mutation in batch.mutations:
+                if mutation.operation == "delete" and mutation.deletionIntent == "explicit":
+                    continue
+                if await connection.fetchval(
+                    "SELECT 1 FROM processed_mutations WHERE account_id=$1 AND mutation_id=$2", account_id, mutation.mutationID
+                ):
+                    continue
+                if mutation.operation == "upsert" and await connection.fetchval(
+                    "SELECT deleted_at FROM records WHERE account_id=$1 AND entity_type=$2 AND record_id=$3",
+                    account_id, mutation.entityType, mutation.recordID,
+                ) is not None:
+                    continue
                 if await record_has_changed_after(
                     connection,
                     account_id=account_id,
@@ -714,176 +747,214 @@ async def push_mutations(
                         },
                     )
         for mutation in batch.mutations:
-            claimed = await connection.fetchval(
-                """
-                INSERT INTO processed_mutations(account_id, mutation_id)
-                VALUES($1, $2)
-                ON CONFLICT DO NOTHING
-                RETURNING mutation_id
-                """,
-                account_id,
-                mutation.mutationID,
-            )
-            if claimed is None:
-                continue
-            if mutation.operation == "delete" and not should_apply_sync_delete(mutation.deletionIntent):
-                # Legacy clients inferred deletes whenever a record was absent
-                # from their local snapshot. A partial store must never erase the
-                # authoritative family data. Acknowledge the mutation so the
-                # client can continue with its pull, but keep the record intact.
-                applied.append(str(mutation.mutationID))
-                continue
-            if mutation.entityType == "settings" and mutation.operation == "delete":
-                # Settings are a per-account singleton. A device that previously
-                # used a different local UUID must not delete the family's settings.
-                applied.append(str(mutation.mutationID))
-                continue
-            if mutation.operation == "delete":
-                await tombstone_record(
-                    connection,
-                    account_id=account_id,
-                    entity_type=mutation.entityType,
-                    record_id=mutation.recordID,
-                    deleted_at=mutation.updatedAt,
-                )
-            else:
-                if mutation.payload is None:
-                    raise HTTPException(status_code=422, detail="upsert payload is required")
-                if mutation.entityType == "settings":
-                    settings_updated_at = parse_datetime(mutation.payload.get("updatedAt"))
-                    if settings_updated_at is None:
-                        # Builds released before settings gained an edit timestamp
-                        # may contain stale defaults. They can download settings,
-                        # but must not overwrite a newer family value.
+            try:
+                async with connection.transaction():
+                    claimed = await connection.fetchval(
+                        """
+                        INSERT INTO processed_mutations(account_id, mutation_id)
+                        VALUES($1, $2)
+                        ON CONFLICT DO NOTHING
+                        RETURNING mutation_id
+                        """,
+                        account_id,
+                        mutation.mutationID,
+                    )
+                    if claimed is None:
                         applied.append(str(mutation.mutationID))
                         continue
-                    await upsert_record(
-                        connection,
-                        account_id=account_id,
-                        entity_type="settings",
-                        record_id=SETTINGS_RECORD_ID,
-                        payload=canonicalize_settings(mutation.payload),
-                        client_updated_at=settings_updated_at,
-                    )
-                    applied.append(str(mutation.mutationID))
-                    continue
-                if mutation.entityType == "reviewRecords" and mutation.payload.get("modeRawValue") != "dictation":
-                    reviewed_at = parse_datetime(mutation.payload.get("reviewedAt"))
-                    item_id_value = mutation.payload.get("itemID")
-                    result = mutation.payload.get("resultRawValue")
-                    if reviewed_at is None or item_id_value is None or result not in {"correct", "wrong"}:
-                        raise HTTPException(status_code=422, detail="invalid scheduled review mutation")
-                    item_id = UUID(str(item_id_value))
-                    prior = await connection.fetchval(
-                        "SELECT payload FROM records WHERE account_id=$1 AND entity_type='reviewRecords' AND record_id=$2 AND deleted_at IS NULL",
-                        account_id,
-                        mutation.recordID,
-                    )
-                    if prior is None:
-                        same_day_record = await connection.fetchval(
-                            """
-                            SELECT record_id FROM records
-                            WHERE account_id=$1
-                              AND entity_type='reviewRecords'
-                              AND deleted_at IS NULL
-                              AND payload->>'itemID'=$2
-                              AND COALESCE(payload->>'modeRawValue', '') <> 'dictation'
-                              AND ((payload->>'reviewedAt')::timestamptz AT TIME ZONE 'Asia/Shanghai')::date=$3
-                            LIMIT 1
-                            """,
-                            account_id,
-                            str(item_id),
-                            reviewed_at.astimezone(SHANGHAI).date(),
-                        )
-                        if same_day_record is not None:
-                            raise HTTPException(
-                                status_code=409,
-                                detail={"reason": "item_already_reviewed_today", "itemID": str(item_id)},
-                            )
-                        row = await connection.fetchrow(
-                            """
-                            SELECT payload FROM records
-                            WHERE account_id=$1 AND entity_type='reviewItems' AND record_id=$2 AND deleted_at IS NULL
-                            FOR UPDATE
-                            """,
-                            account_id,
-                            item_id,
-                        )
-                        if row is None:
-                            raise HTTPException(status_code=404, detail="review item not found")
-                        item = row["payload"]
-                        if not is_due(item, reviewed_at.astimezone(SHANGHAI).date()):
-                            raise HTTPException(
-                                status_code=409,
-                                detail={"reason": "item_already_reviewed", "itemID": str(item_id)},
-                            )
-                        updated_item, old_stage, new_stage = apply_review_result(
-                            item,
-                            result=result,
-                            reviewed_at=reviewed_at,
-                        )
-                        canonical_record = {
-                            **mutation.payload,
-                            "id": str(mutation.recordID),
-                            "itemID": str(item_id),
-                            "reviewedAt": isoformat(reviewed_at),
-                            "oldStage": old_stage,
-                            "newStage": new_stage,
-                        }
-                        await upsert_record(
+                    if mutation.operation == "upsert" and await connection.fetchval(
+                        "SELECT deleted_at FROM records WHERE account_id=$1 AND entity_type=$2 AND record_id=$3",
+                        account_id, mutation.entityType, mutation.recordID,
+                    ) is not None:
+                        applied.append(str(mutation.mutationID))
+                        continue
+                    if mutation.operation == "delete" and not should_apply_sync_delete(mutation.deletionIntent):
+                        # Legacy clients inferred deletes whenever a record was absent
+                        # from their local snapshot. A partial store must never erase the
+                        # authoritative family data. Acknowledge the mutation so the
+                        # client can continue with its pull, but keep the record intact.
+                        applied.append(str(mutation.mutationID))
+                        continue
+                    if mutation.entityType == "settings" and mutation.operation == "delete":
+                        # Settings are a per-account singleton. A device that previously
+                        # used a different local UUID must not delete the family's settings.
+                        applied.append(str(mutation.mutationID))
+                        continue
+                    if mutation.operation == "delete":
+                        await tombstone_record(
                             connection,
                             account_id=account_id,
-                            entity_type="reviewItems",
-                            record_id=item_id,
-                            payload=updated_item,
-                            client_updated_at=max(reviewed_at, mutation.updatedAt),
-                        )
-                        await upsert_record(
-                            connection,
-                            account_id=account_id,
-                            entity_type="reviewRecords",
+                            entity_type=mutation.entityType,
                             record_id=mutation.recordID,
-                            payload=canonical_record,
-                            client_updated_at=max(reviewed_at, mutation.updatedAt),
+                            deleted_at=mutation.updatedAt,
                         )
-                        await connection.execute(
-                            """
-                            UPDATE daily_review_plan_items i
-                            SET completed_event_id=$3, completed_at=$4
-                            FROM daily_review_plans p
-                            WHERE i.plan_id=p.id AND p.account_id=$1 AND p.plan_day=$2 AND i.item_id=$5
-                            """,
-                            account_id,
-                            reviewed_at.astimezone(SHANGHAI).date(),
-                            mutation.recordID,
-                            reviewed_at,
-                            item_id,
-                        )
-                    server_scheduled_item_ids.add(item_id)
+                        if mutation.entityType == "reviewRecords":
+                            await connection.execute(
+                                """UPDATE daily_review_plan_items i
+                                   SET completed_event_id=NULL, completed_at=NULL
+                                   FROM daily_review_plans p
+                                   WHERE i.plan_id=p.id AND p.account_id=$1 AND i.completed_event_id=$2""",
+                                account_id, mutation.recordID,
+                            )
+                    else:
+                        if mutation.payload is None:
+                            raise HTTPException(status_code=422, detail="upsert payload is required")
+                        if mutation.entityType == "settings":
+                            settings_updated_at = parse_datetime(mutation.payload.get("updatedAt"))
+                            if settings_updated_at is None:
+                                # Builds released before settings gained an edit timestamp
+                                # may contain stale defaults. They can download settings,
+                                # but must not overwrite a newer family value.
+                                applied.append(str(mutation.mutationID))
+                                continue
+                            await upsert_record(
+                                connection,
+                                account_id=account_id,
+                                entity_type="settings",
+                                record_id=SETTINGS_RECORD_ID,
+                                payload=canonicalize_settings(mutation.payload),
+                                client_updated_at=settings_updated_at,
+                            )
+                            applied.append(str(mutation.mutationID))
+                            continue
+                        if mutation.entityType == "reviewRecords" and mutation.payload.get("modeRawValue") != "dictation":
+                            reviewed_at = parse_datetime(mutation.payload.get("reviewedAt"))
+                            item_id_value = mutation.payload.get("itemID")
+                            result = mutation.payload.get("resultRawValue")
+                            if reviewed_at is None or item_id_value is None or result not in {"correct", "wrong"}:
+                                raise HTTPException(status_code=422, detail="invalid scheduled review mutation")
+                            item_id = UUID(str(item_id_value))
+                            prior = await connection.fetchval(
+                                "SELECT payload FROM records WHERE account_id=$1 AND entity_type='reviewRecords' AND record_id=$2 AND deleted_at IS NULL",
+                                account_id,
+                                mutation.recordID,
+                            )
+                            if prior is None:
+                                same_day_record = await connection.fetchrow(
+                                    """
+                                    SELECT record_id, payload FROM records
+                                    WHERE account_id=$1
+                                      AND entity_type='reviewRecords'
+                                      AND deleted_at IS NULL
+                                      AND upper(payload->>'itemID')=upper($2)
+                                      AND COALESCE(payload->>'modeRawValue', '') <> 'dictation'
+                                      AND ((payload->>'reviewedAt')::timestamptz AT TIME ZONE 'Asia/Shanghai')::date=$3
+                                    LIMIT 1
+                                    """,
+                                    account_id,
+                                    str(item_id),
+                                    reviewed_at.astimezone(SHANGHAI).date(),
+                                )
+                                if same_day_record is not None:
+                                    if same_day_record["payload"].get("resultRawValue") == result:
+                                        # Two devices completed the same daily review. Keep
+                                        # one canonical event and explicitly retire the copy.
+                                        await tombstone_record(connection, account_id=account_id,
+                                                               entity_type="reviewRecords", record_id=mutation.recordID,
+                                                               deleted_at=mutation.updatedAt)
+                                        server_scheduled_item_ids.add(item_id)
+                                        applied.append(str(mutation.mutationID))
+                                        continue
+                                    raise HTTPException(
+                                        status_code=409,
+                                        detail={"reason": "item_already_reviewed_today", "itemID": str(item_id)},
+                                    )
+                                row = await connection.fetchrow(
+                                    """
+                                    SELECT payload FROM records
+                                    WHERE account_id=$1 AND entity_type='reviewItems' AND record_id=$2 AND deleted_at IS NULL
+                                    FOR UPDATE
+                                    """,
+                                    account_id,
+                                    item_id,
+                                )
+                                if row is None:
+                                    raise HTTPException(status_code=404, detail="review item not found")
+                                item = row["payload"]
+                                if not is_due(item, reviewed_at.astimezone(SHANGHAI).date()):
+                                    raise HTTPException(
+                                        status_code=409,
+                                        detail={"reason": "item_already_reviewed", "itemID": str(item_id)},
+                                    )
+                                updated_item, old_stage, new_stage = apply_review_result(
+                                    item,
+                                    result=result,
+                                    reviewed_at=reviewed_at,
+                                )
+                                canonical_record = {
+                                    **mutation.payload,
+                                    "id": str(mutation.recordID),
+                                    "itemID": str(item_id),
+                                    "reviewedAt": isoformat(reviewed_at),
+                                    "oldStage": old_stage,
+                                    "newStage": new_stage,
+                                }
+                                await upsert_record(
+                                    connection,
+                                    account_id=account_id,
+                                    entity_type="reviewItems",
+                                    record_id=item_id,
+                                    payload=updated_item,
+                                    client_updated_at=max(reviewed_at, mutation.updatedAt),
+                                )
+                                await upsert_record(
+                                    connection,
+                                    account_id=account_id,
+                                    entity_type="reviewRecords",
+                                    record_id=mutation.recordID,
+                                    payload=canonical_record,
+                                    client_updated_at=max(reviewed_at, mutation.updatedAt),
+                                )
+                                await connection.execute(
+                                    """
+                                    UPDATE daily_review_plan_items i
+                                    SET completed_event_id=$3, completed_at=$4
+                                    FROM daily_review_plans p
+                                    WHERE i.plan_id=p.id AND p.account_id=$1 AND p.plan_day=$2 AND i.item_id=$5
+                                    """,
+                                    account_id,
+                                    reviewed_at.astimezone(SHANGHAI).date(),
+                                    mutation.recordID,
+                                    reviewed_at,
+                                    item_id,
+                                )
+                            server_scheduled_item_ids.add(item_id)
+                            applied.append(str(mutation.mutationID))
+                            continue
+                        if mutation.entityType == "reviewItems" and mutation.recordID in rejected_review_item_ids:
+                            raise HTTPException(status_code=409, detail={"reason": "dependent_review_conflict", "itemID": str(mutation.recordID)})
+                        if mutation.entityType == "reviewItems" and mutation.recordID in server_scheduled_item_ids:
+                            applied.append(str(mutation.mutationID))
+                            continue
+                        if mutation.entityType == "pointLedgerEntries":
+                            await upsert_point_ledger_entry(
+                                connection,
+                                account_id=account_id,
+                                record_id=mutation.recordID,
+                                payload=mutation.payload,
+                                client_updated_at=mutation.updatedAt,
+                            )
+                        else:
+                            await upsert_record(
+                                connection,
+                                account_id=account_id,
+                                entity_type=mutation.entityType,
+                                record_id=mutation.recordID,
+                                payload=mutation.payload,
+                                client_updated_at=mutation.updatedAt,
+                            )
                     applied.append(str(mutation.mutationID))
-                    continue
-                if mutation.entityType == "reviewItems" and mutation.recordID in server_scheduled_item_ids:
-                    applied.append(str(mutation.mutationID))
-                    continue
-                if mutation.entityType == "pointLedgerEntries":
-                    await upsert_point_ledger_entry(
-                        connection,
-                        account_id=account_id,
-                        record_id=mutation.recordID,
-                        payload=mutation.payload,
-                        client_updated_at=mutation.updatedAt,
-                    )
-                else:
-                    await upsert_record(
-                        connection,
-                        account_id=account_id,
-                        entity_type=mutation.entityType,
-                        record_id=mutation.recordID,
-                        payload=mutation.payload,
-                        client_updated_at=mutation.updatedAt,
-                    )
-            applied.append(str(mutation.mutationID))
-    return {"appliedMutationIDs": applied}
+            except HTTPException as error:
+                if not batch.isolateConflicts or error.status_code not in {404, 409, 422}:
+                    raise
+                if mutation.entityType == "reviewRecords" and mutation.payload:
+                    item_id = mutation.payload.get("itemID")
+                    if item_id:
+                        rejected_review_item_ids.add(UUID(str(item_id)))
+                conflicts.append({"mutationID": str(mutation.mutationID), "entityType": mutation.entityType,
+                                  "recordID": str(mutation.recordID), "statusCode": error.status_code,
+                                  "reason": error.detail})
+    return {"appliedMutationIDs": applied, "conflicts": conflicts}
 
 
 async def load_plan(connection: asyncpg.Connection, account_id: UUID, plan_day: date) -> dict[str, Any] | None:
@@ -1000,6 +1071,7 @@ async def submit_review(
     reviewed_at = submission.reviewedAt.astimezone(timezone.utc)
     pool = database.require_pool()
     async with pool.acquire() as connection, connection.transaction():
+        await lock_sync_writes(connection)
         prior = await connection.fetchval(
             "SELECT payload FROM records WHERE account_id=$1 AND entity_type='reviewRecords' AND record_id=$2 AND deleted_at IS NULL",
             account_id,
@@ -1014,7 +1086,7 @@ async def submit_review(
             WHERE account_id=$1
               AND entity_type='reviewRecords'
               AND deleted_at IS NULL
-              AND payload->>'itemID'=$2
+              AND upper(payload->>'itemID')=upper($2)
               AND COALESCE(payload->>'modeRawValue', '') <> 'dictation'
               AND ((payload->>'reviewedAt')::timestamptz AT TIME ZONE 'Asia/Shanghai')::date=$3
             LIMIT 1

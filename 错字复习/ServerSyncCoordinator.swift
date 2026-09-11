@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import Observation
+import Network
 import SwiftData
 import WidgetKit
 
@@ -26,11 +27,39 @@ private enum IncrementalConflictResolution {
     case mergeDictationEntry
 }
 
+/// Owns an entire pull/merge/upload cycle across network suspension points.
+/// Callers that arrive while busy wait for their turn instead of losing refreshes.
+@MainActor
+final class ServerSyncOperationQueue {
+    private var isHeld = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if !isHeld {
+            isHeld = true
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            isHeld = false
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class ServerSyncCoordinator {
     static let shared = ServerSyncCoordinator()
 
+    private static let receiptsKey = "typo_review_sync_receipts_v2"
+    private static let outboxKey = "typo_review_sync_outbox_v2"
+    private static let blockedHashesKey = "typo_review_sync_blocked_hashes_v2"
+    private static let pendingUploadKey = "typo_review_pending_upload_v2"
     private static let baselineDefaultsKey = "typo_review_server_sync_baseline_v1"
     private static let bootstrapInProgressDefaultsKey = "typo_review_server_bootstrap_in_progress_v1"
     private static let changeCursorDefaultsKey = "typo_review_server_change_cursor_v1"
@@ -51,18 +80,47 @@ final class ServerSyncCoordinator {
         "settings",
     ]
 
+    @ObservationIgnored private let client: any ServerSyncAPI
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let enabled: () -> Bool
+    @ObservationIgnored private let operationQueue = ServerSyncOperationQueue()
+    @ObservationIgnored private var networkMonitor: NWPathMonitor?
+    @ObservationIgnored private var networkGeneration = 0
     @ObservationIgnored private var uploadTask: Task<Void, Never>?
+    @ObservationIgnored private var uploadRequested = false
+    @ObservationIgnored private var uploadNeedsMerge = false
+
+    init(
+        client: any ServerSyncAPI = ServerAPIClient.shared,
+        defaults: UserDefaults = .standard,
+        enabled: @escaping () -> Bool = { ServerAPIConfiguration.current != nil }
+    ) {
+        self.client = client
+        self.defaults = defaults
+        self.enabled = enabled
+        if defaults.data(forKey: Self.outboxKey) != nil {
+            self.uploadError = "有数据等待上传，将在连接恢复后重试。"
+        } else if let data = defaults.data(forKey: Self.blockedHashesKey),
+                  let blocked = try? JSONDecoder().decode([String: String].self, from: data), !blocked.isEmpty {
+            self.uploadError = "有复习记录与服务器冲突，已保留在本机；其他数据可正常同步。"
+        }
+    }
     private var isPulling = false
     private var isUploading = false
     private var activeSyncPhase: String?
     private(set) var isApplyingRemoteSnapshot = false
-    private(set) var lastErrorDescription: String?
+    private var transferError: String?
+    private var uploadError: String?
+    private(set) var lastErrorDescription: String? {
+        get { uploadError ?? transferError }
+        set { transferError = newValue }
+    }
     private(set) var lastSuccessfulConnectionAt: Date?
     private(set) var lastSuccessfulPullAt: Date?
     private(set) var lastSuccessfulUploadAt: Date?
     private(set) var lastPulledDataSummary = "尚未完成服务器下载"
 
-    var isEnabled: Bool { ServerAPIConfiguration.current != nil }
+    var isEnabled: Bool { enabled() }
     var isSynchronizing: Bool { isPulling || isUploading || isApplyingRemoteSnapshot }
     var serverStatusText: String {
         if let activeSyncPhase {
@@ -71,81 +129,120 @@ final class ServerSyncCoordinator {
         return lastErrorDescription == nil ? "正常" : "等待重试"
     }
 
+    @discardableResult
     func synchronize(
         modelContext: ModelContext,
         settingsStore: AppSettingsStore
-    ) async {
-        guard isEnabled else { return }
-        if loadBaseline() == nil {
-            let defaults = UserDefaults.standard
-            guard !defaults.bool(forKey: Self.bootstrapInProgressDefaultsKey) else {
-                lastErrorDescription = "上次首次同步被系统中断，已暂停自动导入。请在设置中手动同步。"
-                return
-            }
-            defaults.set(true, forKey: Self.bootstrapInProgressDefaultsKey)
-            defer {
-                defaults.removeObject(forKey: Self.bootstrapInProgressDefaultsKey)
-            }
-            _ = await pull(into: modelContext, settingsStore: settingsStore)
-            return
-        }
-
-        if let cursor = loadChangeCursor() {
-            // Merge server changes against the last shared baseline before
-            // uploading. This prevents an offline device from blindly replacing
-            // a newer server value for the same record.
-            let pullSucceeded = await pullIncremental(
-                after: cursor,
-                into: modelContext,
-                settingsStore: settingsStore
-            )
-            guard pullSucceeded else { return }
-            _ = await uploadChanges(
-                from: modelContext,
-                settingsStore: settingsStore
-            )
-        } else {
-            // Builds upgrading from the snapshot-only protocol do not have a
-            // change cursor yet. Preserve their local work before establishing
-            // the first cursor.
-            let uploadSucceeded = await uploadChanges(
-                from: modelContext,
-                settingsStore: settingsStore
-            )
-            guard uploadSucceeded else {
-                // Preserve locally completed work when the server rejects an
-                // upload. Pulling the older server snapshot here would replace
-                // the local store and make a successful submission appear undone.
-                return
-            }
-            await pull(into: modelContext, settingsStore: settingsStore)
-        }
+    ) async -> Bool {
+        guard isEnabled else { return false }
+        await operationQueue.acquire()
+        defer { operationQueue.release() }
+        guard !Task.isCancelled else { return false }
+        return await performSynchronization(modelContext: modelContext, settingsStore: settingsStore)
     }
 
-    /// User-initiated refresh returns as soon as remote changes are merged.
-    /// Local upload is deliberately delayed so SwiftUI can finish the pull-to-
-    /// refresh animation and redraw the visible list before scanning the store.
+    private func performSynchronization(
+        modelContext: ModelContext,
+        settingsStore: AppSettingsStore
+    ) async -> Bool {
+        if loadBaseline() == nil {
+            return await performPull(into: modelContext, settingsStore: settingsStore)
+        }
+
+        if loadChangeCursor() != nil {
+            // Re-read the cursor after acquiring the queue and on each retry.
+            // Automatic saves must merge too, including our own server-normalized
+            // review progress from the preceding upload.
+            for _ in 0..<3 {
+                guard !Task.isCancelled, let cursor = loadChangeCursor() else { return false }
+                guard await pullIncremental(after: cursor, into: modelContext, settingsStore: settingsStore) else {
+                    return false
+                }
+                let previousUploadAt = lastSuccessfulUploadAt
+                if await performUpload(from: modelContext, settingsStore: settingsStore) {
+                    if lastSuccessfulUploadAt != previousUploadAt, let cursor = loadChangeCursor() {
+                        return await pullIncremental(after: cursor, into: modelContext, settingsStore: settingsStore)
+                    }
+                    return true
+                }
+                guard uploadNeedsMerge else { return false }
+            }
+            return false
+        }
+
+        // Snapshot-only clients also upgrade through the non-destructive merge.
+        return await performPull(into: modelContext, settingsStore: settingsStore)
+    }
+
+    /// Lightweight foreground polling. The board has no local edits to upload;
+    /// full verification remains reserved for entry and manual refresh.
+    @discardableResult
+    func checkForServerUpdates(
+        modelContext: ModelContext,
+        settingsStore: AppSettingsStore
+    ) async -> Bool {
+        guard isEnabled else { return false }
+        await operationQueue.acquire()
+        defer { operationQueue.release() }
+        guard !Task.isCancelled else { return false }
+        guard loadBaseline() != nil, let cursor = loadChangeCursor() else {
+            return await performSynchronization(modelContext: modelContext, settingsStore: settingsStore)
+        }
+        return await pullIncremental(after: cursor, into: modelContext, settingsStore: settingsStore)
+    }
+
+    /// A manual refresh verifies all server rows, including versions already
+    /// passed by the incremental cursor. Merge in place so unsent local edits
+    /// survive; a destructive snapshot restore would discard them.
+    @discardableResult
     func refreshFromServer(
         modelContext: ModelContext,
         settingsStore: AppSettingsStore
-    ) async {
-        guard isEnabled else { return }
-        guard loadBaseline() != nil, let cursor = loadChangeCursor() else {
-            await synchronize(modelContext: modelContext, settingsStore: settingsStore)
-            return
+    ) async -> Bool {
+        guard isEnabled else { return false }
+        await operationQueue.acquire()
+        defer { operationQueue.release() }
+        guard !Task.isCancelled else { return false }
+        guard loadBaseline() != nil else {
+            return await performSynchronization(modelContext: modelContext, settingsStore: settingsStore)
         }
 
+        var verificationCursor: Int64 = 0
+        do {
+            if let manifest = try await client.syncManifest(), manifest.protocolVersion >= 2,
+               let cursor = loadChangeCursor(), cursor <= manifest.cursor {
+                let receipts = loadReceipts()
+                let local = try Self.captureStructuredSnapshot(from: modelContext.container, settings: settingsStore.snapshot)
+                let context = ModelContext(modelContext.container)
+                let deleted = Set(try context.fetch(FetchDescriptor<SyncDeletion>()).map {
+                    $0.entityType + "/" + $0.recordID.uuidString
+                })
+                let intact = manifest.records.allSatisfy { row in
+                    let id = row.recordID.uuidString
+                    let key = row.entityType + "/" + id
+                    let versionKnown = row.serverVersion > cursor || receipts[key] == row.serverVersion
+                    let present = row.deleted || local.hashes[row.entityType]?[id] != nil || deleted.contains(key)
+                    return versionKnown && present
+                }
+                if intact { verificationCursor = cursor }
+            }
+        } catch {
+            // The full change stream is the compatibility and repair path.
+            verificationCursor = 0
+        }
         let pullSucceeded = await pullIncremental(
-            after: cursor,
+            after: verificationCursor,
             into: modelContext,
-            settingsStore: settingsStore
+            settingsStore: settingsStore,
+            pageSize: 5_000
         )
-        guard pullSucceeded else { return }
+        guard pullSucceeded else { return false }
         scheduleUpload(
             from: modelContext,
             settingsStore: settingsStore,
             delayNanoseconds: 450_000_000
         )
+        return true
     }
 
     @discardableResult
@@ -153,96 +250,30 @@ final class ServerSyncCoordinator {
         into modelContext: ModelContext,
         settingsStore: AppSettingsStore
     ) async -> Bool {
-        guard isEnabled, !isApplyingRemoteSnapshot, !isPulling else { return false }
+        await refreshFromServer(modelContext: modelContext, settingsStore: settingsStore)
+    }
 
-        // A delayed upload may already have started. Stop it and wait for its
-        // cancellation to finish before replacing local data with the server
-        // snapshot, otherwise its cancellation error can overwrite pull status.
-        let pendingUpload = uploadTask
-        uploadTask = nil
-        pendingUpload?.cancel()
-        if let pendingUpload {
-            await pendingUpload.value
-        }
-        guard !isUploading else { return false }
-
-        isPulling = true
-        lastErrorDescription = nil
-        activeSyncPhase = "正在检查连接"
-        defer {
-            activeSyncPhase = nil
-            isPulling = false
-        }
-        do {
-            try await ServerAPIClient.shared.health()
-            lastSuccessfulConnectionAt = .now
-            let snapshotCursor = try await latestServerChangeCursor()
-            activeSyncPhase = "正在下载数据"
-            let payload = try await ServerAPIClient.shared.exportSnapshot()
-            activeSyncPhase = "正在核对数据"
-            let remoteSnapshot = try StructuredSnapshot(payload: payload)
-            let shouldRestore = Self.requiresSnapshotRestore(
-                remoteHashes: remoteSnapshot.hashes,
-                baseline: loadBaseline()
-            )
-
-            if shouldRestore {
-                activeSyncPhase = "正在写入本机"
-                isApplyingRemoteSnapshot = true
-
-                // Give SwiftUI one update cycle to unmount data-heavy views and
-                // cancel their snapshot tasks before the exclusive store rewrite.
-                await Task.yield()
-
-                do {
-                    try await DataBackupService.restoreStructuredDataInBatches(
-                        payload,
-                        into: modelContext,
-                        settingsStore: settingsStore
-                    )
-                } catch {
-                    isApplyingRemoteSnapshot = false
-                    throw error
-                }
-                isApplyingRemoteSnapshot = false
-            }
-
-            activeSyncPhase = "正在更新今日计划"
-            let dailyPlanChanged = try await installServerDailyPlan(
-                in: modelContext.container,
-                dailyLimit: settingsStore.dailyLimit
-            )
-            saveBaseline(remoteSnapshot.hashes)
-            saveChangeCursor(snapshotCursor)
-            UserDefaults.standard.removeObject(forKey: Self.bootstrapInProgressDefaultsKey)
-            lastErrorDescription = nil
-            lastSuccessfulPullAt = .now
-            lastPulledDataSummary = Self.dataSummary(for: payload)
-            await synchronizeDeepSeekAPIKey()
-            if shouldRestore || dailyPlanChanged {
-                AppDataChangeCenter.post()
-                WidgetCenter.shared.reloadAllTimelinesInBackground()
-            }
-            return true
-        } catch where Self.isCancellation(error) {
-            return false
-        } catch {
-            lastErrorDescription = Self.userFacingDescription(
-                for: error,
-                phase: activeSyncPhase
-            )
-            #if DEBUG
-            print("Server pull failed: \(error)")
-            #endif
+    private func performPull(
+        into modelContext: ModelContext,
+        settingsStore: AppSettingsStore
+    ) async -> Bool {
+        // Bootstrap uses the same merge as refresh. Never replace the local store:
+        // it may already contain work created offline or during a download.
+        if loadBaseline() == nil { saveBaseline([:]) }
+        guard await pullIncremental(after: 0, into: modelContext, settingsStore: settingsStore) else {
             return false
         }
+        defaults.removeObject(forKey: Self.bootstrapInProgressDefaultsKey)
+        await synchronizeDeepSeekAPIKey()
+        return await performUpload(from: modelContext, settingsStore: settingsStore)
     }
 
     @discardableResult
     private func pullIncremental(
         after initialCursor: Int64,
         into modelContext: ModelContext,
-        settingsStore: AppSettingsStore
+        settingsStore: AppSettingsStore,
+        pageSize: Int = 1_000
     ) async -> Bool {
         guard isEnabled, !isPulling, !isUploading, !isApplyingRemoteSnapshot else { return false }
 
@@ -260,42 +291,62 @@ final class ServerSyncCoordinator {
             var receivedChanges: [ServerChange] = []
             var dataChanged = false
             while true {
-                let batch = try await ServerAPIClient.shared.changes(after: cursor)
+                try Task.checkCancellation()
+                let batch = try await client.changes(after: cursor, limit: pageSize)
+                guard batch.changes.isEmpty || batch.cursor > cursor else {
+                    throw ServerAPIError.invalidResponse
+                }
                 receivedChanges.append(contentsOf: batch.changes)
                 cursor = batch.cursor
-                if batch.changes.count < 1_000 { break }
+                if batch.changes.count < pageSize { break }
             }
 
             let changes = Self.latestChangesByRecord(receivedChanges)
             if !changes.isEmpty {
                 activeSyncPhase = "正在合并更新"
                 let container = modelContext.container
-                let settings = settingsStore.snapshot
-                let localSnapshot = try await Task.detached(priority: .utility) {
-                    try Self.captureStructuredSnapshot(
-                        from: container,
-                        settings: settings
-                    )
+                let remoteHashes = try await Task.detached(priority: .utility) {
+                    var hashes: [SyncRecordKey: String] = [:]
+                    for change in changes {
+                        try Task.checkCancellation()
+                        hashes[SyncRecordKey(change)] = try change.normalizedPayloadHash()
+                    }
+                    return hashes
                 }.value
-                let resolutions = try Self.conflictResolutions(
+                // No suspension between reading local values, applying the merge,
+                // and recording its baseline. UI edits cannot interleave here.
+                try PersistentStoreAccessGate.withAccess {
+                let localSnapshot = try Self.captureStructuredSnapshot(
+                    from: container, settings: settingsStore.snapshot
+                )
+                var resolutions = try Self.conflictResolutions(
                     for: changes,
                     localSnapshot: localSnapshot,
-                    baseline: baseline
+                    baseline: baseline,
+                    remoteHashes: remoteHashes
                 )
+                let deletionContext = ModelContext(container)
+                for deletion in try deletionContext.fetch(FetchDescriptor<SyncDeletion>()) {
+                    resolutions[SyncRecordKey(entityType: deletion.entityType,
+                                              recordID: deletion.recordID.uuidString)] = .keepLocal
+                }
+                // Full verification usually finds unchanged rows. Compare their
+                // decoded payloads at local wire precision before touching SwiftData.
+                let changedRecords = changes.filter { change in
+                    let key = SyncRecordKey(change)
+                    return change.deletedAt != nil || localSnapshot.hashes[key.entityType]?[key.recordID]
+                        != remoteHashes[key]
+                }
                 dataChanged = try applyIncrementalChanges(
-                    changes,
+                    changedRecords,
                     to: modelContext.container,
                     settingsStore: settingsStore,
                     resolutions: resolutions
                 )
 
-                let mergedSettings = settingsStore.snapshot
-                let mergedSnapshot = try await Task.detached(priority: .utility) {
-                    try Self.captureStructuredSnapshot(
-                        from: container,
-                        settings: mergedSettings
-                    )
-                }.value
+                let mergedSnapshot = try Self.captureStructuredSnapshot(
+                    from: container, settings: settingsStore.snapshot
+                )
                 let pendingLocalKeys = Self.pendingLocalKeys(
                     localSnapshot: localSnapshot,
                     baseline: baseline,
@@ -311,6 +362,13 @@ final class ServerSyncCoordinator {
                     )
                 )
             }
+            }
+
+            var receipts = loadReceipts()
+            for change in changes {
+                receipts[change.entityType + "/" + change.recordID.uuidString] = change.serverVersion
+            }
+            defaults.set(try JSONEncoder().encode(receipts), forKey: Self.receiptsKey)
 
             // Daily plans are server-owned and are not part of the incremental
             // record stream. Refresh them even when there were no record changes;
@@ -325,7 +383,7 @@ final class ServerSyncCoordinator {
             lastErrorDescription = nil
             lastSuccessfulPullAt = .now
             if dataChanged || dailyPlanChanged {
-                AppDataChangeCenter.post()
+                AppDataChangeCenter.post(source: .server)
                 WidgetCenter.shared.reloadAllTimelinesInBackground()
             }
             return true
@@ -337,15 +395,6 @@ final class ServerSyncCoordinator {
             print("Incremental server pull failed: \(error)")
             #endif
             return false
-        }
-    }
-
-    private func latestServerChangeCursor() async throws -> Int64 {
-        var cursor: Int64 = 0
-        while true {
-            let batch = try await ServerAPIClient.shared.changes(after: cursor, limit: 5_000)
-            cursor = batch.cursor
-            if batch.changes.count < 5_000 { return cursor }
         }
     }
 
@@ -624,7 +673,7 @@ final class ServerSyncCoordinator {
                 try context.save()
             }
             if let settingsSnapshot {
-                settingsStore.restore(from: settingsSnapshot, using: context)
+                settingsStore.restore(from: settingsSnapshot, using: context, source: .server)
             }
             return modelDataChanged || settingsSnapshot != nil
         }
@@ -661,7 +710,8 @@ final class ServerSyncCoordinator {
     private static func conflictResolutions(
         for changes: [ServerChange],
         localSnapshot: StructuredSnapshot,
-        baseline: [String: [String: String]]
+        baseline: [String: [String: String]],
+        remoteHashes: [SyncRecordKey: String]
     ) throws -> [SyncRecordKey: IncrementalConflictResolution] {
         var result: [SyncRecordKey: IncrementalConflictResolution] = [:]
         for change in changes {
@@ -672,19 +722,19 @@ final class ServerSyncCoordinator {
             }
             let localHash = localSnapshot.hashes[key.entityType]?[key.recordID]
             let baselineHash = baseline[key.entityType]?[key.recordID]
+            if change.deletedAt == nil, localHash == remoteHashes[key] {
+                result[key] = .acceptRemote
+                continue
+            }
             guard localHash != baselineHash else {
                 result[key] = .acceptRemote
                 continue
             }
 
             if change.deletedAt != nil {
-                let localTimestamp = StructuredSnapshot.timestamp(
-                    in: localRecord,
-                    entityType: key.entityType
-                )
-                result[key] = change.deletedAt! >= (localTimestamp ?? .distantPast)
-                    ? .acceptRemote
-                    : .keepLocal
+                // A tombstone is an explicit user deletion. Recreating content
+                // requires a new ID, so stale offline edits cannot resurrect it.
+                result[key] = .acceptRemote
             } else if key.entityType == "dictationSessions" {
                 result[key] = .mergeDictationSession
             } else if key.entityType == "dictationEntries" {
@@ -726,12 +776,11 @@ final class ServerSyncCoordinator {
         resolutions: [SyncRecordKey: IncrementalConflictResolution]
     ) -> [String: [String: String]] {
         var result = original
-        for (entityType, records) in mergedSnapshot.hashes {
-            for (recordID, hash) in records {
-                let key = SyncRecordKey(entityType: entityType, recordID: recordID)
-                if !pendingLocalKeys.contains(key) {
-                    result[entityType, default: [:]][recordID] = hash
-                }
+        for change in changes where change.deletedAt == nil {
+            let key = SyncRecordKey(change)
+            if !pendingLocalKeys.contains(key),
+               let hash = mergedSnapshot.hashes[key.entityType]?[key.recordID] {
+                result[key.entityType, default: [:]][key.recordID] = hash
             }
         }
         for change in changes where change.deletedAt != nil {
@@ -845,12 +894,48 @@ final class ServerSyncCoordinator {
         settingsStore: AppSettingsStore,
         delayNanoseconds: UInt64 = 700_000_000
     ) {
-        guard isEnabled, !isApplyingRemoteSnapshot else { return }
-        uploadTask?.cancel()
+        guard isEnabled else { return }
+        if networkMonitor == nil {
+            let monitor = NWPathMonitor()
+            monitor.pathUpdateHandler = { [weak self] path in
+                guard path.status == .satisfied else { return }
+                Task { @MainActor [weak self] in self?.networkGeneration += 1 }
+            }
+            monitor.start(queue: DispatchQueue(label: "typo-review.sync-connectivity"))
+            networkMonitor = monitor
+        }
+        uploadRequested = true
+        defaults.set(true, forKey: Self.pendingUploadKey)
+        // A new save only requests another pass. Never cancel a request which
+        // may already have committed on the server, or drop a save while busy.
+        guard uploadTask == nil else { return }
         uploadTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: delayNanoseconds)
-            guard !Task.isCancelled else { return }
-            await self?.uploadChanges(from: modelContext, settingsStore: settingsStore)
+            guard let self else { return }
+            defer { self.uploadTask = nil }
+            var failures = 0
+            while self.uploadRequested, !Task.isCancelled {
+                let delay = failures == 0 ? delayNanoseconds : UInt64(min(60, 1 << min(failures, 6))) * 1_000_000_000
+                do {
+                    var remaining = delay
+                    let generation = self.networkGeneration
+                    while remaining > 0 {
+                        let step = min(remaining, 1_000_000_000)
+                        try await Task.sleep(nanoseconds: step)
+                        remaining -= step
+                        if failures > 0 && generation != self.networkGeneration { break }
+                    }
+                } catch { return }
+                self.uploadRequested = false
+                let succeeded = await self.synchronize(modelContext: modelContext, settingsStore: settingsStore)
+                if succeeded {
+                    failures = 0
+                    if !self.uploadRequested { self.defaults.removeObject(forKey: Self.pendingUploadKey) }
+                } else {
+                    failures += 1
+                    guard self.isEnabled else { return }
+                    self.uploadRequested = true
+                }
+            }
         }
     }
 
@@ -859,8 +944,17 @@ final class ServerSyncCoordinator {
         from modelContext: ModelContext,
         settingsStore: AppSettingsStore
     ) async -> Bool {
-        guard isEnabled, !isApplyingRemoteSnapshot, !isPulling, !isUploading else { return false }
+        // Includes background flushes: an upload-only retry with an old cursor
+        // otherwise repeats the same 409 indefinitely.
+        await synchronize(modelContext: modelContext, settingsStore: settingsStore)
+    }
+
+    private func performUpload(
+        from modelContext: ModelContext,
+        settingsStore: AppSettingsStore
+    ) async -> Bool {
         guard let baseline = loadBaseline() else { return false }
+        uploadNeedsMerge = false
         isUploading = true
         activeSyncPhase = "正在上传数据"
         defer {
@@ -871,26 +965,100 @@ final class ServerSyncCoordinator {
             let container = modelContext.container
             let settings = settingsStore.snapshot
             let baseCursor = loadChangeCursor()
-            let preparedUpload = try await Task.detached(priority: .utility) {
+            var blocked = loadBlockedHashes()
+            var preparedUpload: PreparedServerUpload
+            if let data = defaults.data(forKey: Self.outboxKey) {
+                preparedUpload = try JSONDecoder().decode(PreparedServerUpload.self, from: data)
+            } else {
+            let blockedAtCapture = blocked
+            preparedUpload = try await Task.detached(priority: .utility) {
                 try Self.prepareUpload(
                     from: container,
                     settings: settings,
                     baseline: baseline,
-                    baseCursor: baseCursor
+                    baseCursor: baseCursor,
+                    blocked: blockedAtCapture
                 )
             }.value
+            defaults.set(try JSONEncoder().encode(preparedUpload), forKey: Self.outboxKey)
+            }
+            blocked = blocked.filter { key, hash in
+                let parts = key.split(separator: "/", maxSplits: 1).map(String.init)
+                return parts.count == 2 && preparedUpload.hashes[parts[0]]?[parts[1]] == hash
+            }
+            defaults.set(try JSONEncoder().encode(blocked), forKey: Self.blockedHashesKey)
             guard !preparedUpload.bodies.isEmpty else {
+                defaults.removeObject(forKey: Self.outboxKey)
+                if !blocked.isEmpty {
+                    uploadError = "有复习记录与服务器冲突，已保留在本机；其他数据可正常同步。"
+                    return true
+                }
+                uploadError = nil
                 lastErrorDescription = nil
                 return true
             }
 
-            for body in preparedUpload.bodies {
+            while let body = preparedUpload.bodies.first {
                 try Task.checkCancellation()
-                try await ServerAPIClient.shared.pushMutations(body)
+                var object = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+                let held = loadBlockedHashes()
+                let mutations = (object["mutations"] as! [[String: Any]]).filter { mutation in
+                    guard mutation["operation"] as? String == "upsert",
+                          let entity = mutation["entityType"] as? String,
+                          let record = mutation["recordID"] as? String else { return true }
+                    return held[entity + "/" + record] != preparedUpload.hashes[entity]?[record]
+                }
+                if mutations.isEmpty {
+                    preparedUpload.bodies.removeFirst()
+                    defaults.set(try JSONEncoder().encode(preparedUpload), forKey: Self.outboxKey)
+                    continue
+                }
+                object["mutations"] = mutations
+                let wireBody = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+                let response = try await client.pushMutations(wireBody)
+                let acknowledged = Set(response.appliedMutationIDs.map(\.uuidString))
+                var nextBaseline = loadBaseline() ?? baseline
+                var blockedHashes = loadBlockedHashes()
+                let context = ModelContext(container)
+                context.autosaveEnabled = false
+                let deletions = try context.fetch(FetchDescriptor<SyncDeletion>())
+                let conflicts = Set((response.conflicts ?? []).map { $0.mutationID.uuidString })
+                for mutation in mutations {
+                    guard let id = mutation["mutationID"] as? String,
+                          let entity = mutation["entityType"] as? String,
+                          let record = mutation["recordID"] as? String else { continue }
+                    let key = entity + "/" + record
+                    if acknowledged.contains(id) {
+                        nextBaseline[entity, default: [:]][record] = preparedUpload.hashes[entity]?[record]
+                        blockedHashes.removeValue(forKey: key)
+                        for deletion in deletions where deletion.id.uuidString == id { context.delete(deletion) }
+                    } else if conflicts.contains(id) {
+                        blockedHashes[key] = preparedUpload.hashes[entity]?[record]
+                        if entity == "reviewRecords", let payload = mutation["payload"] as? [String: Any],
+                           let itemID = payload["itemID"] as? String {
+                            let canonicalID = UUID(uuidString: itemID)?.uuidString ?? itemID
+                            blockedHashes["reviewItems/" + canonicalID] = preparedUpload.hashes["reviewItems"]?[canonicalID]
+                        }
+                    } else {
+                        throw ServerAPIError.invalidResponse
+                    }
+                }
+                try context.save()
+                saveBaseline(nextBaseline)
+                defaults.set(try JSONEncoder().encode(blockedHashes), forKey: Self.blockedHashesKey)
+                preparedUpload.bodies.removeFirst()
+                defaults.set(try JSONEncoder().encode(preparedUpload), forKey: Self.outboxKey)
             }
-            saveBaseline(preparedUpload.hashes)
+            defaults.removeObject(forKey: Self.outboxKey)
+            uploadError = loadBlockedHashes().isEmpty ? nil : "有复习记录与服务器冲突，已保留在本机；其他数据可正常同步。"
             lastErrorDescription = nil
             lastSuccessfulUploadAt = .now
+            let remaining = try Self.prepareUpload(from: container, settings: settingsStore.snapshot,
+                                                   baseline: loadBaseline() ?? [:], baseCursor: loadChangeCursor(),
+                                                   blocked: loadBlockedHashes())
+            if !remaining.bodies.isEmpty {
+                scheduleUpload(from: modelContext, settingsStore: settingsStore)
+            }
             return true
         } catch where Self.isCancellation(error) {
             return false
@@ -898,9 +1066,11 @@ final class ServerSyncCoordinator {
             if case ServerAPIError.rejected(let statusCode, let message) = error,
                statusCode == 409,
                message.contains("sync_record_changed") {
-                lastErrorDescription = "检测到其他设备刚刚更新了同一条数据，本机记录已保留。请再次下拉刷新完成合并。"
+                defaults.removeObject(forKey: Self.outboxKey)
+                uploadNeedsMerge = true
+                uploadError = "其他设备更新了同一条数据，本机记录已保留，正在等待合并重试。"
             } else {
-                lastErrorDescription = error.localizedDescription
+                uploadError = error.localizedDescription
             }
             #if DEBUG
             print("Server upload failed: \(error)")
@@ -913,8 +1083,10 @@ final class ServerSyncCoordinator {
         from container: ModelContainer,
         settings: AppSettingsSnapshot,
         baseline: [String: [String: String]],
-        baseCursor: Int64?
+        baseCursor: Int64?,
+        blocked: [String: String]
     ) throws -> PreparedServerUpload {
+        return try PersistentStoreAccessGate.withAccess {
         let context = ModelContext(container)
         let payload = try DataBackupPayload.capture(
             from: context,
@@ -922,13 +1094,30 @@ final class ServerSyncCoordinator {
             mediaAssets: []
         )
         let snapshot = try StructuredSnapshot(payload: payload)
-        let mutations = try snapshot.mutations(comparedWith: baseline)
+        var mutations = try snapshot.mutations(comparedWith: baseline)
+        mutations.removeAll { mutation in
+            guard let entity = mutation["entityType"] as? String,
+                  let id = mutation["recordID"] as? String else { return false }
+            return blocked[entity + "/" + id] == snapshot.hashes[entity]?[id]
+        }
+        let deletions = try context.fetch(FetchDescriptor<SyncDeletion>())
+        let formatter = ISO8601DateFormatter()
+        for deletion in deletions {
+            mutations.removeAll { ($0["entityType"] as? String) == deletion.entityType &&
+                ($0["recordID"] as? String) == deletion.recordID.uuidString }
+            mutations.append([
+                "mutationID": deletion.id.uuidString, "entityType": deletion.entityType,
+                "recordID": deletion.recordID.uuidString, "operation": "delete",
+                "deletionIntent": "explicit", "updatedAt": formatter.string(from: deletion.deletedAt)
+            ])
+        }
         var bodies: [Data] = []
         bodies.reserveCapacity((mutations.count + 499) / 500)
         for batchStart in stride(from: 0, to: mutations.count, by: 500) {
             let batchEnd = min(batchStart + 500, mutations.count)
             var body: [String: Any] = [
-                "mutations": Array(mutations[batchStart..<batchEnd])
+                "mutations": Array(mutations[batchStart..<batchEnd]),
+                "isolateConflicts": true
             ]
             if let baseCursor {
                 body["baseCursor"] = baseCursor
@@ -941,6 +1130,7 @@ final class ServerSyncCoordinator {
             )
         }
         return PreparedServerUpload(bodies: bodies, hashes: snapshot.hashes)
+        }
     }
 
     nonisolated static func requiresSnapshotRestore(
@@ -957,7 +1147,7 @@ final class ServerSyncCoordinator {
 
     private func synchronizeDeepSeekAPIKey() async {
         do {
-            let remote = try await ServerAPIClient.shared.deepSeekAPIKey()
+            let remote = try await client.deepSeekAPIKey()
             if let value = remote.value?.trimmingCharacters(in: .whitespacesAndNewlines),
                !value.isEmpty {
                 try DeepSeekAPIKeyStore.saveAPIKey(value)
@@ -967,7 +1157,7 @@ final class ServerSyncCoordinator {
             let local = try DeepSeekAPIKeyStore.loadAPIKey()
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if !local.isEmpty {
-                _ = try await ServerAPIClient.shared.saveDeepSeekAPIKey(local)
+                _ = try await client.saveDeepSeekAPIKey(local)
             }
         } catch {
             #if DEBUG
@@ -1000,7 +1190,7 @@ final class ServerSyncCoordinator {
         dailyLimit: Int
     ) async throws -> Bool {
         let dayKey = ReviewDailyPlan.dayKey(for: .now)
-        let serverPlan = try await ServerAPIClient.shared.dailyPlan(
+        let serverPlan = try await client.dailyPlan(
             day: dayKey,
             dailyLimit: dailyLimit
         )
@@ -1050,26 +1240,35 @@ final class ServerSyncCoordinator {
     }
 
     private func loadBaseline() -> [String: [String: String]]? {
-        guard let data = UserDefaults.standard.data(forKey: Self.baselineDefaultsKey) else {
+        guard let data = defaults.data(forKey: Self.baselineDefaultsKey) else {
             return nil
         }
         return try? JSONDecoder().decode([String: [String: String]].self, from: data)
     }
 
     private func loadChangeCursor() -> Int64? {
-        let defaults = UserDefaults.standard
         guard defaults.object(forKey: Self.changeCursorDefaultsKey) != nil else { return nil }
         return defaults.object(forKey: Self.changeCursorDefaultsKey) as? Int64
             ?? Int64(defaults.integer(forKey: Self.changeCursorDefaultsKey))
     }
 
     private func saveChangeCursor(_ cursor: Int64) {
-        UserDefaults.standard.set(cursor, forKey: Self.changeCursorDefaultsKey)
+        defaults.set(cursor, forKey: Self.changeCursorDefaultsKey)
+    }
+
+    private func loadReceipts() -> [String: Int64] {
+        guard let data = defaults.data(forKey: Self.receiptsKey) else { return [:] }
+        return (try? JSONDecoder().decode([String: Int64].self, from: data)) ?? [:]
+    }
+
+    private func loadBlockedHashes() -> [String: String] {
+        guard let data = defaults.data(forKey: Self.blockedHashesKey) else { return [:] }
+        return (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
     }
 
     private func saveBaseline(_ baseline: [String: [String: String]]) {
         if let data = try? JSONEncoder().encode(baseline) {
-            UserDefaults.standard.set(data, forKey: Self.baselineDefaultsKey)
+            defaults.set(data, forKey: Self.baselineDefaultsKey)
         }
     }
 
@@ -1227,6 +1426,36 @@ final class ServerSyncCoordinator {
 }
 
 private extension ServerChange {
+    func normalizedPayloadHash() throws -> String? {
+        guard deletedAt == nil else { return nil }
+        switch entityType {
+        case "reviewItems": return try payloadHash(ReviewItemSnapshot.self)
+        case "reviewRecords": return try payloadHash(ReviewRecordSnapshot.self)
+        case "taskItems": return try payloadHash(TaskItemSnapshot.self)
+        case "taskCompletions": return try payloadHash(TaskCompletionSnapshot.self)
+        case "taskSubitems": return try payloadHash(TaskSubitemSnapshot.self)
+        case "taskExecutionRecords": return try payloadHash(TaskExecutionRecordSnapshot.self)
+        case "taskSubitemExecutionRecords": return try payloadHash(TaskSubitemExecutionRecordSnapshot.self)
+        case "dictationSessions": return try payloadHash(DictationSessionSnapshot.self)
+        case "dictationEntries": return try payloadHash(DictationEntrySnapshot.self)
+        case "scheduleItems": return try payloadHash(ScheduleItemSnapshot.self)
+        case "calculationRounds": return try payloadHash(CalculationRoundSnapshot.self)
+        case "pointLedgerEntries": return try payloadHash(PointLedgerEntrySnapshot.self)
+        case "pointRewardStates": return try payloadHash(PointRewardStateSnapshot.self)
+        case "settings": return try payloadHash(AppSettingsSnapshot.self)
+        default: return nil
+        }
+    }
+
+    private func payloadHash<Value: Codable>(_ type: Value.Type) throws -> String {
+        let value = try decodePayload(type)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let object = try JSONSerialization.jsonObject(with: encoder.encode(value))
+        let canonical = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return SHA256.hash(data: canonical).map { String(format: "%02x", $0) }.joined()
+    }
+
     func payloadDictionary() throws -> [String: Any] {
         guard let payload else { throw ServerAPIError.invalidResponse }
         let data = try JSONEncoder().encode(payload)
@@ -1237,7 +1466,7 @@ private extension ServerChange {
     }
 }
 
-private struct PreparedServerUpload: Sendable {
-    let bodies: [Data]
+private struct PreparedServerUpload: Codable, Sendable {
+    var bodies: [Data]
     let hashes: [String: [String: String]]
 }

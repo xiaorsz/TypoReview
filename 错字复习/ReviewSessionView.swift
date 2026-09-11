@@ -444,6 +444,7 @@ struct ReviewSessionView: View {
         let item = sessionItems[entry.itemIndex]
 
         // Restore item state
+        item.updatedAt = .now
         item.stage = entry.oldStage
         item.nextReviewAt = entry.oldNextReviewAt
         item.lastReviewedAt = entry.oldLastReviewedAt
@@ -470,7 +471,7 @@ struct ReviewSessionView: View {
                 )
                 if let records = try? modelContext.fetch(descriptor) {
                     for record in records {
-                        modelContext.delete(record)
+                        SyncDeletionStore.delete(record, in: modelContext)
                     }
                 }
             } else {

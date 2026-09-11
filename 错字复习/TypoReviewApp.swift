@@ -40,6 +40,7 @@ struct TypoReviewApp: App {
         let schema = Schema([
             ReviewItem.self,
             ReviewRecord.self,
+            SyncDeletion.self,
             ReviewDailyPlan.self,
             TaskItem.self,
             TaskCompletion.self,

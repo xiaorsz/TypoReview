@@ -1269,7 +1269,7 @@ enum TaskExecutionSupport {
 
         let isToday = Calendar.current.isDate(occurrenceDate, inSameDayAs: .now)
         if record.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && isToday {
-            modelContext.delete(record)
+            SyncDeletionStore.delete(record, in: modelContext)
         } else {
             record.status = .pending
             record.completedAt = nil

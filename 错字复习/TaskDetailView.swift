@@ -450,6 +450,7 @@ struct TaskDetailView: View {
 
         Task {
             let result: Result<TaskProjection, Error> = await Task.detached(priority: .userInitiated) {
+            return PersistentStoreAccessGate.withAccess {
                 do {
                     let context = ModelContext(container)
                     let descriptor = FetchDescriptor<TaskItem>(predicate: #Predicate<TaskItem> { $0.id == targetTaskID })
@@ -470,7 +471,8 @@ struct TaskDetailView: View {
                 } catch {
                     return .failure(error)
                 }
-            }.value
+                }
+        }.value
 
             isSavingTaskState = false
             switch result {
@@ -1347,6 +1349,7 @@ struct TaskDetailView: View {
         )
 
         let outcome = await Task.detached(priority: .utility) {
+            return PersistentStoreAccessGate.withAccess {
             let backgroundStartedAt = CACurrentMediaTime()
             let ctx = ModelContext(container)
             guard let task = (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))?.first else {
@@ -1423,6 +1426,7 @@ struct TaskDetailView: View {
                 return CompletionPersistenceOutcome.saved
             } catch {
                 return CompletionPersistenceOutcome.failed(error.localizedDescription)
+            }
             }
         }.value
 
@@ -1767,6 +1771,7 @@ struct TaskDetailView: View {
             let backgroundStartedAt = CACurrentMediaTime()
             let ctx = ModelContext(container)
             do {
+                try PersistentStoreAccessGate.withAccess {
                 guard let task = try ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })).first else {
                     throw CocoaError(.fileNoSuchFile)
                 }
@@ -1785,6 +1790,7 @@ struct TaskDetailView: View {
                 TaskExecutionSupport.syncExecutionStatus(record: record, task: task, subtasks: subtasks, modelContext: ctx)
                 try ctx.save()
                 Self.perfMark("saveParentDetail bg end id=\(actionID) elapsed=\(Self.perfMillis(since: backgroundStartedAt))")
+                }
                 await MainActor.run {
                     isSavingParentDetail = false
                     isEditingParentDetail = false
@@ -1864,14 +1870,11 @@ struct TaskDetailView: View {
         
         Task.detached(priority: .userInitiated) {
             let backgroundStartedAt = CACurrentMediaTime()
+            do {
+                try PersistentStoreAccessGate.withAccess {
             let ctx = ModelContext(container)
-            // 找当前 task 和 record
-            guard let task = (try? ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })))?.first else {
-                await MainActor.run {
-                    isSavingQuickSubtask = false
-                    persistenceErrorMessage = "任务已不存在"
-                }
-                return
+            guard let task = try ctx.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.id == tid })).first else {
+                throw CocoaError(.fileNoSuchFile)
             }
             let ed = FetchDescriptor<TaskExecutionRecord>(predicate: #Predicate { $0.taskID == tid })
             let recs = (try? ctx.fetch(ed)) ?? []
@@ -1896,9 +1899,9 @@ struct TaskDetailView: View {
             let updatedAllS = allS + [newSub]
             TaskExecutionSupport.syncExecutionStatus(record: record, task: task, subtasks: updatedAllS, modelContext: ctx)
             
-            do {
                 try ctx.save()
                 Self.perfMark("quickSubtask bg saved id=\(actionID) elapsed=\(Self.perfMillis(since: backgroundStartedAt))")
+                }
                 await MainActor.run {
                     isSavingQuickSubtask = false
                     selectedOccurrenceDate = date
@@ -1940,6 +1943,7 @@ struct TaskDetailView: View {
         Task.detached(priority: .utility) {
             let ctx = ModelContext(container)
             do {
+                try PersistentStoreAccessGate.withAccess {
                 let descriptor = FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.id == sid })
                 guard let sub = try ctx.fetch(descriptor).first else {
                     throw CocoaError(.fileNoSuchFile)
@@ -1962,6 +1966,7 @@ struct TaskDetailView: View {
                 }
                 
                 try ctx.save()
+                }
                 await MainActor.run {
                     isSavingSubtaskEditor = false
                     subtaskEditorTarget = nil
@@ -2029,11 +2034,12 @@ struct TaskDetailView: View {
             let backgroundStartedAt = CACurrentMediaTime()
             let ctx = ModelContext(container)
             do {
+                try PersistentStoreAccessGate.withAccess {
                 let descriptor = FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.id == sid })
                 guard let target = try ctx.fetch(descriptor).first else { return }
                 // 如果有关联的执行记录，同步一下状态
                 let rid = target.taskExecutionID
-                ctx.delete(target)
+                SyncDeletionStore.delete(target, in: ctx)
 
                 if let rid {
                     let remaining = try ctx.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid }))
@@ -2061,6 +2067,7 @@ struct TaskDetailView: View {
                 
                 try ctx.save()
                 Self.perfMark("deleteSubtask bg saved id=\(actionID) elapsed=\(Self.perfMillis(since: backgroundStartedAt))")
+                }
                 await MainActor.run {
                     Self.perfMark("deleteSubtask main refresh id=\(actionID) total=\(Self.perfMillis(since: startedAt))")
                     WidgetCenter.shared.reloadAllTimelinesInBackground()
@@ -2148,6 +2155,7 @@ struct TaskDetailView: View {
         Self.perfMark("subtask order requested id=\(actionID) count=\(orderedIDs.count)")
 
         let errorMessage: String? = await Task.detached(priority: .utility) {
+            return PersistentStoreAccessGate.withAccess {
             let backgroundStartedAt = CACurrentMediaTime()
             let ctx = ModelContext(container)
             let descriptor = FetchDescriptor<TaskSubitem>(predicate: #Predicate { $0.parentTaskID == tid })
@@ -2165,6 +2173,7 @@ struct TaskDetailView: View {
                 return nil
             } catch {
                 return error.localizedDescription
+            }
             }
         }.value
 

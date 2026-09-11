@@ -667,7 +667,7 @@ struct LibraryView: View {
 
     private func delete(_ item: LibraryItemProjection) {
         guard let persistedItem = fetchReviewItem(id: item.id) else { return }
-        modelContext.delete(persistedItem)
+        SyncDeletionStore.delete(persistedItem, in: modelContext)
         try? modelContext.save()
         AppDataChangeCenter.post()
     }

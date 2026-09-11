@@ -220,7 +220,11 @@ final class AppSettingsStore {
         syncToSwiftDataIfPossible(using: modelContext)
     }
 
-    func restore(from snapshot: AppSettingsSnapshot?, using modelContext: ModelContext) {
+    func restore(
+        from snapshot: AppSettingsSnapshot?,
+        using modelContext: ModelContext,
+        source: AppDataChangeCenter.Source = .local
+    ) {
         activateExternalStoresIfNeeded()
         if let snapshot {
             apply(snapshot: snapshot, incrementRevision: false)
@@ -229,7 +233,7 @@ final class AppSettingsStore {
             apply(snapshot: makeDefaultSnapshot(), incrementRevision: false)
         }
         persistCurrentValues(using: modelContext)
-        AppDataChangeCenter.post()
+        AppDataChangeCenter.post(source: source)
     }
 
     private func makeDefaultSnapshot() -> AppSettingsSnapshot {

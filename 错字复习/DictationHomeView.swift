@@ -165,6 +165,8 @@ struct DictationHomeView: View {
     @State private var editingRoute: DictationEditRoute?
     @State private var snapshot: DictationHomeSnapshot = .empty
     @State private var snapshotRefreshTask: Task<Void, Never>?
+    @State private var snapshotRefreshTaskID = UUID()
+    @State private var serverRefreshError: String?
     @State private var isSnapshotLoaded = false
     @State private var deleteErrorMessage: String?
     @State private var isViewVisible = false
@@ -322,11 +324,17 @@ struct DictationHomeView: View {
         }
         .scrollContentBackground(.hidden)
         .refreshable {
-            await ServerSyncCoordinator.shared.refreshFromServer(
+            serverRefreshError = nil
+            let succeeded = await ServerSyncCoordinator.shared.refreshFromServer(
                 modelContext: modelContext,
                 settingsStore: appSettingsStore
             )
-            requestSnapshotRefresh(reason: "pull to refresh", delay: 0)
+            if !succeeded, !Task.isCancelled {
+                serverRefreshError = ServerSyncCoordinator.shared.lastErrorDescription ?? "本次服务器刷新未完成，请稍后重试。"
+            }
+            needsSnapshotRefreshAfterCurrent = false
+            scheduleSnapshotRefresh(delay: 0)
+            await snapshotRefreshTask?.value
         }
         .background(Color(uiColor: .systemGroupedBackground))
         .navigationTitle("听写安排")
@@ -395,6 +403,7 @@ struct DictationHomeView: View {
                 DeferredDictationEditView(sessionID: route.id, title: route.title)
             }
         }
+        .serverRefreshError($serverRefreshError)
         .alert("删除失败", isPresented: Binding(
             get: { deleteErrorMessage != nil },
             set: { if !$0 { deleteErrorMessage = nil } }
@@ -519,7 +528,19 @@ struct DictationHomeView: View {
         guard canRenderLiveContent else { return }
 
         let container = modelContext.container
+        let taskID = UUID()
+        snapshotRefreshTaskID = taskID
         snapshotRefreshTask = Task(priority: .utility) {
+            defer {
+                if snapshotRefreshTaskID == taskID {
+                    isSnapshotRefreshInFlight = false
+                    let needsRefresh = needsSnapshotRefreshAfterCurrent
+                    needsSnapshotRefreshAfterCurrent = false
+                    if needsRefresh, canRenderLiveContent, !Task.isCancelled {
+                        requestSnapshotRefresh(reason: "coalesced", delay: 0.02)
+                    }
+                }
+            }
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
@@ -560,10 +581,6 @@ struct DictationHomeView: View {
             #if DEBUG
             DebugPerf.mark("DictationHomeView snapshot applied empty=\(refreshedSnapshot.isEmpty)")
             #endif
-            if needsSnapshotRefreshAfterCurrent {
-                needsSnapshotRefreshAfterCurrent = false
-                requestSnapshotRefresh(reason: "coalesced", delay: 0.02)
-            }
         }
     }
 
@@ -668,6 +685,7 @@ struct DictationHomeView: View {
             let backgroundContext = ModelContext(container)
 
             do {
+                try PersistentStoreAccessGate.withAccess {
                 let sessionDescriptor = FetchDescriptor<DictationSession>(
                     predicate: #Predicate<DictationSession> { $0.id == sessionID }
                 )
@@ -677,12 +695,13 @@ struct DictationHomeView: View {
                     predicate: #Predicate<DictationEntry> { $0.sessionID == sessionID }
                 )
                 for entry in try backgroundContext.fetch(entryDescriptor) {
-                    backgroundContext.delete(entry)
+                    SyncDeletionStore.delete(entry, in: backgroundContext)
                 }
 
-                backgroundContext.delete(session)
+                SyncDeletionStore.delete(session, in: backgroundContext)
                 try backgroundContext.save()
 
+                }
                 await MainActor.run {
                     AppDataChangeCenter.post()
                 }

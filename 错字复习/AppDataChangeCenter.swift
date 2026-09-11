@@ -20,12 +20,24 @@ extension Notification.Name {
 }
 
 enum AppDataChangeCenter {
-    static func post(using center: NotificationCenter = .default) {
+    enum Source: String {
+        case local
+        case server
+    }
+
+    private static let sourceKey = "changeSource"
+
+    static func requiresUpload(_ notification: Notification) -> Bool {
+        notification.userInfo?[sourceKey] as? String != Source.server.rawValue
+    }
+
+    static func post(source: Source = .local, using center: NotificationCenter = .default) {
+        let userInfo = [sourceKey: source.rawValue]
         if Thread.isMainThread {
-            center.post(name: .appDataDidChange, object: nil)
+            center.post(name: .appDataDidChange, object: nil, userInfo: userInfo)
         } else {
             DispatchQueue.main.async {
-                center.post(name: .appDataDidChange, object: nil)
+                center.post(name: .appDataDidChange, object: nil, userInfo: userInfo)
             }
         }
     }

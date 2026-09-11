@@ -318,7 +318,7 @@ struct AddDictationSessionView: View {
 
             if let entriesToDelete = existingEntries {
                 for entry in entriesToDelete {
-                    modelContext.delete(entry)
+                    SyncDeletionStore.delete(entry, in: modelContext)
                 }
             }
         } else {

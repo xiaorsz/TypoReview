@@ -11,29 +11,14 @@ struct DashboardBoardView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(MediaLibraryStore.self) private var mediaLibraryStore
     @Environment(AppSettingsStore.self) private var appSettingsStore
-    @Query(sort: \ReviewItem.nextReviewAt) private var reviewItems: [ReviewItem]
-    @Query(
-        filter: #Predicate<DictationSession> { $0.reviewedAt == nil },
-        sort: \DictationSession.createdAt,
-        order: .reverse
-    ) private var dictationSessions: [DictationSession]
-    @Query(sort: \TaskItem.createdAt) private var allTasks: [TaskItem]
-    @Query(
-        filter: #Predicate<TaskSubitem> { !$0.isArchived },
-        sort: \TaskSubitem.sortOrder
-    ) private var taskSubitems: [TaskSubitem]
-    @Query(sort: \TaskExecutionRecord.occurrenceDate, order: .reverse) private var taskExecutionRecords: [TaskExecutionRecord]
-    @Query(
-        filter: #Predicate<ScheduleItem> { !$0.isArchived },
-        sort: \ScheduleItem.startTime
-    ) private var allSchedules: [ScheduleItem]
-
     @State private var boardNow = Date.now
     @State private var playbackCoordinator = MediaPlaybackCoordinator()
     @StateObject private var taskReminderSpeaker = BoardTaskReminderSpeaker()
     @State private var lastBoardInteractionAt = Date.now
     @State private var isExitButtonVisible = false
     @State private var boardSnapshot: BoardSnapshot?
+    @State private var boardDataSource: BoardDataSource?
+    @State private var boardReadError: String?
     @State private var remindedTaskReminderSlots: Set<String> = []
     @State private var remindedTaskReminderDay = Calendar.current.startOfDay(for: Date.now)
     @State private var shouldResumePlaybackAfterTaskReminder = false
@@ -69,7 +54,11 @@ struct DashboardBoardView: View {
         }
     }
 
-    private func makeBoardSnapshot(at date: Date = Date.now) -> BoardSnapshot {
+    private func makeBoardSnapshot(from source: BoardDataSource, at date: Date = Date.now) -> BoardSnapshot {
+        let reviewItems = source.reviewItems
+        let allTasks = source.tasks
+        let taskExecutionRecords = source.executions
+        let taskSubitems = source.subtasks
         let childName = appSettingsStore.childName.isEmpty ? "小朋友" : appSettingsStore.childName
         let calendar = Calendar.current
         let dueItems = ReviewContentIdentity.canonicalReviewItems(from: reviewItems)
@@ -86,9 +75,9 @@ struct DashboardBoardView: View {
                 }
                 return lhs.id.uuidString < rhs.id.uuidString
             }
-        let pendingDictationSessions = pendingDictationSessions(for: date)
+        let pendingDictationSessions = pendingDictationSessions(source.sessions, for: date)
         let pendingDictationBoardItems = pendingDictationSessions
-            .flatMap { dictationEntries(for: $0) }
+            .flatMap { source.entriesBySession[$0.id] ?? [] }
             .sorted {
                 if $0.sessionID == $1.sessionID {
                     return $0.sortOrder < $1.sortOrder
@@ -98,7 +87,7 @@ struct DashboardBoardView: View {
             .map { entry in
                 BoardTextItem(id: entry.id, text: entry.content, detail: "")
             }
-        let taskSnapshot = boardTaskSnapshot(on: date)
+        let taskSnapshot = boardTaskSnapshot(from: source, on: date)
         let recentPlans = RecentPlanSupport.visibleProjections(
             from: TaskDedupSupport.deduplicatedTasks(allTasks).map(TaskProjection.init),
             executions: taskExecutionRecords.map(TaskExecutionRecordProjection.init),
@@ -107,7 +96,7 @@ struct DashboardBoardView: View {
             includeCompletedToday: false,
             calendar: calendar
         )
-        let todaySchedules = todaySchedules(on: date)
+        let todaySchedules = todaySchedules(source.schedules, on: date)
         let boardSettings = appSettingsStore.modelRepresentation
         let enabledMediaAssets = enabledPlaylist()
 
@@ -143,7 +132,7 @@ struct DashboardBoardView: View {
         )
     }
 
-    private func pendingDictationSessions(for date: Date) -> [DictationSession] {
+    private func pendingDictationSessions(_ dictationSessions: [DictationSession], for date: Date) -> [DictationSession] {
         let calendar = Calendar.current
         let todayStart = calendar.startOfDay(for: date)
         return dictationSessions
@@ -151,17 +140,10 @@ struct DashboardBoardView: View {
             .sorted { $0.scheduledDate < $1.scheduledDate }
     }
 
-    private func dictationEntries(for session: DictationSession) -> [DictationEntry] {
-        let sessionID = session.id
-        return (try? modelContext.fetch(
-            FetchDescriptor<DictationEntry>(
-                predicate: #Predicate<DictationEntry> { $0.sessionID == sessionID },
-                sortBy: [SortDescriptor(\.sortOrder)]
-            )
-        )) ?? []
-    }
-
-    private func boardTaskSnapshot(on date: Date) -> BoardTaskSnapshot {
+    private func boardTaskSnapshot(from source: BoardDataSource, on date: Date) -> BoardTaskSnapshot {
+        let allTasks = source.tasks
+        let taskExecutionRecords = source.executions
+        let taskSubitems = source.subtasks
         let calendar = Calendar.current
         let autoArchivedCompletedAtByTaskID = Dictionary(
             taskExecutionRecords.compactMap { record -> (UUID, Date)? in
@@ -251,7 +233,7 @@ struct DashboardBoardView: View {
         )
     }
 
-    private func todaySchedules(on date: Date) -> [ScheduleItem] {
+    private func todaySchedules(_ allSchedules: [ScheduleItem], on date: Date) -> [ScheduleItem] {
         allSchedules
             .filter { $0.shouldAppear(on: date) && !$0.hasEnded(on: date, reference: date) }
             .sorted { $0.startTimeMinutes < $1.startTimeMinutes }
@@ -325,6 +307,20 @@ struct DashboardBoardView: View {
                 boardLoadingView
             } else {
                 Color.clear
+            }
+        }
+        .task(id: scenePhase) {
+            guard scenePhase == .active, ServerSyncCoordinator.shared.isEnabled else { return }
+            await BoardSyncPolling.run { isFirstCheck in
+                let coordinator = ServerSyncCoordinator.shared
+                let succeeded: Bool
+                if isFirstCheck {
+                    succeeded = await coordinator.refreshFromServer(modelContext: modelContext, settingsStore: appSettingsStore)
+                } else {
+                    succeeded = await coordinator.checkForServerUpdates(modelContext: modelContext, settingsStore: appSettingsStore)
+                }
+                guard !Task.isCancelled, scenePhase == .active else { return }
+                if succeeded { refreshBoardSnapshot(reason: "server polling completed") }
             }
         }
         .onAppear {
@@ -523,6 +519,17 @@ struct DashboardBoardView: View {
                 Text(snapshot.todayHeadline)
                     .font(.system(size: 22, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.9))
+
+                if let message = boardReadError ?? ServerSyncCoordinator.shared.lastErrorDescription {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.yellow)
+                        .lineLimit(2)
+                } else if ServerSyncCoordinator.shared.isEnabled {
+                    Text("看板自动同步中 · 每 60 秒检查更新")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.7))
+                }
             }
 
             Spacer()
@@ -1149,7 +1156,18 @@ struct DashboardBoardView: View {
     private func refreshBoardSnapshot(reason: String) {
         let now = Date.now
         boardNow = now
-        boardSnapshot = makeBoardSnapshot(at: now)
+        do {
+            try PersistentStoreAccessGate.withAccess {
+                let source = try BoardDataSource.load(from: modelContext.container)
+                let snapshot = makeBoardSnapshot(from: source, at: now)
+                boardDataSource = source
+                boardSnapshot = snapshot
+            }
+            boardReadError = nil
+        } catch {
+            // Keep the last valid snapshot instead of displaying empty counts.
+            boardReadError = "看板数据读取失败，请重新打开看板重试。"
+        }
         #if DEBUG
         DebugPerf.mark("DashboardBoardView refreshBoardSnapshot reason=\(reason)")
         #endif
@@ -1607,6 +1625,53 @@ private struct BoardScheduleStatCard: View {
         .overlay {
             RoundedRectangle(cornerRadius: 24)
                 .stroke(.white.opacity(0.08), lineWidth: 1)
+        }
+    }
+}
+
+/// Models stay on the main actor and retain their fresh read context for display.
+/// Existing @Query instances can still contain the generation preceding a server
+/// merge when its notification arrives.
+@MainActor
+struct BoardDataSource {
+    let context: ModelContext
+    let reviewItems: [ReviewItem]
+    let sessions: [DictationSession]
+    let entriesBySession: [UUID: [DictationEntry]]
+    let tasks: [TaskItem]
+    let subtasks: [TaskSubitem]
+    let executions: [TaskExecutionRecord]
+    let schedules: [ScheduleItem]
+
+    static func load(from container: ModelContainer) throws -> BoardDataSource {
+        try PersistentStoreAccessGate.withAccess {
+            let context = ModelContext(container)
+            context.autosaveEnabled = false
+            return BoardDataSource(
+                context: context,
+                reviewItems: try context.fetch(FetchDescriptor<ReviewItem>()),
+                sessions: try context.fetch(FetchDescriptor<DictationSession>(predicate: #Predicate { $0.reviewedAt == nil })),
+                entriesBySession: Dictionary(grouping: try context.fetch(FetchDescriptor<DictationEntry>()), by: \.sessionID),
+                tasks: try context.fetch(FetchDescriptor<TaskItem>()),
+                subtasks: try context.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { !$0.isArchived })),
+                executions: try context.fetch(FetchDescriptor<TaskExecutionRecord>()),
+                schedules: try context.fetch(FetchDescriptor<ScheduleItem>(predicate: #Predicate { !$0.isArchived }))
+            )
+        }
+    }
+}
+
+@MainActor
+enum BoardSyncPolling {
+    static func run(
+        intervalNanoseconds: UInt64 = 60_000_000_000,
+        check: (_ isFirstCheck: Bool) async -> Void
+    ) async {
+        var isFirstCheck = true
+        while !Task.isCancelled {
+            await check(isFirstCheck)
+            isFirstCheck = false
+            do { try await Task.sleep(nanoseconds: intervalNanoseconds) } catch { return }
         }
     }
 }

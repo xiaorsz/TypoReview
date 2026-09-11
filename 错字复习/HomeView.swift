@@ -594,6 +594,8 @@ struct HomeView: View {
     @State private var showQuickEntryHint = false
     @State private var dashboardSnapshot: DashboardSnapshot?
     @State private var dashboardSnapshotTask: Task<Void, Never>?
+    @State private var dashboardSnapshotTaskID = UUID()
+    @State private var serverRefreshError: String?
     @State private var deferredSaveTask: Task<Void, Never>?
     @State private var isViewVisible = false
     @State private var isDashboardRefreshInFlight = false
@@ -1853,6 +1855,7 @@ struct HomeView: View {
                 lightweightLoadingHomeView
             }
         }
+        .serverRefreshError($serverRefreshError)
         .onAppear {
             isViewVisible = true
             #if DEBUG
@@ -2042,15 +2045,17 @@ struct HomeView: View {
         let dailyLimit = appSettingsStore.dailyLimit
         let container = modelContext.container
 
+        let taskID = UUID()
+        dashboardSnapshotTaskID = taskID
         dashboardSnapshotTask = Task(priority: .utility) {
             defer {
-                Task { @MainActor in
+                if dashboardSnapshotTaskID == taskID {
                     let shouldScheduleCoalescedRefresh = needsDashboardRefreshAfterCurrent
                     isDashboardRefreshInFlight = false
                     needsDashboardRefreshAfterCurrent = false
-
-                    guard shouldScheduleCoalescedRefresh, canRenderLiveContent else { return }
-                    requestDashboardSnapshotRefresh(reason: "coalesced", delay: refreshDashboardSnapshotDelay)
+                    if shouldScheduleCoalescedRefresh, canRenderLiveContent, !Task.isCancelled {
+                        requestDashboardSnapshotRefresh(reason: "coalesced", delay: refreshDashboardSnapshotDelay)
+                    }
                 }
             }
             if delay > 0 {
@@ -2337,11 +2342,18 @@ struct HomeView: View {
 
     @MainActor
     private func refreshFromServer() async {
-        await ServerSyncCoordinator.shared.synchronize(
+        serverRefreshError = nil
+        let succeeded = await ServerSyncCoordinator.shared.refreshFromServer(
             modelContext: modelContext,
             settingsStore: appSettingsStore
         )
-        requestDashboardSnapshotRefresh(reason: "pull to refresh", delay: 0)
+        if !succeeded, !Task.isCancelled {
+            serverRefreshError = ServerSyncCoordinator.shared.lastErrorDescription ?? "本次服务器刷新未完成，请稍后重试。"
+        }
+        // Wait for the displayed snapshot, not merely a request to rebuild it.
+        needsDashboardRefreshAfterCurrent = false
+        scheduleDashboardSnapshotUpdate(delay: 0)
+        await dashboardSnapshotTask?.value
         refreshDailyQuote()
     }
 

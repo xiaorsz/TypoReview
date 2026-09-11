@@ -224,3 +224,40 @@ final class ReviewDailyPlan {
         return ids
     }
 }
+
+/// Explicit user deletions travel with the local transaction, including offline.
+@Model
+final class SyncDeletion {
+    var id: UUID = UUID()
+    var entityType: String = ""
+    var recordID: UUID = UUID()
+    var deletedAt: Date = Date()
+
+    init(entityType: String, recordID: UUID) {
+        self.entityType = entityType
+        self.recordID = recordID
+    }
+}
+
+enum SyncDeletionStore {
+    static func delete<Model: PersistentModel>(_ model: Model, in context: ModelContext) {
+        let key: (String, UUID)?
+        switch model {
+        case let value as ReviewItem: key = ("reviewItems", value.id)
+        case let value as ReviewRecord: key = ("reviewRecords", value.id)
+        case let value as TaskItem: key = ("taskItems", value.id)
+        case let value as TaskCompletion: key = ("taskCompletions", value.id)
+        case let value as TaskSubitem: key = ("taskSubitems", value.id)
+        case let value as TaskExecutionRecord: key = ("taskExecutionRecords", value.id)
+        case let value as TaskSubitemExecutionRecord: key = ("taskSubitemExecutionRecords", value.id)
+        case let value as DictationSession: key = ("dictationSessions", value.id)
+        case let value as DictationEntry: key = ("dictationEntries", value.id)
+        case let value as ScheduleItem: key = ("scheduleItems", value.id)
+        default: key = nil
+        }
+        if let key {
+            context.insert(SyncDeletion(entityType: key.0, recordID: key.1))
+        }
+        context.delete(model)
+    }
+}

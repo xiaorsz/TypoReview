@@ -14,6 +14,11 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 DAILY_QUOTES_PATH = Path(__file__).with_name("daily_quotes.json")
 
 
+async def lock_sync_writes(connection: asyncpg.Connection) -> None:
+    # Acquire before conflict checks, not just before the eventual INSERT.
+    await connection.execute("SELECT pg_advisory_xact_lock(9120260910)")
+
+
 class Database:
     def __init__(self) -> None:
         self.pool: asyncpg.Pool | None = None
@@ -207,8 +212,9 @@ async def upsert_record(
         SET payload = EXCLUDED.payload,
             client_updated_at = EXCLUDED.client_updated_at,
             deleted_at = NULL
-        WHERE EXCLUDED.client_updated_at >= records.client_updated_at
-          AND (records.payload IS DISTINCT FROM EXCLUDED.payload OR records.deleted_at IS NOT NULL)
+        WHERE records.deleted_at IS NULL
+          AND EXCLUDED.client_updated_at >= records.client_updated_at
+          AND records.payload IS DISTINCT FROM EXCLUDED.payload
         """,
         account_id,
         entity_type,
@@ -364,10 +370,12 @@ async def tombstone_record(
         raise ValueError("deleted_at is required")
     await connection.execute(
         """
-        UPDATE records
-        SET deleted_at = $4, client_updated_at = $4
-        WHERE account_id = $1 AND entity_type = $2 AND record_id = $3
-          AND client_updated_at <= $4
+        INSERT INTO records(account_id, entity_type, record_id, payload, client_updated_at, deleted_at)
+        VALUES($1, $2, $3, jsonb_build_object('id', $3::uuid::text), $4, $4)
+        ON CONFLICT (account_id, entity_type, record_id) DO UPDATE
+        SET deleted_at = EXCLUDED.deleted_at,
+            client_updated_at = GREATEST(records.client_updated_at, EXCLUDED.client_updated_at)
+        WHERE records.deleted_at IS NULL
         """,
         account_id,
         entity_type,

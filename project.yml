@@ -59,7 +59,7 @@ targets:
         PRODUCT_NAME: TypoReview
         PRODUCT_BUNDLE_IDENTIFIER: cc.xiaorsz.typo-review
         MARKETING_VERSION: 1.7.0
-        CURRENT_PROJECT_VERSION: 3
+        CURRENT_PROJECT_VERSION: 4
         ALWAYS_SEARCH_USER_PATHS: NO
         TARGETED_DEVICE_FAMILY: "1,2"
         DEVELOPMENT_TEAM: FCAW792CJD
@@ -122,8 +122,8 @@ targets:
     info:
       path: TypoWidget/Info.plist
       properties:
-        CFBundleShortVersionString: "1.7.0"
-        CFBundleVersion: "3"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleDisplayName: "听写复习本"
         NSExtension:
           NSExtensionPointIdentifier: "com.apple.widgetkit-extension"
@@ -139,7 +139,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: cc.xiaorsz.typo-review.TypoWidget
         DEVELOPMENT_TEAM: FCAW792CJD
         MARKETING_VERSION: 1.7.0
-        CURRENT_PROJECT_VERSION: 3
+        CURRENT_PROJECT_VERSION: 4
         ALWAYS_SEARCH_USER_PATHS: NO
       configs:
         Debug:
