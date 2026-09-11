@@ -1,174 +1,133 @@
 import AppKit
 import Foundation
 
-struct IconSpec {
-    let filename: String
-    let size: Int
-}
+let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+let darkSourceURL = root.appendingPathComponent("tools/AppIconSource.png")
+let lightSourceURL = root.appendingPathComponent("tools/AppIconSource-Light.png")
+let outputDirectory = root.appendingPathComponent(
+    "错字复习/Assets.xcassets/AppIcon.appiconset",
+    isDirectory: true
+)
 
-let specs: [IconSpec] = [
-    .init(filename: "Icon-20@2x.png", size: 40),
-    .init(filename: "Icon-20@3x.png", size: 60),
-    .init(filename: "Icon-29@2x.png", size: 58),
-    .init(filename: "Icon-29@3x.png", size: 87),
-    .init(filename: "Icon-40@2x.png", size: 80),
-    .init(filename: "Icon-40@3x.png", size: 120),
-    .init(filename: "Icon-60@2x.png", size: 120),
-    .init(filename: "Icon-60@3x.png", size: 180),
-    .init(filename: "Icon-20-ipad@1x.png", size: 20),
-    .init(filename: "Icon-20-ipad@2x.png", size: 40),
-    .init(filename: "Icon-29-ipad@1x.png", size: 29),
-    .init(filename: "Icon-29-ipad@2x.png", size: 58),
-    .init(filename: "Icon-40-ipad@1x.png", size: 40),
-    .init(filename: "Icon-40-ipad@2x.png", size: 80),
-    .init(filename: "Icon-76-ipad@1x.png", size: 76),
-    .init(filename: "Icon-76-ipad@2x.png", size: 152),
-    .init(filename: "Icon-83.5-ipad@2x.png", size: 167),
-    .init(filename: "Icon-1024.png", size: 1024)
-]
-
-let outputDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-    .appendingPathComponent("错字复习/Assets.xcassets/AppIcon.appiconset", isDirectory: true)
-
-try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
-
-func color(_ hex: UInt32, alpha: CGFloat = 1.0) -> NSColor {
-    NSColor(
-        red: CGFloat((hex >> 16) & 0xff) / 255.0,
-        green: CGFloat((hex >> 8) & 0xff) / 255.0,
-        blue: CGFloat(hex & 0xff) / 255.0,
-        alpha: alpha
+guard let darkSourceImage = NSImage(contentsOf: darkSourceURL),
+      let lightSourceImage = NSImage(contentsOf: lightSourceURL) else {
+    throw NSError(
+        domain: "AppIconGeneration",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Unable to load app icon source images"]
     )
 }
 
-func saveIcon(size: Int, to url: URL, opaque: Bool = false) throws {
-    let rect = NSRect(x: 0, y: 0, width: size, height: size)
-    let corner = CGFloat(size) * 0.23
-    guard let bitmap = NSBitmapImageRep(
-        bitmapDataPlanes: nil,
-        pixelsWide: size,
-        pixelsHigh: size,
-        bitsPerSample: 8,
-        samplesPerPixel: opaque ? 3 : 4,
-        hasAlpha: !opaque,
-        isPlanar: false,
-        colorSpaceName: .deviceRGB,
-        bytesPerRow: 0,
-        bitsPerPixel: 0
+try FileManager.default.createDirectory(
+    at: outputDirectory,
+    withIntermediateDirectories: true
+)
+
+func renderIcon(
+    sourceImage: NSImage,
+    backgroundRGB: (red: CGFloat, green: CGFloat, blue: CGFloat),
+    destinationURL: URL
+) throws {
+    let size = 1024
+    guard let sourceCGImage = sourceImage.cgImage(
+        forProposedRect: nil,
+        context: nil,
+        hints: nil
     ) else {
-        throw NSError(domain: "IconGeneration", code: 1)
+        throw NSError(domain: "AppIconGeneration", code: 2)
     }
 
-    bitmap.size = NSSize(width: size, height: size)
-
-    NSGraphicsContext.saveGraphicsState()
-    guard let context = NSGraphicsContext(bitmapImageRep: bitmap) else {
-        throw NSError(domain: "IconGeneration", code: 2)
-    }
-    NSGraphicsContext.current = context
-
-    if opaque {
-        color(0xF59A5A).setFill()
-        rect.fill()
-    }
-
-    let bgPath = opaque
-        ? NSBezierPath(rect: rect)
-        : NSBezierPath(roundedRect: rect, xRadius: corner, yRadius: corner)
-
-    let bgGradient = NSGradient(colors: [
-        color(0xFFCC73),
-        color(0xFF9052)
-    ])!
-    bgGradient.draw(in: bgPath, angle: -45)
-
-    let grainInset = rect.insetBy(dx: CGFloat(size) * 0.04, dy: CGFloat(size) * 0.04)
-    let grainPath = opaque
-        ? NSBezierPath(rect: grainInset)
-        : NSBezierPath(roundedRect: grainInset, xRadius: corner * 0.85, yRadius: corner * 0.85)
-    color(0xFFFFFF, alpha: 0.14).setStroke()
-    grainPath.lineWidth = max(2, CGFloat(size) * 0.01)
-    grainPath.stroke()
-
-    let notebookRect = NSRect(
-        x: CGFloat(size) * 0.18,
-        y: CGFloat(size) * 0.16,
-        width: CGFloat(size) * 0.64,
-        height: CGFloat(size) * 0.68
-    )
-    let notebookPath = NSBezierPath(roundedRect: notebookRect, xRadius: CGFloat(size) * 0.08, yRadius: CGFloat(size) * 0.08)
-    color(0xFFF9F0).setFill()
-    notebookPath.fill()
-
-    let topBandRect = NSRect(
-        x: notebookRect.minX,
-        y: notebookRect.maxY - CGFloat(size) * 0.15,
-        width: notebookRect.width,
-        height: CGFloat(size) * 0.15
-    )
-    let topBandPath = NSBezierPath(roundedRect: topBandRect, xRadius: CGFloat(size) * 0.08, yRadius: CGFloat(size) * 0.08)
-    color(0x2D5B8E).setFill()
-    topBandPath.fill()
-
-    let lineColor = color(0xE2D7CC)
-    lineColor.setStroke()
-    for index in 0..<4 {
-        let y = notebookRect.minY + CGFloat(size) * (0.16 + 0.1 * CGFloat(index))
-        let line = NSBezierPath()
-        line.move(to: NSPoint(x: notebookRect.minX + CGFloat(size) * 0.09, y: y))
-        line.line(to: NSPoint(x: notebookRect.maxX - CGFloat(size) * 0.08, y: y))
-        line.lineWidth = max(1.5, CGFloat(size) * 0.007)
-        line.stroke()
+    let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+    let bitmapInfo = CGBitmapInfo.byteOrder32Big.rawValue
+        | CGImageAlphaInfo.noneSkipLast.rawValue
+    guard let context = CGContext(
+        data: nil,
+        width: size,
+        height: size,
+        bitsPerComponent: 8,
+        bytesPerRow: size * 4,
+        space: colorSpace,
+        bitmapInfo: bitmapInfo
+    ) else {
+        throw NSError(domain: "AppIconGeneration", code: 3)
     }
 
-    let title = "听写"
-    let paragraph = NSMutableParagraphStyle()
-    paragraph.alignment = .center
-    let titleFont = NSFont.systemFont(ofSize: CGFloat(size) * 0.16, weight: .bold)
-    let titleAttrs: [NSAttributedString.Key: Any] = [
-        .font: titleFont,
-        .foregroundColor: color(0xE6683C),
-        .paragraphStyle: paragraph
-    ]
-    let titleRect = NSRect(
-        x: notebookRect.minX,
-        y: notebookRect.minY + CGFloat(size) * 0.18,
-        width: notebookRect.width,
-        height: CGFloat(size) * 0.2
+    context.setFillColor(
+        red: backgroundRGB.red,
+        green: backgroundRGB.green,
+        blue: backgroundRGB.blue,
+        alpha: 1
     )
-    title.draw(in: titleRect, withAttributes: titleAttrs)
+    context.fill(CGRect(x: 0, y: 0, width: size, height: size))
+    context.interpolationQuality = .high
+    context.draw(sourceCGImage, in: CGRect(x: 0, y: 0, width: size, height: size))
 
-    let sub = "复习本"
-    let subFont = NSFont.systemFont(ofSize: CGFloat(size) * 0.072, weight: .semibold)
-    let subAttrs: [NSAttributedString.Key: Any] = [
-        .font: subFont,
-        .foregroundColor: color(0x6E7B8B),
-        .paragraphStyle: paragraph
-    ]
-    let subRect = NSRect(
-        x: notebookRect.minX,
-        y: notebookRect.minY + CGFloat(size) * 0.08,
-        width: notebookRect.width,
-        height: CGFloat(size) * 0.11
-    )
-    sub.draw(in: subRect, withAttributes: subAttrs)
-
-    context.flushGraphics()
-    NSGraphicsContext.restoreGraphicsState()
-
+    guard let renderedImage = context.makeImage() else {
+        throw NSError(domain: "AppIconGeneration", code: 4)
+    }
+    let bitmap = NSBitmapImageRep(cgImage: renderedImage)
     guard let pngData = bitmap.representation(using: .png, properties: [:]) else {
-        throw NSError(domain: "IconGeneration", code: 3)
+        throw NSError(domain: "AppIconGeneration", code: 5)
     }
-
-    try pngData.write(to: url)
+    try pngData.write(to: destinationURL, options: .atomic)
 }
 
-for spec in specs {
-    try saveIcon(
-        size: spec.size,
-        to: outputDir.appendingPathComponent(spec.filename),
-        opaque: spec.filename == "Icon-1024.png"
-    )
+let lightFilename = "Icon-1024-Light.png"
+let darkFilename = "Icon-1024-dark.png"
+
+try renderIcon(
+    sourceImage: lightSourceImage,
+    backgroundRGB: (233.0 / 255.0, 238.0 / 255.0, 245.0 / 255.0),
+    destinationURL: outputDirectory.appendingPathComponent(lightFilename)
+)
+try renderIcon(
+    sourceImage: darkSourceImage,
+    backgroundRGB: (17.0 / 255.0, 24.0 / 255.0, 39.0 / 255.0),
+    destinationURL: outputDirectory.appendingPathComponent(darkFilename)
+)
+
+let contents: [String: Any] = [
+    "images": [
+        [
+            "filename": lightFilename,
+            "idiom": "universal",
+            "platform": "ios",
+            "size": "1024x1024"
+        ],
+        [
+            "appearances": [[
+                "appearance": "luminosity",
+                "value": "dark"
+            ]],
+            "filename": darkFilename,
+            "idiom": "universal",
+            "platform": "ios",
+            "size": "1024x1024"
+        ]
+    ],
+    "info": [
+        "author": "xcode",
+        "version": 1
+    ]
+]
+var contentsData = try JSONSerialization.data(
+    withJSONObject: contents,
+    options: [.prettyPrinted, .sortedKeys]
+)
+contentsData.append(0x0A)
+try contentsData.write(
+    to: outputDirectory.appendingPathComponent("Contents.json"),
+    options: .atomic
+)
+
+// Remove files from the legacy per-size layout. Xcode now derives all device
+// sizes from the two universal 1024 px masters above.
+let activeFilenames = Set([lightFilename, darkFilename, "Contents.json"])
+for url in try FileManager.default.contentsOfDirectory(
+    at: outputDirectory,
+    includingPropertiesForKeys: nil
+) where !activeFilenames.contains(url.lastPathComponent) {
+    try FileManager.default.removeItem(at: url)
 }
 
-print("Generated \(specs.count) icons in \(outputDir.path)")
+print("Generated opaque universal light and dark app icons")
