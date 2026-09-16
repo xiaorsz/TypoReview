@@ -4,6 +4,7 @@ import SwiftData
 
 struct DictationSessionView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
 
     @State private var currentIndex = 0
@@ -13,7 +14,7 @@ struct DictationSessionView: View {
     @State private var isFinishing = false
     @State private var saveErrorMessage: String?
     @State private var didPersistProgress = false
-    @StateObject private var speaker = DictationSpeaker()
+    @StateObject private var speaker = AutoDictationController()
 
     let session: DictationSession
     let entries: [DictationEntry]
@@ -53,6 +54,7 @@ struct DictationSessionView: View {
                             ScrollView(showsIndicators: false) {
                                 VStack(spacing: 22) {
                                     progressHeader
+                                    AutoDictationControls(controller: speaker)
                                     sessionCard(for: currentEntry, isWide: isWide)
                                 }
                                 .frame(maxWidth: isWide ? 860 : .infinity)
@@ -78,24 +80,29 @@ struct DictationSessionView: View {
             )
         }
         .onAppear {
-            if let currentEntry {
-                if hasAutoSpokenInitialEntry {
-                    speaker.prepare(content: currentEntry.content, type: currentEntry.type, prompt: currentEntry.prompt)
-                } else {
-                    hasAutoSpokenInitialEntry = true
-                    speaker.speak(content: currentEntry.content, type: currentEntry.type, prompt: currentEntry.prompt)
-                }
+            speaker.onAdvance = {
+                guard currentIndex < entries.count - 1 else { return }
+                currentIndex += 1
             }
+            selectCurrentEntry(speak: !hasAutoSpokenInitialEntry)
+            hasAutoSpokenInitialEntry = true
         }
         .onChange(of: currentIndex) {
             isContentRevealed = false
             persistProgress()
-            if let currentEntry {
-                speaker.speak(content: currentEntry.content, type: currentEntry.type, prompt: currentEntry.prompt)
+            selectCurrentEntry()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { speaker.pause() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { notification in
+            if let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+               AVAudioSession.InterruptionType(rawValue: raw) == .began {
+                speaker.pause()
             }
         }
         .onDisappear {
-            speaker.stop()
+            speaker.shutdown()
             persistProgress()
             // 本次访问只要保存过进度就广播一次，刷新入口列表的「继续第 X/N 条」。
             // 不依附于退出时这次保存是否发生——逐题保存可能已把进度落盘。
@@ -113,6 +120,12 @@ struct DictationSessionView: View {
         }
     }
 
+
+    private func selectCurrentEntry(speak: Bool = true) {
+        guard let entry = currentEntry else { return }
+        speaker.select(content: entry.content, type: entry.type, prompt: entry.prompt,
+                       isLast: currentIndex == entries.count - 1, speak: speak)
+    }
 
     private var progressHeader: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -263,7 +276,7 @@ struct DictationSessionView: View {
 
     private func speakButton(for entry: DictationEntry) -> some View {
         Button {
-            speaker.speak(content: entry.content, type: entry.type, prompt: entry.prompt)
+            speaker.replay()
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: speaker.isSpeaking ? "speaker.wave.3.fill" : "speaker.wave.2.fill")
@@ -333,6 +346,7 @@ struct DictationSessionView: View {
 
     private func finishSession() {
         guard !isFinishing else { return }
+        speaker.pause()
         isFinishing = true
 
         let now = Date()

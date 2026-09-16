@@ -3,10 +3,11 @@ import AVFoundation
 
 struct BatchReviewSessionView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var currentIndex = 0
     @State private var navigateToReview = false
     @State private var isContentRevealed = false
-    @StateObject private var speaker = BatchReviewSpeaker()
+    @StateObject private var speaker = AutoDictationController()
 
     let items: [ReviewItem]
 
@@ -75,6 +76,7 @@ struct BatchReviewSessionView: View {
                             ScrollView(showsIndicators: false) {
                                 VStack(spacing: 22) {
                                     progressHeader
+                                    AutoDictationControls(controller: speaker)
                                     stageOverviewCard(for: item)
                                     sessionCard(for: item, isWide: isWide)
                                 }
@@ -103,22 +105,37 @@ struct BatchReviewSessionView: View {
             )
         }
         .onAppear {
-            if let currentItem {
-                speaker.prepare(currentItem)
+            speaker.onAdvance = {
+                guard currentIndex < items.count - 1 else { return }
+                currentIndex += 1
             }
+            selectCurrentEntry(speak: false)
         }
         .onChange(of: currentIndex) {
             isContentRevealed = false
             persistProgress()
-            if let currentItem {
-                speaker.speak(currentItem)
+            selectCurrentEntry()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { speaker.pause() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { notification in
+            if let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+               AVAudioSession.InterruptionType(rawValue: raw) == .began {
+                speaker.pause()
             }
         }
         .onDisappear {
-            speaker.stop()
+            speaker.shutdown()
         }
     }
 
+
+    private func selectCurrentEntry(speak: Bool = true) {
+        guard let entry = currentItem else { return }
+        speaker.select(content: entry.content, type: entry.type, prompt: entry.prompt,
+                       isLast: currentIndex == items.count - 1, speak: speak)
+    }
 
     private var progressHeader: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -291,7 +308,7 @@ struct BatchReviewSessionView: View {
 
     private func speakButton(for item: ReviewItem) -> some View {
         Button {
-            speaker.speak(item)
+            speaker.replay()
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: speaker.isSpeaking ? "speaker.wave.3.fill" : "speaker.wave.2.fill")
@@ -353,6 +370,7 @@ struct BatchReviewSessionView: View {
                 Button("进入统一判卷") {
                     // 注意：这里不清除进度。若进入判卷后未提交就退出，
                     // 重新进入本页应能从最后一题继续；进度在判卷提交成功后清除。
+                    speaker.shutdown()
                     navigateToReview = true
                 }
                 .buttonStyle(ResultButtonStyle(color: .green))
@@ -380,75 +398,5 @@ struct BatchReviewSessionView: View {
             return "会直接播放要写的内容，孩子整轮写完后，家长再进入「复习听写」。"
         }
         return "如果不看文字，也可以直接点击朗读来做听写。"
-    }
-}
-
-// MARK: - Speech
-@MainActor
-private final class BatchReviewSpeaker: NSObject, ObservableObject {
-    @Published var isSpeaking = false
-
-    private let synthesizer = AVSpeechSynthesizer()
-    private var lastContent = ""
-    private var lastType: ReviewItemType = .chineseCharacter
-    private var lastPrompt = ""
-    private var pendingUtteranceCount = 0
-
-    override init() {
-        super.init()
-        synthesizer.delegate = self
-    }
-
-    func prepare(_ item: ReviewItem) {
-        lastContent = item.content
-        lastType = item.type
-        lastPrompt = item.prompt
-        stop()
-    }
-
-    func speak(_ item: ReviewItem) {
-        lastContent = item.content
-        lastType = item.type
-        lastPrompt = item.prompt
-        speakCurrentText()
-    }
-
-    func stop() {
-        synthesizer.stopSpeaking(at: .immediate)
-        SpeechAudioSession.deactivate()
-        pendingUtteranceCount = 0
-        isSpeaking = false
-    }
-
-    private func speakCurrentText() {
-        stop()
-        let utterances = SpeechUtteranceBuilder.utterances(
-            content: lastContent,
-            type: lastType,
-            prompt: lastPrompt
-        )
-        guard !utterances.isEmpty else { return }
-
-        pendingUtteranceCount = utterances.count
-        SpeechAudioSession.activate()
-        utterances.forEach { synthesizer.speak($0) }
-    }
-}
-
-extension BatchReviewSpeaker: @preconcurrency AVSpeechSynthesizerDelegate {
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        isSpeaking = true
-    }
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        pendingUtteranceCount = max(pendingUtteranceCount - 1, 0)
-        if pendingUtteranceCount == 0 {
-            SpeechAudioSession.deactivate()
-            isSpeaking = false
-        }
-    }
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        pendingUtteranceCount = 0
-        SpeechAudioSession.deactivate()
-        isSpeaking = false
     }
 }

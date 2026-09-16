@@ -7,9 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		322EAF94EF75F694EA1AF458 /* HomeDashboardSnapshotLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8769E57F2DAD22AE8301BC87 /* HomeDashboardSnapshotLoader.swift */; };
-		A145209A507DF2EE4E7543F6 /* HomeDashboardSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9D05EA82CEF37A85AA71576 /* HomeDashboardSnapshot.swift */; };
-		4DEA7AC8FF79E6C5C4211835 /* HomeDashboardModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8BA6F604C39097B1D8AB4CF /* HomeDashboardModels.swift */; };
 		01634FB78D42C465212540EA /* BatchAddReviewItemsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FFAF335CDD525B5AAB52CC1 /* BatchAddReviewItemsView.swift */; };
 		02170754DD292DCFA5C74304 /* MediaLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCF86A62DB2A1AA848434BAC /* MediaLibraryStore.swift */; };
 		03448C3E10ED5C62E9AC4EF0 /* Points.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DBB2F7F33A81E1F70807E72 /* Points.swift */; };
@@ -31,6 +28,7 @@
 		2E0BD1B24955E1111F9EAD93 /* DailyCalculation.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD362BB956BB31DF6D0680B0 /* DailyCalculation.swift */; };
 		2E1F7231B968C31E01B33689 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B43E29B6728FBAA1D22D769 /* AppSettings.swift */; };
 		306CEB94A3A077245DAFD545 /* TasksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08B33BBC82EF65E89FA0551B /* TasksView.swift */; };
+		322EAF94EF75F694EA1AF458 /* HomeDashboardSnapshotLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8769E57F2DAD22AE8301BC87 /* HomeDashboardSnapshotLoader.swift */; };
 		33ABD76890827A3B0D6FB67D /* DictationHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31BDBB729EB669636A559549 /* DictationHomeView.swift */; };
 		3691366ACBA76922B16B1786 /* TaskCompletion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D7771FE4082F787A64A1D4D /* TaskCompletion.swift */; };
 		38BD7003450DFB87BFB47732 /* TypoWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EFCE1B1D4218D4C5A356E18 /* TypoWidget.swift */; };
@@ -41,6 +39,7 @@
 		49CCE52D144C3A48092DD4FE /* SharedUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = D475A66F00FA0F89DB5D4410 /* SharedUI.swift */; };
 		49F46D567B3A573F4FD1D62F /* DictationSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9408EBC5E29D4004352C8DC2 /* DictationSession.swift */; };
 		4A62774D722D1EF6EE0B35CB /* ReviewSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73337980C30B8D19A0BB0A00 /* ReviewSessionView.swift */; };
+		4DEA7AC8FF79E6C5C4211835 /* HomeDashboardModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8BA6F604C39097B1D8AB4CF /* HomeDashboardModels.swift */; };
 		50A85F34E578AC04F3CDF307 /* TypoWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 12EA916B6EFB0544962DF01F /* TypoWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		52C80639956553686BF9E68F /* DictationSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9408EBC5E29D4004352C8DC2 /* DictationSession.swift */; };
 		54DF6B78B07A19D666591EA1 /* TypoWidgetControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7493E1855BFD5AE60AD8CA2 /* TypoWidgetControl.swift */; };
@@ -75,7 +74,10 @@
 		9B3748AF8610AB9DAEDC55A3 /* DictationReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54E7E4D3A83E8BB53D0F1DBA /* DictationReviewView.swift */; };
 		9D1ADDEC791C0E72883CA9F1 /* MediaAsset.swift in Sources */ = {isa = PBXBuildFile; fileRef = D462982FDCF82CEE1F04B828 /* MediaAsset.swift */; };
 		A046BF33825080EEED7D2285 /* TaskItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6A74373962C3C4C62923384 /* TaskItem.swift */; };
+		A145209A507DF2EE4E7543F6 /* HomeDashboardSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9D05EA82CEF37A85AA71576 /* HomeDashboardSnapshot.swift */; };
 		AC5DDB6A0F340EAB0D39549B /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A99D2AE03D18721598C7D8E5 /* Localizable.strings */; };
+		AD10AD10AD10AD10AD10AD11 /* AutoDictationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD10AD10AD10AD10AD10AD12 /* AutoDictationController.swift */; };
+		AD10AD10AD10AD10AD10AD21 /* AutoDictationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD10AD10AD10AD10AD10AD22 /* AutoDictationTests.swift */; };
 		B7EB4DA6A822CF40AB65AFB9 /* SpeechAudioSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B6BED7625915F1CA069DAB6 /* SpeechAudioSession.swift */; };
 		BA1C652DD2F6014D8E8855A9 /* Grade5ChineseDictationPlanImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68697C00FBC6375BFCE2DC7D /* Grade5ChineseDictationPlanImporter.swift */; };
 		BA3B7C0964D938CF4B19305E /* DictationEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0F396BBF587A380BEE3F397 /* DictationEntry.swift */; };
@@ -136,9 +138,6 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		8769E57F2DAD22AE8301BC87 /* HomeDashboardSnapshotLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeDashboardSnapshotLoader.swift; sourceTree = "<group>"; };
-		C9D05EA82CEF37A85AA71576 /* HomeDashboardSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeDashboardSnapshot.swift; sourceTree = "<group>"; };
-		F8BA6F604C39097B1D8AB4CF /* HomeDashboardModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeDashboardModels.swift; sourceTree = "<group>"; };
 		0327899BD934C072FBA06790 /* DailySummaryAI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DailySummaryAI.swift; sourceTree = "<group>"; };
 		0441B64104464C1D933F10B4 /* 错字复习.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "错字复习.entitlements"; sourceTree = "<group>"; };
 		0719D37F7BD0FEE00156CFFB /* TypoWidgetLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypoWidgetLiveActivity.swift; sourceTree = "<group>"; };
@@ -190,6 +189,7 @@
 		835499BE852352E7085C7083 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		8571739A6CB6E57C35B4B2B4 /* TaskSubitem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskSubitem.swift; sourceTree = "<group>"; };
 		86837560373D9A64F21BD7FB /* Contents.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = Contents.json; sourceTree = "<group>"; };
+		8769E57F2DAD22AE8301BC87 /* HomeDashboardSnapshotLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeDashboardSnapshotLoader.swift; sourceTree = "<group>"; };
 		93612859EE32BD2213438A48 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		9369F6AB35E5D6F6CC60E847 /* TypoReviewTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TypoReviewTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		9408EBC5E29D4004352C8DC2 /* DictationSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationSession.swift; sourceTree = "<group>"; };
@@ -198,6 +198,8 @@
 		9ADDAD4F640B449CCCE635E9 /* ServerSyncCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerSyncCoordinator.swift; sourceTree = "<group>"; };
 		A320D12ED2C802E15DB792C0 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		A3516E8E0523A9A64606E534 /* MediaLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryView.swift; sourceTree = "<group>"; };
+		AD10AD10AD10AD10AD10AD12 /* AutoDictationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoDictationController.swift; sourceTree = "<group>"; };
+		AD10AD10AD10AD10AD10AD22 /* AutoDictationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoDictationTests.swift; sourceTree = "<group>"; };
 		ADA80A7B778076486444D416 /* DailyQuote.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DailyQuote.swift; sourceTree = "<group>"; };
 		AFFC43C9FF7768E732522AE5 /* AddReviewItemView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddReviewItemView.swift; sourceTree = "<group>"; };
 		B1AE669F908DAA7398525F62 /* HomeDashboardDataLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeDashboardDataLoader.swift; sourceTree = "<group>"; };
@@ -206,6 +208,7 @@
 		C15C5653E94F3CC37C6CB72E /* EnglishGlossService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnglishGlossService.swift; sourceTree = "<group>"; };
 		C7493E1855BFD5AE60AD8CA2 /* TypoWidgetControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypoWidgetControl.swift; sourceTree = "<group>"; };
 		C78706DDBA19DB8AE3305527 /* ReviewScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewScheduler.swift; sourceTree = "<group>"; };
+		C9D05EA82CEF37A85AA71576 /* HomeDashboardSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeDashboardSnapshot.swift; sourceTree = "<group>"; };
 		CA218905C6AD638CB04C774E /* BatchReviewSessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchReviewSessionView.swift; sourceTree = "<group>"; };
 		CF9F30993E7E3348AE59F070 /* AddTaskView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddTaskView.swift; sourceTree = "<group>"; };
 		D0F396BBF587A380BEE3F397 /* DictationEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationEntry.swift; sourceTree = "<group>"; };
@@ -224,6 +227,7 @@
 		ED7FA063181E8D04AE43CABA /* ServerSyncCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerSyncCoordinatorTests.swift; sourceTree = "<group>"; };
 		F77C7D3F87D5519E83569CA0 /* MediaLibraryStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryStorage.swift; sourceTree = "<group>"; };
 		F8826455F72FA5B533C0554E /* MediaPlaybackCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaPlaybackCoordinator.swift; sourceTree = "<group>"; };
+		F8BA6F604C39097B1D8AB4CF /* HomeDashboardModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeDashboardModels.swift; sourceTree = "<group>"; };
 		FC14A829652113A150E05B1A /* Grade5ChineseDictationPlanImporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Grade5ChineseDictationPlanImporterTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -286,6 +290,7 @@
 				D26E9C053301EB77882FCB38 /* SettingsView.swift */,
 				D475A66F00FA0F89DB5D4410 /* SharedUI.swift */,
 				3B6BED7625915F1CA069DAB6 /* SpeechAudioSession.swift */,
+				AD10AD10AD10AD10AD10AD12 /* AutoDictationController.swift */,
 				3176A9E80CCC46E6333D486A /* SyncStatusStore.swift */,
 				2D7771FE4082F787A64A1D4D /* TaskCompletion.swift */,
 				5F23EDD1320114AB99616D50 /* TaskDetailSupportViews.swift */,
@@ -312,6 +317,7 @@
 				7D30746825CCB6331C055DBD /* Grade5EnglishDictationPlanImporterTests.swift */,
 				1D6B814350BC0F0D347B9C02 /* HomeLearningStatusTests.swift */,
 				63F776DE25F295465EA6C345 /* RecentPlanTests.swift */,
+				AD10AD10AD10AD10AD10AD22 /* AutoDictationTests.swift */,
 				3B5B13F8AB47E2DB03305856 /* ReviewSchedulerTests.swift */,
 				ED7FA063181E8D04AE43CABA /* ServerSyncCoordinatorTests.swift */,
 			);
@@ -437,7 +443,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 2660;
+				LastUpgradeCheck = 2700;
 				TargetAttributes = {
 					C9F798B0DD3D68A4D4F55662 = {
 						DevelopmentTeam = FCAW792CJD;
@@ -574,6 +580,7 @@
 				591AC7542BF73D4D646BF4F6 /* SettingsView.swift in Sources */,
 				49CCE52D144C3A48092DD4FE /* SharedUI.swift in Sources */,
 				B7EB4DA6A822CF40AB65AFB9 /* SpeechAudioSession.swift in Sources */,
+				AD10AD10AD10AD10AD10AD11 /* AutoDictationController.swift in Sources */,
 				6992AD6ECF794273F77DADA8 /* SyncStatusStore.swift in Sources */,
 				27CD033589B8502762E72EAE /* TaskCompletion.swift in Sources */,
 				E41E66A9C3CD5513C48132B8 /* TaskDetailSupportViews.swift in Sources */,
@@ -596,6 +603,7 @@
 				0C54AB9F68BF65DBEBD1214A /* Grade5EnglishDictationPlanImporterTests.swift in Sources */,
 				FD6C2CC5341498E130DED839 /* HomeLearningStatusTests.swift in Sources */,
 				2D434E4251F2688EAE99E723 /* RecentPlanTests.swift in Sources */,
+				AD10AD10AD10AD10AD10AD21 /* AutoDictationTests.swift in Sources */,
 				625D57263F5433D997BF62C9 /* ReviewSchedulerTests.swift in Sources */,
 				E61FD3E4BC7F8F3DA0286DA1 /* ServerSyncCoordinatorTests.swift in Sources */,
 			);
