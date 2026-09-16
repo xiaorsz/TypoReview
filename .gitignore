@@ -10,3 +10,4 @@ server/.env.production
 server/__pycache__/
 server/**/__pycache__/
 server/**/*.pyc
+.workbuddy/
