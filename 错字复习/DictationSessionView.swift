@@ -12,10 +12,24 @@ struct DictationSessionView: View {
     @State private var hasAutoSpokenInitialEntry = false
     @State private var isFinishing = false
     @State private var saveErrorMessage: String?
+    @State private var didPersistProgress = false
     @StateObject private var speaker = DictationSpeaker()
 
     let session: DictationSession
     let entries: [DictationEntry]
+
+    init(session: DictationSession, entries: [DictationEntry]) {
+        self.session = session
+        self.entries = entries
+        // 恢复上次听写进度；已完成/已判定的会话始终从头开始。
+        let restoredIndex: Int
+        if session.isFinished || session.isReviewed || entries.isEmpty {
+            restoredIndex = 0
+        } else {
+            restoredIndex = min(max(session.currentEntryIndex, 0), entries.count - 1)
+        }
+        _currentIndex = State(initialValue: restoredIndex)
+    }
 
     private var currentEntry: DictationEntry? {
         guard entries.indices.contains(currentIndex) else { return nil }
@@ -75,12 +89,19 @@ struct DictationSessionView: View {
         }
         .onChange(of: currentIndex) {
             isContentRevealed = false
+            persistProgress()
             if let currentEntry {
                 speaker.speak(content: currentEntry.content, type: currentEntry.type, prompt: currentEntry.prompt)
             }
         }
         .onDisappear {
             speaker.stop()
+            persistProgress()
+            // 本次访问只要保存过进度就广播一次，刷新入口列表的「继续第 X/N 条」。
+            // 不依附于退出时这次保存是否发生——逐题保存可能已把进度落盘。
+            if didPersistProgress {
+                AppDataChangeCenter.post()
+            }
         }
         .alert("听写进度保存失败", isPresented: Binding(
             get: { saveErrorMessage != nil },
@@ -118,6 +139,22 @@ struct DictationSessionView: View {
                 .tint(.blue)
                 .scaleEffect(x: 1, y: 1.6, anchor: .center)
                 .animation(.easeInOut(duration: 0.3), value: currentIndex)
+
+            if currentIndex > 0 {
+                HStack {
+                    Spacer()
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            currentIndex = 0
+                        }
+                    } label: {
+                        Label("重新开始", systemImage: "arrow.counterclockwise")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.blue)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
         .padding(20)
         .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 24))
@@ -301,6 +338,7 @@ struct DictationSessionView: View {
         let now = Date()
         session.finishedAt = now
         session.updatedAt = now
+        session.currentEntryIndex = 0
 
         do {
             try PersistentStoreAccessGate.withAccess {
@@ -312,6 +350,33 @@ struct DictationSessionView: View {
         } catch {
             isFinishing = false
             saveErrorMessage = "本次听写尚未标记为完成，请保持 App 在前台后重试。\(error.localizedDescription)"
+        }
+    }
+
+    /// 把当前题号写回会话，退出后再次进入可以从这里继续。
+    /// 逐题切换时静默落盘；退出页面时由 onDisappear 统一广播一次变更，
+    /// 避免每条题都触发首页/列表快照重载。
+    private func persistProgress() {
+        guard !session.isFinished, !session.isReviewed else { return }
+        guard session.currentEntryIndex != currentIndex else { return }
+
+        let previousIndex = session.currentEntryIndex
+        let previousUpdatedAt = session.updatedAt
+        session.currentEntryIndex = currentIndex
+        session.updatedAt = .now
+
+        do {
+            try PersistentStoreAccessGate.withAccess {
+                try modelContext.save()
+            }
+            didPersistProgress = true
+        } catch {
+            // 保存失败必须恢复内存字段：否则 currentEntryIndex 已与 currentIndex 相等，
+            // 之后（如退出页面时）再调用会被上面的 guard 提前拦住，
+            // 未落盘的进度永远失去重试机会。
+            session.currentEntryIndex = previousIndex
+            session.updatedAt = previousUpdatedAt
+            saveErrorMessage = "听写进度没有保存成功，仍可继续听写。\(error.localizedDescription)"
         }
     }
 }

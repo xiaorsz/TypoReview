@@ -90,6 +90,7 @@ struct LibraryView: View {
     @State private var snapshotRefreshTask: Task<Void, Never>?
     @State private var isSnapshotLoaded = false
     @State private var isViewVisible = false
+    @State private var saveErrorMessage: String?
 
     var body: some View {
         let snapshot = viewSnapshot
@@ -189,6 +190,14 @@ struct LibraryView: View {
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(Color(uiColor: .systemGroupedBackground))
+        .alert("保存失败", isPresented: Binding(
+            get: { saveErrorMessage != nil },
+            set: { if !$0 { saveErrorMessage = nil } }
+        )) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text(saveErrorMessage ?? "这次操作没有保存成功，请再试一次。")
+        }
         .searchable(text: $searchText, prompt: "搜索词句或英语")
         .onChange(of: searchText) { _, _ in
             displayedItemLimit = 50
@@ -661,15 +670,29 @@ struct LibraryView: View {
         guard let persistedItem = fetchReviewItem(id: item.id) else { return }
         persistedItem.isPriority.toggle()
         persistedItem.updatedAt = .now
-        try? modelContext.save()
-        AppDataChangeCenter.post()
+
+        do {
+            try modelContext.save()
+            AppDataChangeCenter.post()
+        } catch {
+            // 保存失败时回滚本次改动，界面维持原状态，并提示用户操作未生效。
+            modelContext.rollback()
+            saveErrorMessage = "设为重点没有保存成功，请再试一次。\(error.localizedDescription)"
+        }
     }
 
     private func delete(_ item: LibraryItemProjection) {
         guard let persistedItem = fetchReviewItem(id: item.id) else { return }
         SyncDeletionStore.delete(persistedItem, in: modelContext)
-        try? modelContext.save()
-        AppDataChangeCenter.post()
+
+        do {
+            try modelContext.save()
+            AppDataChangeCenter.post()
+        } catch {
+            // 保存失败时回滚删除（含同步墓碑），恢复条目，并提示用户操作未生效。
+            modelContext.rollback()
+            saveErrorMessage = "删除没有保存成功，请再试一次。\(error.localizedDescription)"
+        }
     }
 
     private func fetchReviewItem(id: UUID) -> ReviewItem? {

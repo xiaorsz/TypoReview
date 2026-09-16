@@ -11,6 +11,8 @@ final class DictationSession {
     var scheduledDate: Date = Date()
     var finishedAt: Date?
     var reviewedAt: Date?
+    /// 听写进度：当前进行到的条目下标（0 表示未开始或已完成）。
+    var currentEntryIndex: Int = 0
 
     init(
         id: UUID = UUID(),
@@ -20,7 +22,8 @@ final class DictationSession {
         updatedAt: Date = .now,
         scheduledDate: Date = .now,
         finishedAt: Date? = nil,
-        reviewedAt: Date? = nil
+        reviewedAt: Date? = nil,
+        currentEntryIndex: Int = 0
     ) {
         self.id = id
         self.title = title
@@ -30,6 +33,7 @@ final class DictationSession {
         self.scheduledDate = scheduledDate
         self.finishedAt = finishedAt
         self.reviewedAt = reviewedAt
+        self.currentEntryIndex = currentEntryIndex
     }
 
     var type: ReviewItemType {

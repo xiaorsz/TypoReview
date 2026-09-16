@@ -10,6 +10,44 @@ struct BatchReviewSessionView: View {
 
     let items: [ReviewItem]
 
+    /// 批量复习的进度只与「这一批题目的有序 ID 列表」绑定：
+    /// 列表变化（复习完成、新增到期内容）后旧进度自动失效，从头开始。
+    private struct StoredProgress: Codable {
+        let itemIDs: [UUID]
+        let index: Int
+    }
+
+    private static let progressDefaultsKey = "batchReviewSession.progress.v1"
+
+    init(items: [ReviewItem]) {
+        self.items = items
+        let restoredIndex = Self.restoreProgress(matching: items)
+        _currentIndex = State(initialValue: restoredIndex)
+    }
+
+    private static func restoreProgress(matching items: [ReviewItem]) -> Int {
+        guard !items.isEmpty,
+              let data = UserDefaults.standard.data(forKey: progressDefaultsKey),
+              let progress = try? JSONDecoder().decode(StoredProgress.self, from: data),
+              progress.itemIDs == items.map(\.id) else {
+            return 0
+        }
+        return min(max(progress.index, 0), items.count - 1)
+    }
+
+    private func persistProgress() {
+        let progress = StoredProgress(itemIDs: items.map(\.id), index: currentIndex)
+        if let data = try? JSONEncoder().encode(progress) {
+            UserDefaults.standard.set(data, forKey: Self.progressDefaultsKey)
+        }
+    }
+
+    /// 只有在判卷提交成功后才清除进度（由 BatchReviewGradingView 回调触发）。
+    /// 进入判卷但未提交就退出时进度保留，重新进入本页可以继续上次的位置。
+    private static func clearProgress() {
+        UserDefaults.standard.removeObject(forKey: progressDefaultsKey)
+    }
+
     private var currentItem: ReviewItem? {
         guard items.indices.contains(currentIndex) else { return nil }
         return items[currentIndex]
@@ -58,6 +96,9 @@ struct BatchReviewSessionView: View {
                 items: items,
                 onReturnFromCompletion: {
                     dismiss()
+                },
+                onSubmittedSuccessfully: {
+                    Self.clearProgress()
                 }
             )
         }
@@ -68,6 +109,7 @@ struct BatchReviewSessionView: View {
         }
         .onChange(of: currentIndex) {
             isContentRevealed = false
+            persistProgress()
             if let currentItem {
                 speaker.speak(currentItem)
             }
@@ -103,6 +145,22 @@ struct BatchReviewSessionView: View {
                 .tint(.blue)
                 .scaleEffect(x: 1, y: 1.6, anchor: .center)
                 .animation(.easeInOut(duration: 0.3), value: currentIndex)
+
+            if currentIndex > 0 {
+                HStack {
+                    Spacer()
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            currentIndex = 0
+                        }
+                    } label: {
+                        Label("重新开始", systemImage: "arrow.counterclockwise")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.blue)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
         .padding(20)
         .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 24))
@@ -293,6 +351,8 @@ struct BatchReviewSessionView: View {
                 .buttonStyle(ResultButtonStyle(color: .blue))
             } else {
                 Button("进入统一判卷") {
+                    // 注意：这里不清除进度。若进入判卷后未提交就退出，
+                    // 重新进入本页应能从最后一题继续；进度在判卷提交成功后清除。
                     navigateToReview = true
                 }
                 .buttonStyle(ResultButtonStyle(color: .green))

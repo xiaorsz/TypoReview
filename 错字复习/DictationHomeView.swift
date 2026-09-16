@@ -11,6 +11,7 @@ private struct DictationSessionProjection: Identifiable, Hashable {
     let scheduledDate: Date
     let finishedAt: Date?
     let reviewedAt: Date?
+    let currentEntryIndex: Int
 
     init(_ session: DictationSession) {
         id = session.id
@@ -21,6 +22,7 @@ private struct DictationSessionProjection: Identifiable, Hashable {
         scheduledDate = session.scheduledDate
         finishedAt = session.finishedAt
         reviewedAt = session.reviewedAt
+        currentEntryIndex = session.currentEntryIndex
     }
 
     var isFinished: Bool {
@@ -896,6 +898,11 @@ private struct DictationProjectionPreviewView: View {
     var onStartSession: () -> Void
     var onEditSession: (() -> Void)? = nil
 
+    private var startButtonTitle: String {
+        guard session.currentEntryIndex > 0, !entries.isEmpty else { return "开始听写" }
+        return "继续听写 · 第 \(min(session.currentEntryIndex + 1, entries.count))/\(entries.count) 条"
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
@@ -1004,7 +1011,7 @@ private struct DictationProjectionPreviewView: View {
                         dismiss()
                         onStartSession()
                     } label: {
-                        Text("开始听写")
+                        Text(startButtonTitle)
                     }
                     .buttonStyle(ResultButtonStyle(color: .blue))
                     .padding()

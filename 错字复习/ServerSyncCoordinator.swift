@@ -568,6 +568,7 @@ final class ServerSyncCoordinator {
                             model.scheduledDate = value.scheduledDate
                             model.finishedAt = value.finishedAt
                             model.reviewedAt = value.reviewedAt
+                            model.currentEntryIndex = value.currentEntryIndex
                         }
                     }
                 case "dictationEntries":
@@ -802,6 +803,7 @@ final class ServerSyncCoordinator {
             local.typeRawValue = remote.typeRawValue
             local.createdAt = remote.createdAt
             local.scheduledDate = remote.scheduledDate
+            local.currentEntryIndex = remote.currentEntryIndex
         }
         local.finishedAt = latest(local.finishedAt, remote.finishedAt)
         local.reviewedAt = latest(local.reviewedAt, remote.reviewedAt)

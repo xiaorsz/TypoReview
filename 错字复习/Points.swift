@@ -287,6 +287,36 @@ enum PointLedgerService {
         )
     }
 
+    /// 逐题复习「完成 → 撤回最后一题 → 再次完成」时重新结算正确率奖励。
+    /// 原奖励记录被冲正后仍留在账本中，其幂等键会拦住同键重发（hasEntry 不排除已冲正记录），
+    /// 所以这里先冲正该会话以往的奖励，再用带时间戳的唯一键按当前正确率重新发放。
+    /// 账本净额始终等于本次算出的奖励，也覆盖撤回改答案后奖励金额变化的情况。
+    @discardableResult
+    static func refreshReviewAccuracyBonus(
+        sessionID: UUID,
+        correctCount: Int,
+        totalCount: Int,
+        createdAt: Date = .now,
+        in modelContext: ModelContext
+    ) -> PointLedgerEntry? {
+        reverseEntries(
+            sourceType: .reviewAccuracyBonus,
+            sourceIDRawValue: sessionID.uuidString,
+            in: modelContext
+        )
+        let uniqueKey = "review-accuracy-bonus-\(sessionID.uuidString)-\(Int64(createdAt.timeIntervalSince1970 * 1000))"
+        return awardAccuracyBonus(
+            sourceType: .reviewAccuracyBonus,
+            sourceIDRawValue: sessionID.uuidString,
+            idempotencyKey: uniqueKey,
+            title: "复习",
+            correctCount: correctCount,
+            totalCount: totalCount,
+            createdAt: createdAt,
+            in: modelContext
+        )
+    }
+
     @discardableResult
     static func awardDictationAccuracyBonus(
         sessionID: UUID,
@@ -485,12 +515,48 @@ enum PointLedgerService {
         _ record: ReviewRecord,
         in modelContext: ModelContext
     ) -> PointLedgerEntry? {
-        awardIfNeeded(
+        // 自动补账只补从未发过奖励的记录；冲正后的重发由显式作答负责。
+        // 同步/恢复时即使先收到新结算，也不能再补一份旧版基础奖励。
+        guard let history = try? reviewRewardHistory(recordID: record.id, in: modelContext),
+              history.isEmpty else { return nil }
+        return awardIfNeeded(
             amount: reviewRewardAmount,
             kind: .reward,
             sourceType: .reviewRecord,
             sourceIDRawValue: record.id.uuidString,
             idempotencyKey: "review-\(record.id.uuidString)",
+            note: "完成复习：\(record.result.rawValue)",
+            createdAt: record.reviewedAt,
+            countsAsActiveDay: true,
+            in: modelContext
+        )
+    }
+
+    /// 首次结算沿用旧键；每次冲正后按已有最大结算轮次生成下一轮键。
+    /// 同一轮重复提交、保存回滚重试及相同账本的跨设备提交都使用相同键。
+    /// 先按幂等键归并历史，避免同步产生的重复行影响结算轮次。
+    @discardableResult
+    static func settleReviewRecordReward(
+        _ record: ReviewRecord,
+        in modelContext: ModelContext
+    ) -> PointLedgerEntry? {
+        guard let history = try? reviewRewardHistory(recordID: record.id, in: modelContext),
+              history.allSatisfy({ hasReversal(for: $0, in: modelContext) }) else { return nil }
+
+        let baseKey = "review-\(record.id.uuidString)"
+        let settlementPrefix = "\(baseKey)-settlement-"
+        let latestGeneration = history.compactMap { entry -> Int? in
+            guard entry.idempotencyKey.hasPrefix(settlementPrefix) else { return nil }
+            return Int(entry.idempotencyKey.dropFirst(settlementPrefix.count))
+        }.max() ?? 0
+        // 同步或恢复时旧轮次可能尚未到达，不能用当前可见记录数作为轮次。
+        let key = history.isEmpty ? baseKey : "\(settlementPrefix)\(latestGeneration + 1)"
+        return awardIfNeeded(
+            amount: reviewRewardAmount,
+            kind: .reward,
+            sourceType: .reviewRecord,
+            sourceIDRawValue: record.id.uuidString,
+            idempotencyKey: key,
             note: "完成复习：\(record.result.rawValue)",
             createdAt: record.reviewedAt,
             countsAsActiveDay: true,
@@ -790,6 +856,24 @@ enum PointLedgerService {
         )
         return ((try? modelContext.fetchCount(descriptor)) ?? 0) > 0
     }
+
+    private static func reviewRewardHistory(
+        recordID: UUID,
+        in modelContext: ModelContext
+    ) throws -> [PointLedgerEntry] {
+        let typeRawValue = PointLedgerSourceType.reviewRecord.rawValue
+        let sourceID = recordID.uuidString
+        return canonicalEntries(try modelContext.fetch(
+            FetchDescriptor<PointLedgerEntry>(
+                predicate: #Predicate<PointLedgerEntry> { entry in
+                    entry.sourceTypeRawValue == typeRawValue &&
+                    entry.sourceIDRawValue == sourceID &&
+                    !entry.isReversal
+                }
+            )
+        ))
+    }
+
 }
 
 struct AccuracyBonusCard: View {

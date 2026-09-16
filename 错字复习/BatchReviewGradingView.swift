@@ -20,6 +20,8 @@ struct BatchReviewGradingView: View {
 
     let items: [ReviewItem]
     var onReturnFromCompletion: (() -> Void)? = nil
+    /// 判卷提交成功（保存落盘）后回调，用于清理听写进度等收尾工作。
+    var onSubmittedSuccessfully: (() -> Void)? = nil
 
     @State private var entryStates: [BatchReviewEntryState] = []
     @State private var isSubmitted = false
@@ -32,9 +34,14 @@ struct BatchReviewGradingView: View {
     
     private let scheduler = ReviewScheduler()
 
-    init(items: [ReviewItem], onReturnFromCompletion: (() -> Void)? = nil) {
+    init(
+        items: [ReviewItem],
+        onReturnFromCompletion: (() -> Void)? = nil,
+        onSubmittedSuccessfully: (() -> Void)? = nil
+    ) {
         self.items = items
         self.onReturnFromCompletion = onReturnFromCompletion
+        self.onSubmittedSuccessfully = onSubmittedSuccessfully
     }
 
     private var allMarked: Bool {
@@ -437,12 +444,18 @@ struct BatchReviewGradingView: View {
         do {
             try modelContext.save()
             AppDataChangeCenter.post()
+            // 提交成功后才清理听写进度；若进入判卷但未提交就退出，进度保留可继续。
+            onSubmittedSuccessfully?()
         } catch {
+            // 保存失败时整体 rollback：撤销本次提交推进的阶段、新增/更新的复习记录和积分。
+            // 判卷结果保存在 entryStates（值类型）中，rollback 不影响；
+            // 重试时重新计算，阶段只推进一级，记录和积分不会重复。
+            modelContext.rollback()
             saveErrorMessage = "这次复习结果没有保存成功，请再试一次。\(error.localizedDescription)"
             isSubmitting = false
             return
         }
-        
+
         self.reviewedSummaries = summaries
         self.accuracyBonusAmount = earnedAccuracyBonusAmount
         

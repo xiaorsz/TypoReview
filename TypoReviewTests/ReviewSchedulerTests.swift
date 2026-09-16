@@ -870,3 +870,122 @@ final class TaskPauseTests: XCTestCase {
         ))!
     }
 }
+
+@MainActor
+final class ReviewRewardSettlementTests: XCTestCase {
+    private func makeContainer() throws -> ModelContainer {
+        let schema = Schema([
+            ReviewItem.self, ReviewRecord.self, SyncDeletion.self, ReviewDailyPlan.self,
+            TaskItem.self, TaskCompletion.self, TaskSubitem.self, TaskExecutionRecord.self,
+            TaskSubitemExecutionRecord.self, AppSettings.self, DictationSession.self,
+            DictationEntry.self, ScheduleItem.self, MediaAsset.self, PointLedgerEntry.self,
+            PointRewardState.self, CalculationRound.self
+        ])
+        return try ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+    }
+
+    private func makeRecord() -> ReviewRecord {
+        ReviewRecord(itemID: UUID(), result: .correct, mode: .scheduled, oldStage: 1, newStage: 2)
+    }
+
+    func testRepeatedUndoAndResubmitKeepsOnePointAndDoesNotDuplicateRewards() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        context.autosaveEnabled = false
+        let record = makeRecord()
+        context.insert(record)
+        var keys = Set<String>()
+        for _ in 0..<3 {
+            let reward = try XCTUnwrap(PointLedgerService.settleReviewRecordReward(record, in: context))
+            XCTAssertTrue(keys.insert(reward.idempotencyKey).inserted)
+            XCTAssertNil(PointLedgerService.settleReviewRecordReward(record, in: context))
+            try context.save()
+            XCTAssertEqual(PointLedgerService.currentBalance(in: context), 1)
+            XCTAssertNil(PointLedgerService.awardReviewRecord(record, in: context))
+            let reconciliation = try PointLedgerService.reconcileMissingAutomaticRewards(in: context)
+            XCTAssertEqual(reconciliation.reviewRewardsAdded, 0)
+            XCTAssertEqual(PointLedgerService.currentBalance(in: context), 1)
+
+            PointLedgerService.reverseEntries(sourceType: .reviewRecord, sourceID: record.id, in: context)
+            PointLedgerService.reverseEntries(sourceType: .reviewRecord, sourceID: record.id, in: context)
+            try context.save()
+            XCTAssertEqual(PointLedgerService.currentBalance(in: context), 0)
+            XCTAssertNil(PointLedgerService.awardReviewRecord(record, in: context))
+        }
+    }
+
+    func testRolledBackSettlementRetriesWithSameKey() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        context.autosaveEnabled = false
+        let record = makeRecord()
+        context.insert(record)
+        _ = PointLedgerService.settleReviewRecordReward(record, in: context)
+        try context.save()
+        PointLedgerService.reverseEntries(sourceType: .reviewRecord, sourceID: record.id, in: context)
+        try context.save()
+
+        let attemptedKey = try XCTUnwrap(PointLedgerService.settleReviewRecordReward(record, in: context)).idempotencyKey
+        context.rollback()
+        XCTAssertEqual(PointLedgerService.currentBalance(in: context), 0)
+        let retry = try XCTUnwrap(PointLedgerService.settleReviewRecordReward(record, in: context))
+        XCTAssertEqual(retry.idempotencyKey, attemptedKey)
+        try context.save()
+        XCTAssertEqual(PointLedgerService.currentBalance(in: context), 1)
+    }
+
+    func testReconciliationDoesNotAddLegacyRewardWhenNewSettlementArrivesFirst() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let record = makeRecord()
+        context.insert(record)
+        context.insert(PointLedgerEntry(
+            amount: 1, kind: .reward, sourceType: .reviewRecord,
+            sourceIDRawValue: record.id.uuidString,
+            idempotencyKey: "review-\(record.id.uuidString)-settlement-1"
+        ))
+        try context.save()
+        let result = try PointLedgerService.reconcileMissingAutomaticRewards(in: context)
+        XCTAssertEqual(result.reviewRewardsAdded, 0)
+        XCTAssertEqual(PointLedgerService.currentBalance(in: context), 1)
+        XCTAssertNil(PointLedgerService.settleReviewRecordReward(record, in: context))
+    }
+
+    func testReawardAdvancesGenerationWhenEarlierHistoryHasNotArrived() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let record = makeRecord()
+        let prefix = "review-\(record.id.uuidString)-settlement-"
+        context.insert(PointLedgerEntry(
+            amount: 1, kind: .reward, sourceType: .reviewRecord,
+            sourceIDRawValue: record.id.uuidString, idempotencyKey: "\(prefix)4"
+        ))
+        try context.save()
+        PointLedgerService.reverseEntries(sourceType: .reviewRecord, sourceID: record.id, in: context)
+        try context.save()
+        let reward = try XCTUnwrap(PointLedgerService.settleReviewRecordReward(record, in: context))
+        XCTAssertEqual(reward.idempotencyKey, "\(prefix)5")
+        XCTAssertEqual(PointLedgerService.currentBalance(in: context), 1)
+    }
+
+    func testSameLogicalHistoryProducesSameSettlementKeyAcrossDevices() throws {
+        let firstContainer = try makeContainer()
+        let secondContainer = try makeContainer()
+        let record = makeRecord()
+        var keys: [String] = []
+        for context in [firstContainer.mainContext, secondContainer.mainContext] {
+            // Different physical row IDs with the same logical reward key.
+            let original = PointLedgerEntry(
+                amount: 1, kind: .reward, sourceType: .reviewRecord,
+                sourceIDRawValue: record.id.uuidString,
+                idempotencyKey: "review-\(record.id.uuidString)"
+            )
+            context.insert(original)
+            try context.save()
+            PointLedgerService.reverseEntries(sourceType: .reviewRecord, sourceID: record.id, in: context)
+            try context.save()
+            keys.append(try XCTUnwrap(PointLedgerService.settleReviewRecordReward(record, in: context)).idempotencyKey)
+        }
+        XCTAssertEqual(keys[0], keys[1])
+    }
+}

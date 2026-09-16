@@ -245,6 +245,18 @@ struct DictationReviewView: View {
         guard canSubmit, session.reviewedAt == nil, !isSubmitting else { return }
         isSubmitting = true
 
+        // 第一阶段：先把判卷结果（entry.result）单独落盘。
+        // 之后计算阶段的保存如果失败，可以整体 rollback 而不丢失用户已选的判定；
+        // rollback 也会撤销阶段推进/新增记录/积分等全部计算变更，重试时重新计算，
+        // 保证一次听写只推进一级、不产生重复记录。
+        do {
+            try modelContext.save()
+        } catch {
+            isSubmitting = false
+            saveErrorMessage = "判定结果没有保存成功，请再试一次。\(error.localizedDescription)"
+            return
+        }
+
         let now = Date()
         let summaries = entries.map {
             DictationEntrySummary(
@@ -335,6 +347,11 @@ struct DictationReviewView: View {
             submittedAccuracyBonusAmount = accuracyBonusAmount
             navigateToSummary = true
         } catch {
+            // 计算阶段保存失败：整体 rollback，撤销本次提交的全部计算变更
+            // （阶段推进、连续答对计数、新增 ReviewItem/ReviewRecord、积分、reviewedAt）。
+            // 判卷结果已在第一阶段落盘，rollback 不影响；重试时重新计算，
+            // 阶段只推进一级，记录和积分也不会重复。
+            modelContext.rollback()
             isSubmitting = false
             saveErrorMessage = "这次判定没有保存成功，请再试一次。\(error.localizedDescription)"
         }

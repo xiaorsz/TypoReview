@@ -1005,6 +1005,7 @@ struct DictationSessionSnapshot: Codable {
     let scheduledDate: Date
     let finishedAt: Date?
     let reviewedAt: Date?
+    let currentEntryIndex: Int
 
     init(_ session: DictationSession) {
         id = session.id
@@ -1015,6 +1016,21 @@ struct DictationSessionSnapshot: Codable {
         scheduledDate = session.scheduledDate
         finishedAt = session.finishedAt
         reviewedAt = session.reviewedAt
+        currentEntryIndex = session.currentEntryIndex
+    }
+
+    // 向后兼容：旧备份和旧版本推送的同步载荷没有 currentEntryIndex 字段。
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        typeRawValue = try container.decode(String.self, forKey: .typeRawValue)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        scheduledDate = try container.decode(Date.self, forKey: .scheduledDate)
+        finishedAt = try container.decodeIfPresent(Date.self, forKey: .finishedAt)
+        reviewedAt = try container.decodeIfPresent(Date.self, forKey: .reviewedAt)
+        currentEntryIndex = try container.decodeIfPresent(Int.self, forKey: .currentEntryIndex) ?? 0
     }
 
     func makeModel() -> DictationSession {
@@ -1026,7 +1042,8 @@ struct DictationSessionSnapshot: Codable {
             updatedAt: updatedAt,
             scheduledDate: scheduledDate,
             finishedAt: finishedAt,
-            reviewedAt: reviewedAt
+            reviewedAt: reviewedAt,
+            currentEntryIndex: currentEntryIndex
         )
         session.typeRawValue = typeRawValue
         return session

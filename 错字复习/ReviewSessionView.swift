@@ -204,7 +204,7 @@ struct ReviewSessionView: View {
                 } label: {
                     Label("撤回", systemImage: "arrow.uturn.backward")
                 }
-                .disabled(undoStack.isEmpty || currentItem == nil)
+                .disabled(undoStack.isEmpty)
             }
         }
         .onAppear {
@@ -321,6 +321,15 @@ struct ReviewSessionView: View {
                         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
                     }
 
+                    if !undoStack.isEmpty {
+                        Button {
+                            undoLastAnswer()
+                        } label: {
+                            Label("撤回上一题", systemImage: "arrow.uturn.backward")
+                        }
+                        .buttonStyle(ResultButtonStyle(color: .gray))
+                    }
+
                     Button("返回首页") {
                         dismiss()
                     }
@@ -371,7 +380,10 @@ struct ReviewSessionView: View {
             output.record,
             in: modelContext
         )
-        let pointEntryWasCreated = PointLedgerService.awardReviewRecord(
+        // 用结算式发放而不是按幂等键拦截的发放：撤回会冲正原积分但保留原记录，
+        // 重新作答生成相同记录 ID，若按幂等键拦截就会少 1 分基础积分。
+        // settle 检查「是否存在未被冲正的有效奖励」，被冲正的允许重发，有效的仍跳过。
+        let pointEntryWasCreated = PointLedgerService.settleReviewRecordReward(
             upsertResult.record,
             in: modelContext
         ) != nil
@@ -385,7 +397,10 @@ struct ReviewSessionView: View {
             : 0
 
         if willCompleteSession {
-            PointLedgerService.awardReviewAccuracyBonus(
+            // 用 refresh 而不是 award：撤回最后一题后再次完成时，原奖励虽已被冲正，
+            // 但其幂等键仍占着，直接 award 会被 hasEntry 拦截导致奖励丢失。
+            // refresh 先冲正以往奖励、再以唯一键重发，净额始终等于本次算出的奖励。
+            PointLedgerService.refreshReviewAccuracyBonus(
                 sessionID: reviewSessionID,
                 correctCount: finalCorrectCount,
                 totalCount: finalCompletedCount,
@@ -411,6 +426,7 @@ struct ReviewSessionView: View {
         undoEntry.recordID = upsertResult.record.id
         undoEntry.previousRecordStates = upsertResult.previousStates
         undoEntry.pointEntryWasCreated = pointEntryWasCreated
+        undoEntry.wasCompletion = willCompleteSession
         undoStack.append(undoEntry)
 
         completedCount += 1
@@ -477,6 +493,16 @@ struct ReviewSessionView: View {
             } else {
                 entry.previousRecordStates.forEach { $0.restore() }
             }
+        }
+
+        // 撤回最后一题时，同时冲正本次复习已发放的正确率奖励，并重置结果页展示的奖励金额。
+        if entry.wasCompletion {
+            PointLedgerService.reverseEntries(
+                sourceType: .reviewAccuracyBonus,
+                sourceIDRawValue: reviewSessionID.uuidString,
+                in: modelContext
+            )
+            accuracyBonusAmount = 0
         }
 
         guard persistChanges(
@@ -850,6 +876,7 @@ private class UndoEntry {
     var recordID: UUID?
     var previousRecordStates: [ReviewScheduler.StoredReviewRecordState] = []
     var pointEntryWasCreated = false
+    var wasCompletion = false
 
     init(
         itemIndex: Int,
