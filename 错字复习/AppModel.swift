@@ -22,6 +22,7 @@ enum ReviewItemType: String, Codable, CaseIterable, Identifiable {
     case chineseCharacter = "汉字"
     case phrase = "词语"
     case englishWord = "单词"
+    case englishSentence = "英语背诵"
 
     var id: String { rawValue }
 
@@ -30,8 +31,13 @@ enum ReviewItemType: String, Codable, CaseIterable, Identifiable {
         case .chineseCharacter: return "汉字"
         case .phrase: return "词句"
         case .englishWord: return "英语"
+        case .englishSentence: return "背诵"
         }
     }
+
+    var isRecitation: Bool { self == .englishSentence }
+
+    var isEnglish: Bool { self == .englishWord || isRecitation }
 }
 
 enum DictationResult: String, Codable, CaseIterable, Identifiable {

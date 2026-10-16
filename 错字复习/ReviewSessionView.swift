@@ -51,136 +51,138 @@ struct ReviewSessionView: View {
                     GeometryReader { proxy in
                         let isWide = proxy.size.width >= 700
 
-                        VStack(spacing: 20) {
-                            // Progress bar
-                            VStack(spacing: 8) {
-                                ProgressView(value: progress)
-                                    .tint(.accentColor)
-                                    .animation(.easeInOut(duration: 0.3), value: progress)
+                        ScrollView(showsIndicators: false) {
+                            VStack(spacing: 20) {
+                                // Progress bar
+                                VStack(spacing: 8) {
+                                    ProgressView(value: progress)
+                                        .tint(.accentColor)
+                                        .animation(.easeInOut(duration: 0.3), value: progress)
 
-                                Text("第 \(currentIndex + 1) / \(sessionItems.count) 题")
-                                    .font(.subheadline.weight(.medium))
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            // Question card
-                            VStack(alignment: .leading, spacing: 16) {
-                                HStack {
-                                    TypeBadge(type: item.type)
-                                    Spacer()
-                                    Text(item.stageBadgeText)
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(item.stageBadgeColor)
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 4)
-                                        .background(item.stageBadgeColor.opacity(0.12), in: Capsule())
-                                }
-
-                                Text(headlineText(for: item))
-                                    .font(.system(isWide ? .largeTitle : .title2, design: .rounded, weight: .bold))
-
-                                if let phonetic = phoneticText(for: item) {
-                                    Text(phonetic)
-                                        .font(.system(.title3, design: .rounded, weight: .semibold))
-                                        .foregroundStyle(.secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-
-                                Button {
-                                    speaker.speak(item)
-                                } label: {
-                                    Label(speaker.isSpeaking ? "正在朗读" : "点击朗读", systemImage: "speaker.wave.2.fill")
-                                        .font(.system(.title2, design: .rounded, weight: .bold))
-                                        .frame(maxWidth: .infinity)
-                                        .frame(minHeight: 56)
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.large)
-
-                                HStack(alignment: .top) {
-                                    Text(helperText(for: item))
-                                        .foregroundStyle(.secondary)
-                                        .font(.subheadline)
-                                    
-                                    Spacer()
-                                    
-                                    Button {
-                                        withAnimation(.easeInOut(duration: 0.2)) {
-                                            isContentRevealed.toggle()
-                                        }
-                                    } label: {
-                                        HStack(spacing: 4) {
-                                            Image(systemName: isContentRevealed ? "eye.slash.fill" : "eye.fill")
-                                            Text(isContentRevealed ? "隐藏文字" : "显示文字")
-                                        }
+                                    Text("第 \(currentIndex + 1) / \(sessionItems.count) 题")
                                         .font(.subheadline.weight(.medium))
-                                        .foregroundStyle(.blue)
-                                        .padding(.vertical, 6)
-                                        .padding(.horizontal, 12)
-                                        .background(Color.blue.opacity(0.1), in: Capsule())
-                                    }
-                                    .buttonStyle(.plain)
+                                        .foregroundStyle(.secondary)
                                 }
 
-                                if isContentRevealed {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        Divider()
-                                            .padding(.vertical, 8)
-                                        Text("题目答案")
-                                            .font(.caption.weight(.medium))
+                                // Question card
+                                VStack(alignment: .leading, spacing: 16) {
+                                    HStack {
+                                        TypeBadge(type: item.type)
+                                        Spacer()
+                                        Text(item.stageBadgeText)
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(item.stageBadgeColor)
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 4)
+                                            .background(item.stageBadgeColor.opacity(0.12), in: Capsule())
+                                    }
+
+                                    Text(headlineText(for: item))
+                                        .font(.system(isWide ? .largeTitle : .title2, design: .rounded, weight: .bold))
+
+                                    if let phonetic = phoneticText(for: item) {
+                                        Text(phonetic)
+                                            .font(.system(.title3, design: .rounded, weight: .semibold))
                                             .foregroundStyle(.secondary)
-                                        Text(item.content)
-                                            .font(.system(isWide ? .title : .title2, design: .rounded, weight: .semibold))
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+
+                                    Button {
+                                        speaker.speak(item)
+                                    } label: {
+                                        Label(speaker.isSpeaking ? "正在朗读" : "点击朗读", systemImage: "speaker.wave.2.fill")
+                                            .font(.system(.title2, design: .rounded, weight: .bold))
+                                            .frame(maxWidth: .infinity)
+                                            .frame(minHeight: 56)
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.large)
+
+                                    HStack(alignment: .top) {
+                                        Text(helperText(for: item))
+                                            .foregroundStyle(.secondary)
+                                            .font(.subheadline)
+
+                                        Spacer()
+
+                                        Button {
+                                            withAnimation(.easeInOut(duration: 0.2)) {
+                                                isContentRevealed.toggle()
+                                            }
+                                        } label: {
+                                            HStack(spacing: 4) {
+                                                Image(systemName: isContentRevealed ? "eye.slash.fill" : "eye.fill")
+                                                Text(isContentRevealed ? "隐藏文字" : "显示文字")
+                                            }
+                                            .font(.subheadline.weight(.medium))
                                             .foregroundStyle(.blue)
-                                        if let phonetic = phoneticText(for: item) {
-                                            Text(phonetic)
-                                                .font(.subheadline.weight(.semibold))
+                                            .padding(.vertical, 6)
+                                            .padding(.horizontal, 12)
+                                            .background(Color.blue.opacity(0.1), in: Capsule())
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+
+                                    if isContentRevealed {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Divider()
+                                                .padding(.vertical, 8)
+                                            Text("题目答案")
+                                                .font(.caption.weight(.medium))
                                                 .foregroundStyle(.secondary)
+                                            Text(item.content)
+                                                .font(.system(isWide ? .title : .title2, design: .rounded, weight: .semibold))
+                                                .foregroundStyle(.blue)
+                                            if let phonetic = phoneticText(for: item) {
+                                                Text(phonetic)
+                                                    .font(.subheadline.weight(.semibold))
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                        .transition(.opacity.combined(with: .move(edge: .top)))
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(isWide ? 32 : 24)
+                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 28))
+
+                                if showResultButtons {
+                                    VStack(spacing: 14) {
+                                        answerCard(for: item)
+
+                                        HStack(spacing: 14) {
+                                            Button {
+                                                submit(.correct, for: item)
+                                            } label: {
+                                                Label(item.type.isRecitation ? "背出来了" : "正确", systemImage: "checkmark.circle.fill")
+                                            }
+                                            .buttonStyle(ResultButtonStyle(color: .green))
+
+                                            Button {
+                                                submit(.wrong, for: item)
+                                            } label: {
+                                                Label(item.type.isRecitation ? "没背出来" : "不正确", systemImage: "xmark.circle.fill")
+                                            }
+                                            .buttonStyle(ResultButtonStyle(color: .red))
                                         }
                                     }
-                                    .transition(.opacity.combined(with: .move(edge: .top)))
+                                    .transition(.asymmetric(
+                                        insertion: .move(edge: .bottom).combined(with: .opacity),
+                                        removal: .opacity
+                                    ))
+                                } else {
+                                    Button(item.type.isRecitation ? "核对背诵" : "我写好了") {
+                                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                            showResultButtons = true
+                                        }
+                                    }
+                                    .buttonStyle(ResultButtonStyle(color: .blue))
                                 }
+
+                                Spacer()
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(isWide ? 32 : 24)
-                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 28))
-
-                            if showResultButtons {
-                                VStack(spacing: 14) {
-                                    answerCard(for: item)
-
-                                    HStack(spacing: 14) {
-                                        Button {
-                                            submit(.correct, for: item)
-                                        } label: {
-                                            Label("正确", systemImage: "checkmark.circle.fill")
-                                        }
-                                        .buttonStyle(ResultButtonStyle(color: .green))
-
-                                        Button {
-                                            submit(.wrong, for: item)
-                                        } label: {
-                                            Label("不正确", systemImage: "xmark.circle.fill")
-                                        }
-                                        .buttonStyle(ResultButtonStyle(color: .red))
-                                    }
-                                }
-                                .transition(.asymmetric(
-                                    insertion: .move(edge: .bottom).combined(with: .opacity),
-                                    removal: .opacity
-                                ))
-                            } else {
-                                Button("我写好了") {
-                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                                        showResultButtons = true
-                                    }
-                                }
-                                .buttonStyle(ResultButtonStyle(color: .blue))
-                            }
-
-                            Spacer()
+                            .padding(isWide ? 32 : 20)
                         }
-                        .padding(isWide ? 32 : 20)
                     }
                     .id(currentIndex) // Force view refresh on index change
                     .transition(.asymmetric(
@@ -532,6 +534,8 @@ struct ReviewSessionView: View {
                 return "点击朗读，听写这个词句"
             case .englishWord:
                 return "点击朗读，听写这个英语"
+            case .englishSentence:
+                return "试着背出这个英语句子"
             }
         }
 
@@ -548,6 +552,9 @@ struct ReviewSessionView: View {
     }
 
     private func helperText(for item: ReviewItem) -> String {
+        if item.type.isRecitation {
+            return "可以显示文字先读几遍，再隐藏文字背诵。背出来算对，没背出来算错。"
+        }
         if item.reviewTrack == .dictationFollowUp {
             switch item.resolvedDictationFollowUpStep {
             case 1:

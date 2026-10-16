@@ -76,7 +76,9 @@ struct BatchReviewSessionView: View {
                             ScrollView(showsIndicators: false) {
                                 VStack(spacing: 22) {
                                     progressHeader
-                                    AutoDictationControls(controller: speaker)
+                                    if !item.type.isRecitation {
+                                        AutoDictationControls(controller: speaker)
+                                    }
                                     stageOverviewCard(for: item)
                                     sessionCard(for: item, isWide: isWide)
                                 }
@@ -133,8 +135,11 @@ struct BatchReviewSessionView: View {
 
     private func selectCurrentEntry(speak: Bool = true) {
         guard let entry = currentItem else { return }
+        if entry.type.isRecitation {
+            speaker.setEnabled(false)
+        }
         speaker.select(content: entry.content, type: entry.type, prompt: entry.prompt,
-                       isLast: currentIndex == items.count - 1, speak: speak)
+                       isLast: currentIndex == items.count - 1, speak: speak && !entry.type.isRecitation)
     }
 
     private var progressHeader: some View {
@@ -215,7 +220,7 @@ struct BatchReviewSessionView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Divider()
                             .padding(.vertical, 8)
-                        Text("听写内容")
+                        Text(item.type.isRecitation ? "背诵原文" : "听写内容")
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.secondary)
                         Text(item.content)
@@ -278,7 +283,7 @@ struct BatchReviewSessionView: View {
             VStack(alignment: .leading, spacing: 10) {
                 TypeBadge(type: item.type)
 
-                if item.type == .englishWord {
+                if item.type.isEnglish {
                     let translation = item.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !translation.isEmpty {
                         Text(translation)
@@ -383,6 +388,9 @@ struct BatchReviewSessionView: View {
     }
 
     private func helperText(for item: ReviewItem) -> String {
+        if item.type.isRecitation {
+            return "先试着背诵，需要时可显示文字重读。背出来算对，没背出来算错。"
+        }
         if item.reviewTrack == .dictationFollowUp {
             switch item.resolvedDictationFollowUpStep {
             case 1:

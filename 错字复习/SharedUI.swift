@@ -599,6 +599,7 @@ struct TypeBadge: View {
         case .chineseCharacter: return .orange
         case .phrase: return .blue
         case .englishWord: return .purple
+        case .englishSentence: return .teal
         }
     }
 

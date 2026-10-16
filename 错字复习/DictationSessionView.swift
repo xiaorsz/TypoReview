@@ -30,6 +30,7 @@ struct DictationSessionView: View {
             restoredIndex = min(max(session.currentEntryIndex, 0), entries.count - 1)
         }
         _currentIndex = State(initialValue: restoredIndex)
+        _isContentRevealed = State(initialValue: session.type.isRecitation)
     }
 
     private var currentEntry: DictationEntry? {
@@ -54,7 +55,9 @@ struct DictationSessionView: View {
                             ScrollView(showsIndicators: false) {
                                 VStack(spacing: 22) {
                                     progressHeader
-                                    AutoDictationControls(controller: speaker)
+                                    if !session.type.isRecitation {
+                                        AutoDictationControls(controller: speaker)
+                                    }
                                     sessionCard(for: currentEntry, isWide: isWide)
                                 }
                                 .frame(maxWidth: isWide ? 860 : .infinity)
@@ -68,7 +71,7 @@ struct DictationSessionView: View {
                 }
             }
         }
-        .navigationTitle("今日听写")
+        .navigationTitle(session.type.isRecitation ? "今日背诵" : "今日听写")
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(isPresented: $navigateToReview) {
             DictationReviewView(
@@ -88,7 +91,7 @@ struct DictationSessionView: View {
             hasAutoSpokenInitialEntry = true
         }
         .onChange(of: currentIndex) {
-            isContentRevealed = false
+            isContentRevealed = session.type.isRecitation
             persistProgress()
             selectCurrentEntry()
         }
@@ -124,14 +127,14 @@ struct DictationSessionView: View {
     private func selectCurrentEntry(speak: Bool = true) {
         guard let entry = currentEntry else { return }
         speaker.select(content: entry.content, type: entry.type, prompt: entry.prompt,
-                       isLast: currentIndex == entries.count - 1, speak: speak)
+                       isLast: currentIndex == entries.count - 1, speak: speak && !entry.type.isRecitation)
     }
 
     private var progressHeader: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("今日听写")
+                    Text(session.type.isRecitation ? "今日背诵" : "今日听写")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                     Text("第 \(currentIndex + 1) / \(entries.count) 条")
@@ -205,7 +208,7 @@ struct DictationSessionView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Divider()
                             .padding(.vertical, 8)
-                        Text("听写内容")
+                        Text(entry.type.isRecitation ? "背诵原文" : "听写内容")
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.secondary)
                         Text(entry.content)
@@ -306,7 +309,9 @@ struct DictationSessionView: View {
                 .foregroundStyle(.secondary)
                 .padding(.top, 2)
 
-            Text("孩子先把整轮内容都写完，最后再统一批量判定。")
+            Text(session.type.isRecitation
+                 ? "先看着读几遍，再隐藏文字试着背。最后按背诵情况判对错。"
+                 : "孩子先把整轮内容都写完，最后再统一批量判定。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -331,7 +336,7 @@ struct DictationSessionView: View {
                 }
                 .buttonStyle(ResultButtonStyle(color: .blue))
             } else {
-                Button(isFinishing ? "正在保存…" : "完成听写并进入判卷") {
+                Button(isFinishing ? "正在保存…" : (session.type.isRecitation ? "完成背诵并判定" : "完成听写并进入判卷")) {
                     finishSession()
                 }
                 .buttonStyle(ResultButtonStyle(color: .green))

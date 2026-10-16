@@ -33,6 +33,11 @@ struct DictationReviewView: View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 10) {
+                    if session.type.isRecitation {
+                        Text("背出来算对，没背出来算错。提交后照常安排复习。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                     HStack(spacing: 12) {
                         reviewStat(title: "总条数", value: "\(entries.count)", tint: .blue)
                         reviewStat(title: "未判定", value: "\(pendingCount)", tint: pendingCount == 0 ? .green : .orange)
@@ -40,7 +45,7 @@ struct DictationReviewView: View {
                     }
 
                     HStack(spacing: 12) {
-                        Button("全部正确") { markAll(.correct) }
+                        Button(session.type.isRecitation ? "全部背出来了" : "全部正确") { markAll(.correct) }
                             .buttonStyle(.borderedProminent)
                             .tint(.green)
                             .controlSize(.small)
@@ -80,7 +85,10 @@ struct DictationReviewView: View {
                                     .background(statusColor(for: entry.result).opacity(0.1), in: Capsule())
                             }
 
-                            HStack(spacing: 12) {
+                            let gradingLayout = entry.type.isRecitation
+                                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+                                : AnyLayout(HStackLayout(spacing: 12))
+                            gradingLayout {
                                 Text(entry.content)
                                     .font(.system(size: 24, weight: .bold, design: .rounded))
                                     .foregroundStyle(.primary)
@@ -96,7 +104,7 @@ struct DictationReviewView: View {
                                     } label: {
                                         HStack(spacing: 4) {
                                             Image(systemName: entry.result == .correct ? "checkmark.circle.fill" : "checkmark.circle")
-                                            Text("正确")
+                                            Text(entry.type.isRecitation ? "背出来了" : "正确")
                                         }
                                         .font(.subheadline.weight(.bold))
                                         .foregroundStyle(entry.result == .correct ? .white : .green)
@@ -113,7 +121,7 @@ struct DictationReviewView: View {
                                     } label: {
                                         HStack(spacing: 4) {
                                             Image(systemName: entry.result == .wrong ? "xmark.circle.fill" : "xmark.circle")
-                                            Text("错误")
+                                            Text(entry.type.isRecitation ? "没背出来" : "错误")
                                         }
                                         .font(.subheadline.weight(.bold))
                                         .foregroundStyle(entry.result == .wrong ? .white : .red)
@@ -124,7 +132,7 @@ struct DictationReviewView: View {
                                     .buttonStyle(.plain)
                                     .disabled(session.reviewedAt != nil || isSubmitting)
                                 }
-                                .frame(width: 160)
+                                .frame(width: entry.type.isRecitation ? nil : 160)
                             }
 
                             if !entry.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -149,12 +157,12 @@ struct DictationReviewView: View {
             .padding(.top, 12)
             .padding(.bottom, 110)
         }
-        .navigationTitle("统一判卷")
+        .navigationTitle(session.type.isRecitation ? "背诵判定" : "统一判卷")
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom) {
             Group {
                 if session.reviewedAt != nil {
-                    Label("这次听写已经完成判定", systemImage: "checkmark.circle.fill")
+                    Label(session.type.isRecitation ? "这次背诵已经完成判定" : "这次听写已经完成判定", systemImage: "checkmark.circle.fill")
                         .font(.headline)
                         .foregroundStyle(.green)
                         .frame(maxWidth: .infinity)

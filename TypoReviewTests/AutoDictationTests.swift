@@ -153,3 +153,69 @@ final class AutoDictationTests: XCTestCase {
         controller.shutdown()
     }
 }
+
+
+@MainActor
+final class EnglishRecitationTests: XCTestCase {
+    func testRecitationSurvivesSessionEntryAndReviewBackupRoundTrip() throws {
+        let session = DictationSession(title: "Unit 3 句子", type: .englishSentence, currentEntryIndex: 1)
+        let entry = DictationEntry(
+            sessionID: session.id, sortOrder: 0, type: .englishSentence,
+            content: "What would you like to eat?", prompt: "你想吃什么？", result: .correct
+        )
+        let item = ReviewItem(type: entry.type, content: entry.content, prompt: entry.prompt)
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+
+        let restoredSession = try decoder.decode(
+            DictationSessionSnapshot.self, from: encoder.encode(DictationSessionSnapshot(session))
+        ).makeModel()
+        let restoredEntry = try decoder.decode(
+            DictationEntrySnapshot.self, from: encoder.encode(DictationEntrySnapshot(entry))
+        ).makeModel()
+        let restoredItem = try decoder.decode(
+            ReviewItemSnapshot.self, from: encoder.encode(ReviewItemSnapshot(item))
+        ).makeModel()
+
+        XCTAssertEqual(restoredSession.type, .englishSentence)
+        XCTAssertEqual(restoredSession.currentEntryIndex, 1)
+        XCTAssertEqual(restoredEntry.type, .englishSentence)
+        XCTAssertEqual(restoredEntry.result, .correct)
+        XCTAssertEqual(restoredItem.type, .englishSentence)
+        XCTAssertEqual(restoredItem.content, entry.content)
+        XCTAssertFalse(ReviewContentIdentity.isSameContent(
+            restoredItem, type: .englishWord, content: entry.content
+        ))
+    }
+
+    func testRecitationUsesExistingFollowUpAndFailureSchedule() {
+        let scheduler = ReviewScheduler()
+        let now = Date(timeIntervalSince1970: 1_792_000_000)
+        let item = ReviewItem(
+            type: .englishSentence, content: "I'd like a sandwich.", prompt: "我想要一个三明治。",
+            stage: 1, nextReviewAt: now, reviewTrack: .dictationFollowUp,
+            dictationFollowUpStep: 1, isDictationPass: true
+        )
+
+        let correct = scheduler.handle(item: item, result: .correct, now: now)
+        XCTAssertEqual(correct.record.result, .correct)
+        XCTAssertEqual(item.dictationFollowUpStep, 2)
+        XCTAssertEqual(item.nextReviewAt, scheduler.dayStart(after: 4, from: now))
+
+        let nextDate = item.nextReviewAt
+        let wrong = scheduler.handle(item: item, result: .wrong, now: nextDate)
+        XCTAssertEqual(wrong.record.result, .wrong)
+        XCTAssertEqual(item.reviewTrack, .standard)
+        XCTAssertEqual(item.nextReviewAt, scheduler.nextDayStart(from: nextDate))
+        XCTAssertEqual(item.type, .englishSentence)
+    }
+
+    func testRecitationReadsEnglishSentenceWithoutReadingTranslationAsAnswer() {
+        let utterances = SpeechUtteranceBuilder.utterances(
+            content: "I'd like a sandwich.", type: .englishSentence, prompt: "我想要一个三明治。"
+        )
+        XCTAssertEqual(utterances.count, 1)
+        XCTAssertEqual(utterances.first?.speechString, "I'd like a sandwich.")
+        XCTAssertTrue(utterances.first?.voice?.language.hasPrefix("en") == true)
+    }
+}

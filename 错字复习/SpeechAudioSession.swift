@@ -49,7 +49,7 @@ enum SpeechVoicePicker {
         switch type {
         case .chineseCharacter, .phrase:
             return bestChineseVoice(from: allVoices)
-        case .englishWord:
+        case .englishWord, .englishSentence:
             return bestEnglishVoice(from: allVoices)
         }
     }
@@ -124,7 +124,7 @@ enum SpeechUtteranceBuilder {
             utterance(
                 text: trimmedContent,
                 voiceType: type,
-                rate: type == .englishWord ? 0.42 : 0.36
+                rate: type.isEnglish ? 0.42 : 0.36
             )
         ]
 

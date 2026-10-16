@@ -162,9 +162,10 @@ struct AddDictationSessionView: View {
                 )) {
                     Text("词句").tag(Optional(ReviewItemType.phrase))
                     Text("英语").tag(Optional(ReviewItemType.englishWord))
+                    Text("背诵").tag(Optional(ReviewItemType.englishSentence))
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 120)
+                .frame(width: 190)
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 14)
@@ -181,15 +182,21 @@ struct AddDictationSessionView: View {
             DatePicker("计划日期", selection: $scheduledDate, displayedComponents: .date)
                 .font(.subheadline.weight(.medium))
 
+            if type?.isRecitation == true {
+                Text("先看着原文读几遍，再隐藏文字背诵。背出来算对，没背出来算错，之后照常复习。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
             Divider()
 
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Label("听写标题", systemImage: "star.fill")
+                    Label(type?.isRecitation == true ? "背诵标题" : "听写标题", systemImage: "star.fill")
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(.orange)
                     
-                    TextField("例如：Unit 5 听写", text: $title)
+                    TextField(type?.isRecitation == true ? "例如：Unit 5 句子背诵" : "例如：Unit 5 听写", text: $title)
                         .font(.title2.weight(.medium))
                         .textFieldStyle(.plain)
                         .padding(12)
@@ -216,7 +223,7 @@ struct AddDictationSessionView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("听写内容")
+                    Text(type?.isRecitation == true ? "背诵内容" : "听写内容")
                         .font(.headline)
                     Text("共 \(entries.count) 条")
                         .font(.caption)
@@ -268,6 +275,8 @@ struct AddDictationSessionView: View {
             return "欢迎\n认真 | 做事不马虎\n提醒 | 让别人注意 | 第三单元"
         case .englishWord?:
             return "apple\nbanana | 香蕉\norange | 橙子 | Unit 5"
+        case .englishSentence?:
+            return "What would you like to eat? | 你想吃什么？ | Unit 3\nI'd like a sandwich. | 我想要一个三明治。"
         default:
             return "请先选择题目类型，再录入听写内容"
         }
@@ -284,7 +293,8 @@ struct AddDictationSessionView: View {
         
         let now = Date()
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let sessionTitle = trimmedTitle.isEmpty ? "\(scheduledDate.formatted(date: .abbreviated, time: .omitted))听写" : trimmedTitle
+        let activityName = selectedType.isRecitation ? "背诵" : "听写"
+        let sessionTitle = trimmedTitle.isEmpty ? "\(scheduledDate.formatted(date: .abbreviated, time: .omitted))\(activityName)" : trimmedTitle
         let sourceFallback = defaultSource.trimmingCharacters(in: .whitespacesAndNewlines)
         let currentEntries = entries.map { entry in
             guard selectedType == .englishWord,

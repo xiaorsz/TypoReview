@@ -652,6 +652,8 @@ struct LibraryView: View {
             return "词"
         case .englishWord:
             return "EN"
+        case .englishSentence:
+            return "背"
         }
     }
 
@@ -663,6 +665,8 @@ struct LibraryView: View {
             return .blue
         case .englishWord:
             return .purple
+        case .englishSentence:
+            return .teal
         }
     }
 

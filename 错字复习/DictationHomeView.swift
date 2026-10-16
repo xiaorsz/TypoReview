@@ -836,7 +836,7 @@ struct DictationPreviewView: View {
                 .padding(20)
                 .padding(.bottom, 100)
             }
-            .navigationTitle("听写预习")
+            .navigationTitle(session.type.isRecitation ? "背诵预习" : "听写预习")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -869,7 +869,7 @@ struct DictationPreviewView: View {
                         dismiss()
                         onStartSession()
                     } label: {
-                        Text("开始听写")
+                        Text(session.type.isRecitation ? "开始背诵" : "开始听写")
                     }
                     .buttonStyle(ResultButtonStyle(color: .blue))
                     .padding()
@@ -899,8 +899,9 @@ private struct DictationProjectionPreviewView: View {
     var onEditSession: (() -> Void)? = nil
 
     private var startButtonTitle: String {
-        guard session.currentEntryIndex > 0, !entries.isEmpty else { return "开始听写" }
-        return "继续听写 · 第 \(min(session.currentEntryIndex + 1, entries.count))/\(entries.count) 条"
+        let activity = session.type.isRecitation ? "背诵" : "听写"
+        guard session.currentEntryIndex > 0, !entries.isEmpty else { return "开始\(activity)" }
+        return "继续\(activity) · 第 \(min(session.currentEntryIndex + 1, entries.count))/\(entries.count) 条"
     }
 
     var body: some View {
@@ -978,7 +979,7 @@ private struct DictationProjectionPreviewView: View {
                 .padding(20)
                 .padding(.bottom, 100)
             }
-            .navigationTitle("听写预习")
+            .navigationTitle(session.type.isRecitation ? "背诵预习" : "听写预习")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {

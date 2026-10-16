@@ -119,7 +119,10 @@ struct BatchReviewGradingView: View {
                                     .background(statusColor(for: state.wrappedValue.result).opacity(0.1), in: Capsule())
                             }
 
-                            HStack(spacing: 12) {
+                            let gradingLayout = state.wrappedValue.item.type.isRecitation
+                                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+                                : AnyLayout(HStackLayout(spacing: 12))
+                            gradingLayout {
                                 Text(state.wrappedValue.item.content)
                                     .font(.system(size: 24, weight: .bold, design: .rounded))
                                     .foregroundStyle(.primary)
@@ -134,7 +137,7 @@ struct BatchReviewGradingView: View {
                                     } label: {
                                         HStack(spacing: 4) {
                                             Image(systemName: state.wrappedValue.result == .correct ? "checkmark.circle.fill" : "checkmark.circle")
-                                            Text("正确")
+                                            Text(state.wrappedValue.item.type.isRecitation ? "背出来了" : "正确")
                                         }
                                         .font(.subheadline.weight(.bold))
                                         .foregroundStyle(state.wrappedValue.result == .correct ? .white : .green)
@@ -149,7 +152,7 @@ struct BatchReviewGradingView: View {
                                     } label: {
                                         HStack(spacing: 4) {
                                             Image(systemName: state.wrappedValue.result == .wrong ? "xmark.circle.fill" : "xmark.circle")
-                                            Text("错误")
+                                            Text(state.wrappedValue.item.type.isRecitation ? "没背出来" : "错误")
                                         }
                                         .font(.subheadline.weight(.bold))
                                         .foregroundStyle(state.wrappedValue.result == .wrong ? .white : .red)
@@ -159,7 +162,7 @@ struct BatchReviewGradingView: View {
                                     }
                                     .buttonStyle(.plain)
                                 }
-                                .frame(width: 160)
+                                .frame(width: state.wrappedValue.item.type.isRecitation ? nil : 160)
                             }
 
                             if !state.wrappedValue.item.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

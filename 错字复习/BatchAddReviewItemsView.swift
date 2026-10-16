@@ -120,9 +120,10 @@ struct BatchAddReviewItemsView: View {
                 )) {
                     Text("词句").tag(Optional(ReviewItemType.phrase))
                     Text("英语").tag(Optional(ReviewItemType.englishWord))
+                    Text("背诵").tag(Optional(ReviewItemType.englishSentence))
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 120)
+                .frame(width: 190)
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 14)
@@ -220,6 +221,8 @@ struct BatchAddReviewItemsView: View {
             return "欢迎\n认真 | 做事不马虎\n提醒 | 让别人注意 | 语文听写"
         case .englishWord?:
             return "apple\nbanana | 香蕉\norange | 橙子 | 英语听写"
+        case .englishSentence?:
+            return "What would you like to eat? | 你想吃什么？ | Unit 3\nI'd like a sandwich. | 我想要一个三明治。"
         default:
             return "请先选择题目类型，再粘贴批量内容"
         }

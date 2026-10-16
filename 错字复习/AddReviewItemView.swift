@@ -239,9 +239,10 @@ struct AddReviewItemView: View {
             )) {
                 Text("词句").tag(Optional(ReviewItemType.phrase))
                 Text("英语").tag(Optional(ReviewItemType.englishWord))
+                Text("背诵").tag(Optional(ReviewItemType.englishSentence))
             }
             .pickerStyle(.segmented)
-            .frame(width: 120)
+            .frame(width: 190)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
@@ -455,6 +456,8 @@ struct AddReviewItemView: View {
             "正确词句，例如 欢迎 / 在家休息"
         case .englishWord?:
             "正确英语，例如 apple / good morning"
+        case .englishSentence?:
+            "要背诵的英语句子"
         default:
             "先选择题目类型"
         }
@@ -466,6 +469,8 @@ struct AddReviewItemView: View {
             "题目提示，可选，例如 根据意思写词句: 高兴地接待别人"
         case .englishWord?:
             "题目提示，可选，例如 看中文写英语: 苹果"
+        case .englishSentence?:
+            "中文意思或背诵提示，可选"
         default:
             "题目提示，可选"
         }
@@ -477,6 +482,8 @@ struct AddReviewItemView: View {
             "如果要练词句填空，可补全提示；如果不填，复习时会直接朗读词句。"
         case .englishWord?:
             "英语单词可以直接按听写来播报；如果想要中文释义出题，再补提示。"
+        case .englishSentence?:
+            "可以先看着读几遍，再隐藏文字背诵。背出来算对，没背出来算错。"
         default:
             "请先选择题目类型，再录入内容。"
         }
