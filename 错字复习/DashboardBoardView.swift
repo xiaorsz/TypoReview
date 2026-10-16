@@ -55,27 +55,22 @@ struct DashboardBoardView: View {
     }
 
     private func makeBoardSnapshot(from source: BoardDataSource, at date: Date = Date.now) -> BoardSnapshot {
-        let reviewItems = source.reviewItems
         let allTasks = source.tasks
         let taskExecutionRecords = source.executions
         let taskSubitems = source.subtasks
         let childName = appSettingsStore.childName.isEmpty ? "小朋友" : appSettingsStore.childName
         let calendar = Calendar.current
-        let dueItems = ReviewContentIdentity.canonicalReviewItems(from: reviewItems)
-            .filter { ReviewScheduler.isDue($0.nextReviewAt, on: date, calendar: calendar) }
-            .sorted { lhs, rhs in
-                let lhsDay = ReviewScheduler.normalizedReviewDate(lhs.nextReviewAt, calendar: calendar)
-                let rhsDay = ReviewScheduler.normalizedReviewDate(rhs.nextReviewAt, calendar: calendar)
-
-                if lhsDay != rhsDay {
-                    return lhsDay < rhsDay
-                }
-                if lhs.createdAt != rhs.createdAt {
-                    return lhs.createdAt < rhs.createdAt
-                }
-                return lhs.id.uuidString < rhs.id.uuidString
-            }
-        let pendingDictationSessions = pendingDictationSessions(source.sessions, for: date)
+        let dueItems = BoardLearningSupport.pendingReviewItems(
+            items: source.reviewItems,
+            records: source.reviewRecords,
+            dailyPlans: source.reviewDailyPlans,
+            dailyLimit: appSettingsStore.dailyLimit,
+            on: date,
+            calendar: calendar
+        )
+        let pendingDictationSessions = BoardLearningSupport.pendingDictationSessions(
+            source.sessions, on: date, calendar: calendar
+        )
         let pendingDictationBoardItems = pendingDictationSessions
             .flatMap { source.entriesBySession[$0.id] ?? [] }
             .sorted {
@@ -130,14 +125,6 @@ struct DashboardBoardView: View {
             boardSettings: boardSettings,
             enabledMediaAssets: enabledMediaAssets
         )
-    }
-
-    private func pendingDictationSessions(_ dictationSessions: [DictationSession], for date: Date) -> [DictationSession] {
-        let calendar = Calendar.current
-        let todayStart = calendar.startOfDay(for: date)
-        return dictationSessions
-            .filter { !$0.isReviewed && calendar.startOfDay(for: $0.scheduledDate) <= todayStart }
-            .sorted { $0.scheduledDate < $1.scheduledDate }
     }
 
     private func boardTaskSnapshot(from source: BoardDataSource, on date: Date) -> BoardTaskSnapshot {
@@ -1629,6 +1616,69 @@ private struct BoardScheduleStatCard: View {
     }
 }
 
+/// The board shows today's unfinished review plan and due, unsubmitted dictations.
+@MainActor
+enum BoardLearningSupport {
+    static func pendingReviewItems(
+        items: [ReviewItem],
+        records: [ReviewRecord],
+        dailyPlans: [ReviewDailyPlan],
+        dailyLimit: Int,
+        on date: Date,
+        calendar: Calendar = .current
+    ) -> [ReviewItem] {
+        let reviewedTodayIDs = HomeReviewRecordProjection.canonicalRecords(
+            records.map(HomeReviewRecordProjection.init)
+        )
+        .filter { $0.mode != .dictation && calendar.isDate($0.reviewedAt, inSameDayAs: date) }
+        .sorted {
+            if $0.reviewedAt != $1.reviewedAt { return $0.reviewedAt < $1.reviewedAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+        .map(\.itemID)
+        let reviewedTodaySet = Set(reviewedTodayIDs)
+        let dueItems = ReviewContentIdentity.canonicalReviewItems(from: items)
+            .filter {
+                !reviewedTodaySet.contains($0.id)
+                    && ReviewScheduler.isDue($0.nextReviewAt, on: date, calendar: calendar)
+            }
+            .sorted { lhs, rhs in
+                let lhsDay = ReviewScheduler.normalizedReviewDate(lhs.nextReviewAt, calendar: calendar)
+                let rhsDay = ReviewScheduler.normalizedReviewDate(rhs.nextReviewAt, calendar: calendar)
+                if lhsDay != rhsDay { return lhsDay < rhsDay }
+                if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+        let dayKey = ReviewDailyPlan.dayKey(for: date, calendar: calendar)
+        let dailyPlan = ReviewDailyPlan.preferred(from: dailyPlans.filter { $0.dayKey == dayKey })
+        // Use the same quota reconciliation as the home screen. Completed items
+        // still occupy today's slots so the board cannot introduce another batch.
+        let plannedIDs = ReviewDailyPlan.reconciledItemIDs(
+            existingItemIDs: dailyPlan?.itemIDs ?? [],
+            reviewedTodayItemIDs: reviewedTodayIDs,
+            availableDueItemIDs: dueItems.map(\.id),
+            dailyLimit: dailyLimit
+        )
+        let dueByID = Dictionary(dueItems.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return plannedIDs.compactMap { dueByID[$0] }
+    }
+
+    static func pendingDictationSessions(
+        _ sessions: [DictationSession],
+        on date: Date,
+        calendar: Calendar = .current
+    ) -> [DictationSession] {
+        sessions.filter {
+            !$0.isFinished && !$0.isReviewed
+                && calendar.startOfDay(for: $0.scheduledDate) <= calendar.startOfDay(for: date)
+        }
+        .sorted {
+            if $0.scheduledDate != $1.scheduledDate { return $0.scheduledDate < $1.scheduledDate }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+}
+
 /// Models stay on the main actor and retain their fresh read context for display.
 /// Existing @Query instances can still contain the generation preceding a server
 /// merge when its notification arrives.
@@ -1636,6 +1686,8 @@ private struct BoardScheduleStatCard: View {
 struct BoardDataSource {
     let context: ModelContext
     let reviewItems: [ReviewItem]
+    let reviewRecords: [ReviewRecord]
+    let reviewDailyPlans: [ReviewDailyPlan]
     let sessions: [DictationSession]
     let entriesBySession: [UUID: [DictationEntry]]
     let tasks: [TaskItem]
@@ -1650,6 +1702,8 @@ struct BoardDataSource {
             return BoardDataSource(
                 context: context,
                 reviewItems: try context.fetch(FetchDescriptor<ReviewItem>()),
+                reviewRecords: try context.fetch(FetchDescriptor<ReviewRecord>()),
+                reviewDailyPlans: try context.fetch(FetchDescriptor<ReviewDailyPlan>()),
                 sessions: try context.fetch(FetchDescriptor<DictationSession>(predicate: #Predicate { $0.reviewedAt == nil })),
                 entriesBySession: Dictionary(grouping: try context.fetch(FetchDescriptor<DictationEntry>()), by: \.sessionID),
                 tasks: try context.fetch(FetchDescriptor<TaskItem>()),

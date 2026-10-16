@@ -989,3 +989,84 @@ final class ReviewRewardSettlementTests: XCTestCase {
         XCTAssertEqual(keys[0], keys[1])
     }
 }
+
+@MainActor
+final class BoardLearningSupportTests: XCTestCase {
+    private var calendar: Calendar {
+        var value = Calendar(identifier: .gregorian)
+        value.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        return value
+    }
+
+    private func date(_ day: Int, hour: Int = 0) -> Date {
+        calendar.date(from: DateComponents(year: 2026, month: 9, day: day, hour: hour))!
+    }
+
+    private func item(_ content: String, dueDay: Int = 23) -> ReviewItem {
+        ReviewItem(type: .chineseCharacter, content: content, prompt: "", nextReviewAt: date(dueDay))
+    }
+
+    private func record(_ item: ReviewItem, day: Int = 23, mode: ReviewMode = .scheduled) -> ReviewRecord {
+        ReviewRecord(itemID: item.id, reviewedAt: date(day, hour: 10), result: .correct,
+                     mode: mode, oldStage: 0, newStage: 1)
+    }
+
+    func testBoardShowsOnlyUnfinishedItemsFromTodaysPlan() {
+        let done = item("甲")
+        let pending = item("乙")
+        let backlog = item("丙", dueDay: 22)
+        let future = item("丁", dueDay: 24)
+        let plan = ReviewDailyPlan(dayKey: "2026-09-23", itemIDs: [done.id, pending.id])
+        let yesterdayPlan = ReviewDailyPlan(dayKey: "2026-09-22", itemIDs: [backlog.id])
+
+        let result = BoardLearningSupport.pendingReviewItems(
+            items: [backlog, done, pending, future], records: [record(done)],
+            dailyPlans: [yesterdayPlan, plan], dailyLimit: 2, on: date(23, hour: 12), calendar: calendar
+        )
+
+        // A stale due date after syncing must not put a completed item back on the board.
+        XCTAssertEqual(result.map(\.id), [pending.id])
+    }
+
+    func testFinishingDailyQuotaDoesNotShowAnotherBatchWithoutSavedPlan() {
+        let done = item("甲")
+        let backlog = item("乙", dueDay: 22)
+        let result = BoardLearningSupport.pendingReviewItems(
+            items: [done, backlog], records: [record(done)], dailyPlans: [],
+            dailyLimit: 1, on: date(23), calendar: calendar
+        )
+        XCTAssertTrue(result.isEmpty)
+    }
+
+    func testFallbackPlanIgnoresYesterdayCompletionAndDictationRecords() {
+        let overdue = item("甲", dueDay: 22)
+        let due = item("乙")
+        let future = item("丙", dueDay: 24)
+        let result = BoardLearningSupport.pendingReviewItems(
+            items: [future, due, overdue],
+            records: [record(overdue, day: 22), record(due, mode: .dictation)],
+            dailyPlans: [], dailyLimit: 2, on: date(23), calendar: calendar
+        )
+        XCTAssertEqual(result.map(\.id), [overdue.id, due.id])
+    }
+
+    func testDictationShowsTodayAndOverdueUnsubmittedSessions() {
+        let today = DictationSession(title: "今日", type: .chineseCharacter, scheduledDate: date(23, hour: 20))
+        let yesterday = DictationSession(title: "昨日", type: .chineseCharacter, scheduledDate: date(22))
+        let tomorrow = DictationSession(title: "明日", type: .chineseCharacter, scheduledDate: date(24))
+        let submitted = DictationSession(title: "待批改", type: .chineseCharacter,
+                                        scheduledDate: date(23), finishedAt: date(23, hour: 9))
+        let reviewed = DictationSession(title: "已批改", type: .chineseCharacter,
+                                       scheduledDate: date(23), reviewedAt: date(23, hour: 10))
+        let result = BoardLearningSupport.pendingDictationSessions(
+            [yesterday, tomorrow, submitted, today, reviewed], on: date(23), calendar: calendar
+        )
+        XCTAssertEqual(result.map(\.id), [yesterday.id, today.id])
+
+        yesterday.finishedAt = date(23, hour: 21)
+        today.finishedAt = date(23, hour: 21)
+        XCTAssertTrue(BoardLearningSupport.pendingDictationSessions(
+            [yesterday, today], on: date(23, hour: 22), calendar: calendar
+        ).isEmpty)
+    }
+}

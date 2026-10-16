@@ -4,6 +4,91 @@ import SwiftData
 
 @MainActor
 final class ServerSyncCoordinatorTests: XCTestCase {
+    func testScopedCaptureSkipsUnrelatedTablesAndRecords() throws {
+        // Missing tables deliberately fail any accidental full-store capture.
+        let container = try ModelContainer(for: DictationSession.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
+        let target = DictationSession(title: "目标", type: .chineseCharacter)
+        context.insert(target)
+        for index in 0..<300 {
+            context.insert(DictationSession(title: "其他 \(index)", type: .chineseCharacter))
+        }
+        try context.save()
+        let payload = try DataBackupPayload.capture(from: context, settings: nil, mediaAssets: [],
+            recordIDs: ["dictationSessions": [target.id]])
+        XCTAssertEqual(payload.dictationSessions.map(\.id), [target.id])
+        XCTAssertTrue(payload.pointLedgerEntries.isEmpty)
+        XCTAssertTrue(payload.reviewItems.isEmpty)
+        let empty = try DataBackupPayload.capture(from: context, settings: nil, mediaAssets: [], recordIDs: [:])
+        XCTAssertTrue(empty.dictationSessions.isEmpty)
+    }
+
+    func testScopedCaptureAndApplyHandleMultipleIDBatches() throws {
+        let container = try ModelContainer(for: DictationSession.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
+        var changes: [ServerChange] = []
+        for _ in 0..<600 {
+            let session = DictationSession(title: "原值", type: .chineseCharacter)
+            context.insert(session)
+            let remote = DictationSession(id: session.id, title: "更新", type: .chineseCharacter)
+            changes.append(try makeServerChange(entityType: "dictationSessions", recordID: session.id,
+                snapshot: DictationSessionSnapshot(remote)))
+        }
+        let unrelated = DictationSession(title: "无关", type: .chineseCharacter)
+        context.insert(unrelated)
+        try context.save()
+        try ServerSyncCoordinator.shared.applyIncrementalChanges(changes, to: container,
+            settingsStore: AppSettingsStore())
+        let fresh = ModelContext(container)
+        let payload = try DataBackupPayload.capture(from: fresh, settings: nil, mediaAssets: [],
+            recordIDs: ["dictationSessions": changes.map(\.recordID)])
+        XCTAssertEqual(payload.dictationSessions.count, 600)
+        XCTAssertTrue(payload.dictationSessions.allSatisfy { $0.title == "更新" })
+        let all = try fresh.fetch(FetchDescriptor<DictationSession>())
+        XCTAssertEqual(all.count, 601)
+        XCTAssertEqual(all.first { $0.id == unrelated.id }?.title, "无关")
+    }
+
+    func testScopedPointCaptureUsesFullStoreCanonicalWinner() throws {
+        let container = try ModelContainer(for: PointLedgerEntry.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
+        let earlier = PointLedgerEntry(createdAt: Date(timeIntervalSince1970: 100), amount: 1,
+            kind: .reward, sourceType: .dictationEntry, sourceIDRawValue: "entry", idempotencyKey: "shared")
+        let later = PointLedgerEntry(createdAt: Date(timeIntervalSince1970: 200), amount: 10,
+            kind: .reward, sourceType: .dictationEntry, sourceIDRawValue: "entry", idempotencyKey: "shared")
+        context.insert(earlier)
+        context.insert(later)
+        try context.save()
+        let payload = try DataBackupPayload.capture(from: context, settings: nil, mediaAssets: [],
+            recordIDs: ["pointLedgerEntries": [later.id]])
+        XCTAssertEqual(payload.pointLedgerEntries.map(\.id), [earlier.id])
+    }
+
+    func testBatchedPointSummaryPreservesDeduplicationAndDailyTotals() throws {
+        let container = try ModelContainer(for: PointLedgerEntry.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
+        let today = Calendar.current.startOfDay(for: .now).addingTimeInterval(3600)
+        for index in 0..<600 {
+            context.insert(PointLedgerEntry(createdAt: today, amount: 1, kind: .reward,
+                sourceType: .manualAdjustment, sourceIDRawValue: "", idempotencyKey: "key-\(index)"))
+            context.insert(PointLedgerEntry(createdAt: today.addingTimeInterval(60), amount: 20, kind: .reward,
+                sourceType: .manualAdjustment, sourceIDRawValue: "", idempotencyKey: "key-\(index)"))
+        }
+        context.insert(PointLedgerEntry(createdAt: today, amount: -5, kind: .redemption,
+            sourceType: .manualRedemption, sourceIDRawValue: "", idempotencyKey: ""))
+        context.insert(PointLedgerEntry(createdAt: today.addingTimeInterval(-86400), amount: 3, kind: .reward,
+            sourceType: .manualAdjustment, sourceIDRawValue: "", idempotencyKey: ""))
+        try context.save()
+        let readContext = ModelContext(container)
+        let summary = try HomeDashboardDataLoader.loadPointSummary(from: readContext, referenceDate: today)
+        XCTAssertEqual(summary.balance, 598)
+        XCTAssertEqual(summary.earnedToday, 600)
+    }
+
     func testDictationSessionConflictNeverRegressesFinishedOrReviewedState() {
         let sessionID = UUID()
         let local = DictationSession(

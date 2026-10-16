@@ -91,6 +91,8 @@ struct BatchReviewSessionView: View {
                         bottomActionBar(isWide: isWide)
                     }
                 }
+            } else {
+                ReviewEmptyStateView()
             }
         }
         .navigationTitle("复习听写")

@@ -315,9 +315,11 @@ final class ServerSyncCoordinator {
                 }.value
                 // No suspension between reading local values, applying the merge,
                 // and recording its baseline. UI edits cannot interleave here.
+                let recordIDs = Dictionary(grouping: changes, by: \.entityType).mapValues { $0.map(\.recordID) }
                 try PersistentStoreAccessGate.withAccess {
                 let localSnapshot = try Self.captureStructuredSnapshot(
-                    from: container, settings: settingsStore.snapshot
+                    from: container, settings: settingsStore.snapshot,
+                    recordIDs: recordIDs
                 )
                 var resolutions = try Self.conflictResolutions(
                     for: changes,
@@ -344,9 +346,14 @@ final class ServerSyncCoordinator {
                     resolutions: resolutions
                 )
 
-                let mergedSnapshot = try Self.captureStructuredSnapshot(
-                    from: container, settings: settingsStore.snapshot
-                )
+                // Verification often only confirms existing rows. Reuse their
+                // hashes instead of materializing the same models a second time.
+                let mergedSnapshot = dataChanged
+                    ? try Self.captureStructuredSnapshot(
+                        from: container, settings: settingsStore.snapshot,
+                        recordIDs: recordIDs
+                    )
+                    : localSnapshot
                 let pendingLocalKeys = Self.pendingLocalKeys(
                     localSnapshot: localSnapshot,
                     baseline: baseline,
@@ -441,6 +448,18 @@ final class ServerSyncCoordinator {
             var pointStates: [UUID: PointRewardState] = [:]
             var settingsSnapshot: AppSettingsSnapshot?
 
+            let recordIDs = Dictionary(grouping: changes, by: \.entityType).mapValues { $0.map(\.recordID) }
+            func fetch<T: PersistentModel>(
+                _ entity: String, predicate: ([UUID]) -> Predicate<T>
+            ) throws -> [T] {
+                let ids = Array(Set(recordIDs[entity] ?? []))
+                var models: [T] = []
+                for start in stride(from: 0, to: ids.count, by: 256) {
+                    let batch = Array(ids[start..<min(start + 256, ids.count)])
+                    models.append(contentsOf: try context.fetch(FetchDescriptor<T>(predicate: predicate(batch))))
+                }
+                return models
+            }
             for change in changes {
                 let key = SyncRecordKey(change)
                 let resolution = resolutions[key] ?? .acceptRemote
@@ -449,7 +468,11 @@ final class ServerSyncCoordinator {
                 switch change.entityType {
                 case "reviewItems":
                     if loadedEntities.insert(change.entityType).inserted {
-                        reviewItems = modelsByID(try context.fetch(FetchDescriptor<ReviewItem>()), id: \.id)
+                        reviewItems = modelsByID(
+                            try fetch(change.entityType) { ids in
+                                #Predicate<ReviewItem> { ids.contains($0.id) }
+                            }, id: \.id
+                        )
                     }
                     try apply(change, deleting: isDeletion, as: ReviewItemSnapshot.self, in: context, cache: &reviewItems, makeModel: { $0.makeModel() }) { value, model in
                         model.typeRawValue = value.typeRawValue
@@ -471,7 +494,11 @@ final class ServerSyncCoordinator {
                     }
                 case "reviewRecords":
                     if loadedEntities.insert(change.entityType).inserted {
-                        reviewRecords = modelsByID(try context.fetch(FetchDescriptor<ReviewRecord>()), id: \.id)
+                        reviewRecords = modelsByID(
+                            try fetch(change.entityType) { ids in
+                                #Predicate<ReviewRecord> { ids.contains($0.id) }
+                            }, id: \.id
+                        )
                     }
                     try apply(change, deleting: isDeletion, as: ReviewRecordSnapshot.self, in: context, cache: &reviewRecords, makeModel: { $0.makeModel() }) { value, model in
                         model.itemID = value.itemID
@@ -484,7 +511,11 @@ final class ServerSyncCoordinator {
                     }
                 case "taskItems":
                     if loadedEntities.insert(change.entityType).inserted {
-                        taskItems = modelsByID(try context.fetch(FetchDescriptor<TaskItem>()), id: \.id)
+                        taskItems = modelsByID(
+                            try fetch(change.entityType) { ids in
+                                #Predicate<TaskItem> { ids.contains($0.id) }
+                            }, id: \.id
+                        )
                     }
                     try apply(change, deleting: isDeletion, as: TaskItemSnapshot.self, in: context, cache: &taskItems, makeModel: { $0.makeModel() }) { value, model in
                         model.title = value.title
@@ -503,7 +534,11 @@ final class ServerSyncCoordinator {
                     }
                 case "taskCompletions":
                     if loadedEntities.insert(change.entityType).inserted {
-                        taskCompletions = modelsByID(try context.fetch(FetchDescriptor<TaskCompletion>()), id: \.id)
+                        taskCompletions = modelsByID(
+                            try fetch(change.entityType) { ids in
+                                #Predicate<TaskCompletion> { ids.contains($0.id) }
+                            }, id: \.id
+                        )
                     }
                     try apply(change, deleting: isDeletion, as: TaskCompletionSnapshot.self, in: context, cache: &taskCompletions, makeModel: { $0.makeModel() }) { value, model in
                         model.taskID = value.taskID
@@ -512,7 +547,11 @@ final class ServerSyncCoordinator {
                     }
                 case "taskSubitems":
                     if loadedEntities.insert(change.entityType).inserted {
-                        taskSubitems = modelsByID(try context.fetch(FetchDescriptor<TaskSubitem>()), id: \.id)
+                        taskSubitems = modelsByID(
+                            try fetch(change.entityType) { ids in
+                                #Predicate<TaskSubitem> { ids.contains($0.id) }
+                            }, id: \.id
+                        )
                     }
                     try apply(change, deleting: isDeletion, as: TaskSubitemSnapshot.self, in: context, cache: &taskSubitems, makeModel: { $0.makeModel() }) { value, model in
                         model.parentTaskID = value.parentTaskID
@@ -529,7 +568,11 @@ final class ServerSyncCoordinator {
                     }
                 case "taskExecutionRecords":
                     if loadedEntities.insert(change.entityType).inserted {
-                        taskExecutions = modelsByID(try context.fetch(FetchDescriptor<TaskExecutionRecord>()), id: \.id)
+                        taskExecutions = modelsByID(
+                            try fetch(change.entityType) { ids in
+                                #Predicate<TaskExecutionRecord> { ids.contains($0.id) }
+                            }, id: \.id
+                        )
                     }
                     try apply(change, deleting: isDeletion, as: TaskExecutionRecordSnapshot.self, in: context, cache: &taskExecutions, makeModel: { $0.makeModel() }) { value, model in
                         model.taskID = value.taskID
@@ -542,7 +585,11 @@ final class ServerSyncCoordinator {
                     }
                 case "taskSubitemExecutionRecords":
                     if loadedEntities.insert(change.entityType).inserted {
-                        taskSubitemExecutions = modelsByID(try context.fetch(FetchDescriptor<TaskSubitemExecutionRecord>()), id: \.id)
+                        taskSubitemExecutions = modelsByID(
+                            try fetch(change.entityType) { ids in
+                                #Predicate<TaskSubitemExecutionRecord> { ids.contains($0.id) }
+                            }, id: \.id
+                        )
                     }
                     try apply(change, deleting: isDeletion, as: TaskSubitemExecutionRecordSnapshot.self, in: context, cache: &taskSubitemExecutions, makeModel: { $0.makeModel() }) { value, model in
                         model.taskExecutionID = value.taskExecutionID
@@ -555,7 +602,11 @@ final class ServerSyncCoordinator {
                     }
                 case "dictationSessions":
                     if loadedEntities.insert(change.entityType).inserted {
-                        dictationSessions = modelsByID(try context.fetch(FetchDescriptor<DictationSession>()), id: \.id)
+                        dictationSessions = modelsByID(
+                            try fetch(change.entityType) { ids in
+                                #Predicate<DictationSession> { ids.contains($0.id) }
+                            }, id: \.id
+                        )
                     }
                     try apply(change, deleting: isDeletion, as: DictationSessionSnapshot.self, in: context, cache: &dictationSessions, makeModel: { $0.makeModel() }) { value, model in
                         if resolution == .mergeDictationSession {
@@ -573,7 +624,11 @@ final class ServerSyncCoordinator {
                     }
                 case "dictationEntries":
                     if loadedEntities.insert(change.entityType).inserted {
-                        dictationEntries = modelsByID(try context.fetch(FetchDescriptor<DictationEntry>()), id: \.id)
+                        dictationEntries = modelsByID(
+                            try fetch(change.entityType) { ids in
+                                #Predicate<DictationEntry> { ids.contains($0.id) }
+                            }, id: \.id
+                        )
                     }
                     try apply(change, deleting: isDeletion, as: DictationEntrySnapshot.self, in: context, cache: &dictationEntries, makeModel: { $0.makeModel() }) { value, model in
                         if resolution == .mergeDictationEntry {
@@ -593,7 +648,11 @@ final class ServerSyncCoordinator {
                     }
                 case "scheduleItems":
                     if loadedEntities.insert(change.entityType).inserted {
-                        scheduleItems = modelsByID(try context.fetch(FetchDescriptor<ScheduleItem>()), id: \.id)
+                        scheduleItems = modelsByID(
+                            try fetch(change.entityType) { ids in
+                                #Predicate<ScheduleItem> { ids.contains($0.id) }
+                            }, id: \.id
+                        )
                     }
                     try apply(change, deleting: isDeletion, as: ScheduleItemSnapshot.self, in: context, cache: &scheduleItems, makeModel: { $0.makeModel() }) { value, model in
                         model.title = value.title
@@ -611,7 +670,9 @@ final class ServerSyncCoordinator {
                 case "calculationRounds":
                     if loadedEntities.insert(change.entityType).inserted {
                         calculationRounds = modelsByID(
-                            try context.fetch(FetchDescriptor<CalculationRound>()),
+                            try fetch(change.entityType) { ids in
+                                #Predicate<CalculationRound> { ids.contains($0.id) }
+                            },
                             id: \.id
                         )
                     }
@@ -637,7 +698,11 @@ final class ServerSyncCoordinator {
                     }
                 case "pointLedgerEntries":
                     if loadedEntities.insert(change.entityType).inserted {
-                        pointEntries = modelsByID(try context.fetch(FetchDescriptor<PointLedgerEntry>()), id: \.id)
+                        pointEntries = modelsByID(
+                            try fetch(change.entityType) { ids in
+                                #Predicate<PointLedgerEntry> { ids.contains($0.id) }
+                            }, id: \.id
+                        )
                     }
                     try apply(change, deleting: isDeletion, as: PointLedgerEntrySnapshot.self, in: context, cache: &pointEntries, makeModel: { $0.makeModel() }) { value, model in
                         model.createdAt = value.createdAt
@@ -652,7 +717,11 @@ final class ServerSyncCoordinator {
                     }
                 case "pointRewardStates":
                     if loadedEntities.insert(change.entityType).inserted {
-                        pointStates = modelsByID(try context.fetch(FetchDescriptor<PointRewardState>()), id: \.id)
+                        pointStates = modelsByID(
+                            try fetch(change.entityType) { ids in
+                                #Predicate<PointRewardState> { ids.contains($0.id) }
+                            }, id: \.id
+                        )
                     }
                     try apply(change, deleting: isDeletion, as: PointRewardStateSnapshot.self, in: context, cache: &pointStates, makeModel: { $0.makeModel() }) { value, model in
                         model.currentStreak = value.currentStreak
@@ -682,7 +751,8 @@ final class ServerSyncCoordinator {
 
     nonisolated private static func captureStructuredSnapshot(
         from container: ModelContainer,
-        settings: AppSettingsSnapshot
+        settings: AppSettingsSnapshot,
+        recordIDs: [String: [UUID]]? = nil
     ) throws -> StructuredSnapshot {
         try PersistentStoreAccessGate.withAccess {
             let context = ModelContext(container)
@@ -690,7 +760,8 @@ final class ServerSyncCoordinator {
             let payload = try DataBackupPayload.capture(
                 from: context,
                 settings: settings,
-                mediaAssets: []
+                mediaAssets: [],
+                recordIDs: recordIDs
             )
             return try StructuredSnapshot(payload: payload)
         }
@@ -1055,9 +1126,15 @@ final class ServerSyncCoordinator {
             uploadError = loadBlockedHashes().isEmpty ? nil : "有复习记录与服务器冲突，已保留在本机；其他数据可正常同步。"
             lastErrorDescription = nil
             lastSuccessfulUploadAt = .now
-            let remaining = try Self.prepareUpload(from: container, settings: settingsStore.snapshot,
-                                                   baseline: loadBaseline() ?? [:], baseCursor: loadChangeCursor(),
-                                                   blocked: loadBlockedHashes())
+            let latestSettings = settingsStore.snapshot
+            let latestBaseline = loadBaseline() ?? [:]
+            let latestCursor = loadChangeCursor()
+            let latestBlocked = loadBlockedHashes()
+            let remaining = try await Task.detached(priority: .utility) {
+                try Self.prepareUpload(from: container, settings: latestSettings,
+                                       baseline: latestBaseline, baseCursor: latestCursor,
+                                       blocked: latestBlocked)
+            }.value
             if !remaining.bodies.isEmpty {
                 scheduleUpload(from: modelContext, settingsStore: settingsStore)
             }

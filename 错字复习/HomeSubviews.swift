@@ -109,16 +109,6 @@ private enum DailyReviewRecordBuilder {
             }
             .sorted { $0.date > $1.date }
     }
-
-    static func section(
-        for date: Date,
-        reviewRecords: [ReviewRecord],
-        reviewItems: [ReviewItem]
-    ) -> DailyReviewRecordSection? {
-        let targetDay = Calendar.current.startOfDay(for: date)
-        return sections(reviewRecords: reviewRecords, reviewItems: reviewItems)
-            .first(where: { Calendar.current.isDate($0.date, inSameDayAs: targetDay) })
-    }
 }
 
 struct DailyReviewRecordHistoryView: View {
@@ -133,6 +123,8 @@ struct DailyReviewRecordHistoryView: View {
     }
 
     var body: some View {
+        // 同一轮渲染只整理一次历史；明细直接复用这份值类型快照。
+        let sections = self.sections
         GeometryReader { proxy in
             let isWide = proxy.size.width >= 700
 
@@ -145,10 +137,10 @@ struct DailyReviewRecordHistoryView: View {
                     )
                     .frame(maxWidth: .infinity, minHeight: proxy.size.height * 0.7)
                 } else {
-                    VStack(spacing: 16) {
+                    LazyVStack(spacing: 16) {
                         ForEach(sections) { section in
                             NavigationLink {
-                                DailyReviewRecordDayDetailView(date: section.date)
+                                DailyReviewRecordDayDetailView(section: section)
                             } label: {
                                 HStack(alignment: .center, spacing: 16) {
                                     VStack(alignment: .leading, spacing: 8) {
@@ -184,18 +176,8 @@ struct DailyReviewRecordHistoryView: View {
 }
 
 private struct DailyReviewRecordDayDetailView: View {
-    @Query(sort: \ReviewRecord.reviewedAt, order: .reverse) private var reviewRecords: [ReviewRecord]
-    @Query(sort: \ReviewItem.updatedAt, order: .reverse) private var reviewItems: [ReviewItem]
-
-    let date: Date
-
-    private var section: DailyReviewRecordSection? {
-        DailyReviewRecordBuilder.section(
-            for: date,
-            reviewRecords: reviewRecords,
-            reviewItems: reviewItems
-        )
-    }
+    // 只渲染所选日期的快照，不在导航过程中再次读取和归并整库历史。
+    let section: DailyReviewRecordSection
 
     var body: some View {
         GeometryReader { proxy in
@@ -206,115 +188,105 @@ private struct DailyReviewRecordDayDetailView: View {
             )
 
             ScrollView(showsIndicators: false) {
-                if let section {
-                    VStack(spacing: 20) {
-                        VStack(alignment: .leading, spacing: 16) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(section.title)
-                                    .font(.system(.title3, design: .rounded, weight: .bold))
-                                Text("当天共复习 \(section.reviewedWordCount) 个词")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
+                VStack(spacing: 20) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(section.title)
+                                .font(.system(.title3, design: .rounded, weight: .bold))
+                            Text("当天共复习 \(section.reviewedWordCount) 个词")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
 
-                            LazyVGrid(columns: columns, spacing: 12) {
-                                StatGridCard(icon: "character.book.closed", title: "复习词量", value: "\(section.reviewedWordCount)", tint: .blue)
-                                StatGridCard(icon: "hand.thumbsup", title: "答对", value: "\(section.correctCount)", tint: .green)
-                                StatGridCard(icon: "hand.thumbsdown", title: "答错", value: "\(section.wrongCount)", tint: .red)
-                                StatGridCard(icon: "percent", title: "正确率", value: section.accuracyText, tint: .orange)
-                            }
+                        LazyVGrid(columns: columns, spacing: 12) {
+                            StatGridCard(icon: "character.book.closed", title: "复习词量", value: "\(section.reviewedWordCount)", tint: .blue)
+                            StatGridCard(icon: "hand.thumbsup", title: "答对", value: "\(section.correctCount)", tint: .green)
+                            StatGridCard(icon: "hand.thumbsdown", title: "答错", value: "\(section.wrongCount)", tint: .red)
+                            StatGridCard(icon: "percent", title: "正确率", value: section.accuracyText, tint: .orange)
+                        }
 
-                            VStack(spacing: 12) {
-                                ForEach(section.records.indices, id: \.self) { index in
-                                    let record = section.records[index]
-                                    VStack(alignment: .leading, spacing: 10) {
-                                        HStack(alignment: .top, spacing: 12) {
-                                            Image(systemName: record.resultIconName)
-                                                .font(.title3)
-                                                .foregroundStyle(record.resultColor)
+                        LazyVStack(spacing: 12) {
+                            ForEach(section.records) { record in
+                                VStack(alignment: .leading, spacing: 10) {
+                                    HStack(alignment: .top, spacing: 12) {
+                                        Image(systemName: record.resultIconName)
+                                            .font(.title3)
+                                            .foregroundStyle(record.resultColor)
 
-                                            VStack(alignment: .leading, spacing: 8) {
-                                                HStack(spacing: 8) {
-                                                    Text(record.reviewedAtText)
-                                                        .font(.subheadline.weight(.semibold))
+                                        VStack(alignment: .leading, spacing: 8) {
+                                            HStack(spacing: 8) {
+                                                Text(record.reviewedAtText)
+                                                    .font(.subheadline.weight(.semibold))
 
-                                                    Spacer(minLength: 8)
+                                                Spacer(minLength: 8)
 
-                                                    Text(record.resultText)
-                                                        .font(.caption.weight(.bold))
-                                                        .foregroundStyle(record.resultColor)
+                                                Text(record.resultText)
+                                                    .font(.caption.weight(.bold))
+                                                    .foregroundStyle(record.resultColor)
+                                                    .padding(.horizontal, 8)
+                                                    .padding(.vertical, 4)
+                                                    .background(record.resultColor.opacity(0.12), in: Capsule())
+
+                                                if let modeText = record.modeText {
+                                                    Text(modeText)
+                                                        .font(.caption.weight(.semibold))
+                                                        .foregroundStyle(.secondary)
                                                         .padding(.horizontal, 8)
                                                         .padding(.vertical, 4)
-                                                        .background(record.resultColor.opacity(0.12), in: Capsule())
+                                                        .background(Color.secondary.opacity(0.12), in: Capsule())
+                                                }
+                                            }
 
-                                                    if let modeText = record.modeText {
-                                                        Text(modeText)
-                                                            .font(.caption.weight(.semibold))
-                                                            .foregroundStyle(.secondary)
-                                                            .padding(.horizontal, 8)
-                                                            .padding(.vertical, 4)
-                                                            .background(Color.secondary.opacity(0.12), in: Capsule())
-                                                    }
+                                            HStack(spacing: 8) {
+                                                if let itemType = record.itemType {
+                                                    TypeBadge(type: itemType)
                                                 }
 
-                                                HStack(spacing: 8) {
-                                                    if let itemType = record.itemType {
-                                                        TypeBadge(type: itemType)
-                                                    }
+                                                Text(record.content)
+                                                    .font(.headline)
+                                                    .foregroundStyle(.primary)
+                                                    .fixedSize(horizontal: false, vertical: true)
+                                            }
 
-                                                    Text(record.content)
-                                                        .font(.headline)
-                                                        .foregroundStyle(.primary)
-                                                        .fixedSize(horizontal: false, vertical: true)
-                                                }
+                                            Text(record.stageTransitionText)
+                                                .font(.caption.weight(.semibold))
+                                                .foregroundStyle(.secondary)
 
-                                                Text(record.stageTransitionText)
-                                                    .font(.caption.weight(.semibold))
+                                            if let detailText = record.detailText {
+                                                Text(detailText)
+                                                    .font(.subheadline)
+                                                    .foregroundStyle(.primary)
+                                            }
+
+                                            if let prompt = record.prompt {
+                                                Text(prompt)
+                                                    .font(.caption)
                                                     .foregroundStyle(.secondary)
+                                            }
 
-                                                if let detailText = record.detailText {
-                                                    Text(detailText)
-                                                        .font(.subheadline)
-                                                        .foregroundStyle(.primary)
-                                                }
-
-                                                if let prompt = record.prompt {
-                                                    Text(prompt)
-                                                        .font(.caption)
-                                                        .foregroundStyle(.secondary)
-                                                }
-
-                                                if let source = record.source {
-                                                    Label(source, systemImage: "bookmark.fill")
-                                                        .font(.caption)
-                                                        .foregroundStyle(.tertiary)
-                                                }
+                                            if let source = record.source {
+                                                Label(source, systemImage: "bookmark.fill")
+                                                    .font(.caption)
+                                                    .foregroundStyle(.tertiary)
                                             }
                                         }
                                     }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(14)
-                                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(14)
+                                .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
                             }
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(16)
-                        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24))
                     }
-                    .padding(isWide ? 24 : 16)
-                } else {
-                    ContentUnavailableView(
-                        "这一天没有复习记录",
-                        systemImage: "calendar.badge.exclamationmark",
-                        description: Text("这一天的记录可能已经被撤销或删除。")
-                    )
-                    .frame(maxWidth: .infinity, minHeight: proxy.size.height * 0.7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                    .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24))
                 }
+                .padding(isWide ? 24 : 16)
             }
             .background(Color(uiColor: .systemGroupedBackground))
         }
-        .navigationTitle(date.formatted(.dateTime.month().day()))
+        .navigationTitle(section.date.formatted(.dateTime.month().day()))
         .navigationBarTitleDisplayMode(.inline)
     }
 }
@@ -576,5 +548,21 @@ private struct SyncStatusIconView: View {
     var body: some View {
         Image(systemName: isRefreshing ? "arrow.triangle.2.circlepath" : "icloud")
             .symbolVariant(isRefreshing ? .circle : .none)
+    }
+}
+
+// 加载完成后的内容分流；空数组是已加载的空状态，不能进入练习页面。
+struct HomeReviewSessionContent: View {
+    let items: [ReviewItem]
+    let style: ReviewInteractionStyle
+
+    var body: some View {
+        if items.isEmpty {
+            ReviewEmptyStateView()
+        } else if style == .batch {
+            BatchReviewSessionView(items: items)
+        } else {
+            ReviewSessionView(items: items)
+        }
     }
 }

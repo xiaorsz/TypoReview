@@ -937,3 +937,19 @@ extension View {
         }
     }
 }
+
+struct ReviewEmptyStateView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("暂无待复习内容", systemImage: "checkmark.seal")
+        } description: {
+            Text("今天没有待复习的题目，或题目已在其他设备完成。返回首页可查看最新进度。")
+        } actions: {
+            Button("返回首页") { dismiss() }
+                .buttonStyle(.borderedProminent)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}

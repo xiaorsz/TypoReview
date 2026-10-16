@@ -383,7 +383,11 @@ struct HomeView: View {
             )
 
             Button {
-                activeReviewRoute = HomeReviewRoute(itemIDs: snapshot.dueItemIDs, style: reviewStyle)
+                if reviewStatus.tone == .completed {
+                    openDailyReviewRecords(source: "home completed review metric")
+                } else {
+                    activeReviewRoute = HomeReviewRoute(itemIDs: snapshot.dueItemIDs, style: reviewStyle)
+                }
             } label: {
                 heroLearningStatusTile(
                     title: "复习",
@@ -394,7 +398,7 @@ struct HomeView: View {
             .buttonStyle(.plain)
             .frame(maxWidth: .infinity)
             .accessibilityLabel("复习，\(reviewStatus.text)，\(reviewStatus.detail)")
-            .accessibilityHint("进入今日复习")
+            .accessibilityHint(reviewStatus.tone == .completed ? "查看复习记录" : "进入今日复习")
 
             Button {
                 openDictationHome(source: "home hero metric")
@@ -2446,7 +2450,6 @@ struct HomeView: View {
 
         @State private var items: [ReviewItem]?
         @State private var loadTask: Task<Void, Never>?
-        @State private var loadFailed = false
 
         private var canLoad: Bool {
             scenePhase == .active && UIApplication.shared.applicationState == .active
@@ -2455,13 +2458,7 @@ struct HomeView: View {
         var body: some View {
             Group {
                 if let items {
-                    if route.style == .batch {
-                        BatchReviewSessionView(items: items)
-                    } else {
-                        ReviewSessionView(items: items)
-                    }
-                } else if loadFailed {
-                    ContentUnavailableView("没有可复习内容", systemImage: "checkmark.seal")
+                    HomeReviewSessionContent(items: items, style: route.style)
                 } else {
                     VStack(spacing: 12) {
                         ProgressView()
@@ -2534,7 +2531,6 @@ struct HomeView: View {
                 }
 
                 items = resolvedItems
-                loadFailed = resolvedItems.isEmpty
             }
         }
     }

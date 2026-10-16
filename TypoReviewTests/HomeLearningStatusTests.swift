@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import TypoReview
 
 final class HomeLearningStatusTests: XCTestCase {
@@ -93,5 +94,22 @@ final class HomeLearningStatusTests: XCTestCase {
         XCTAssertEqual(retrying.detail, "第2轮补练")
         XCTAssertEqual(completed.tone, .completed)
         XCTAssertEqual(completed.detail, "共2轮")
+    }
+}
+
+@MainActor
+final class HomeReviewEmptyContentTests: XCTestCase {
+    func testEmptyHomeReviewRendersContentForBothModes() {
+        for style in [ReviewInteractionStyle.batch, .oneByOne] {
+            let host = UIHostingController(rootView: HomeReviewSessionContent(items: [], style: style))
+            let size = host.sizeThatFits(in: CGSize(width: 390, height: 844))
+            XCTAssertGreaterThan(size.height, 100, "空题目应显示提示，不能返回空白视图")
+        }
+    }
+
+    func testBatchReviewWithNoItemsDoesNotRenderBlankPage() {
+        let host = UIHostingController(rootView: BatchReviewSessionView(items: []))
+        let size = host.sizeThatFits(in: CGSize(width: 390, height: 844))
+        XCTAssertGreaterThan(size.height, 100, "其他入口传入空数组也应显示提示")
     }
 }

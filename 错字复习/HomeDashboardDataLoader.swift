@@ -50,17 +50,8 @@ enum HomeDashboardDataLoader {
             let taskSubtasks = ((try? context.fetch(
                 FetchDescriptor<TaskSubitem>(predicate: #Predicate<TaskSubitem> { !$0.isArchived })
             )) ?? []).map(TaskSubitemProjection.init)
-            var pointEntryDescriptor = FetchDescriptor<PointLedgerEntry>()
-            pointEntryDescriptor.propertiesToFetch = [
-                \.id,
-                \.createdAt,
-                \.amount,
-                \.idempotencyKey,
-            ]
-            let pointEntries = PointLedgerService.canonicalEntries(
-                (try? context.fetch(pointEntryDescriptor)) ?? []
-            )
-            let pointAmountsAndDates = pointEntries.map { (amount: $0.amount, createdAt: $0.createdAt) }
+            let pointSummary = (try? loadPointSummary(from: context, referenceDate: referenceDate))
+                ?? (balance: 0, earnedToday: 0)
             var rewardStateDescriptor = FetchDescriptor<PointRewardState>(
                 sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
             )
@@ -91,10 +82,8 @@ enum HomeDashboardDataLoader {
                 tasks: tasks,
                 taskExecutions: taskExecutions,
                 taskSubtasks: taskSubtasks,
-                pointBalance: pointAmountsAndDates.reduce(0) { $0 + $1.amount },
-                pointsEarnedToday: pointAmountsAndDates
-                    .filter { $0.amount > 0 && calendar.isDate($0.createdAt, inSameDayAs: referenceDate) }
-                    .reduce(0) { $0 + $1.amount },
+                pointBalance: pointSummary.balance,
+                pointsEarnedToday: pointSummary.earnedToday,
                 currentPointStreak: currentPointStreak,
                 calculationCompletedToday: calculationRounds.contains(where: \.isPerfect),
                 calculationFirstRoundCorrect: firstCalculationRound?.correctCount ?? 0,
@@ -105,4 +94,39 @@ enum HomeDashboardDataLoader {
             return source
         }
     }
+
+    static func loadPointSummary(
+        from context: ModelContext,
+        referenceDate: Date
+    ) throws -> (balance: Int, earnedToday: Int) {
+        // Keep value fields, not every SwiftData object and its duplicate group.
+        // Batched enumeration bounds the number of materialized ledger models.
+        var canonical: [String: (id: UUID, createdAt: Date, amount: Int)] = [:]
+        var descriptor = FetchDescriptor<PointLedgerEntry>()
+        descriptor.propertiesToFetch = [\.id, \.createdAt, \.amount, \.idempotencyKey]
+        try context.enumerate(descriptor, batchSize: 256) { entry in
+            let id = entry.id
+            let createdAt = entry.createdAt
+            let amount = entry.amount
+            let idempotencyKey = entry.idempotencyKey
+            let key = idempotencyKey.isEmpty ? "legacy-\(id.uuidString)" : idempotencyKey
+            if let existing = canonical[key],
+               existing.createdAt < createdAt
+                || (existing.createdAt == createdAt && existing.id.uuidString <= id.uuidString) {
+                return
+            }
+            canonical[key] = (id, createdAt, amount)
+        }
+        var balance = 0
+        var earnedToday = 0
+        let calendar = Calendar.current
+        for entry in canonical.values {
+            balance += entry.amount
+            if entry.amount > 0, calendar.isDate(entry.createdAt, inSameDayAs: referenceDate) {
+                earnedToday += entry.amount
+            }
+        }
+        return (balance, earnedToday)
+    }
+
 }

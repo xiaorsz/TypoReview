@@ -178,24 +178,81 @@ struct DataBackupPayload: Codable, @unchecked Sendable {
     static func capture(
         from modelContext: ModelContext,
         settings: AppSettingsSnapshot?,
-        mediaAssets: [MediaLibraryAsset]
+        mediaAssets: [MediaLibraryAsset],
+        recordIDs: [String: [UUID]]? = nil
     ) throws -> DataBackupPayload {
-        let reviewItems = try modelContext.fetch(FetchDescriptor<ReviewItem>()).map(ReviewItemSnapshot.init)
-        let reviewRecords = try modelContext.fetch(FetchDescriptor<ReviewRecord>()).map(ReviewRecordSnapshot.init)
-        let taskItems = try modelContext.fetch(FetchDescriptor<TaskItem>()).map(TaskItemSnapshot.init)
-        let taskCompletions = try modelContext.fetch(FetchDescriptor<TaskCompletion>()).map(TaskCompletionSnapshot.init)
-        let taskSubitems = try modelContext.fetch(FetchDescriptor<TaskSubitem>()).map(TaskSubitemSnapshot.init)
-        let taskExecutionRecords = try modelContext.fetch(FetchDescriptor<TaskExecutionRecord>()).map(TaskExecutionRecordSnapshot.init)
-        let taskSubitemExecutionRecords = try modelContext.fetch(FetchDescriptor<TaskSubitemExecutionRecord>()).map(TaskSubitemExecutionRecordSnapshot.init)
-        let dictationSessions = try modelContext.fetch(FetchDescriptor<DictationSession>()).map(DictationSessionSnapshot.init)
-        let dictationEntries = try modelContext.fetch(FetchDescriptor<DictationEntry>()).map(DictationEntrySnapshot.init)
-        let scheduleItems = try modelContext.fetch(FetchDescriptor<ScheduleItem>()).map(ScheduleItemSnapshot.init)
+        // A scoped capture is for incremental conflict checks. Ordinary backups
+        // and upload discovery continue to capture the complete store.
+        func fetch<T: PersistentModel>(
+            _ entity: String,
+            predicate: ([UUID]) -> Predicate<T>
+        ) throws -> [T] {
+            guard let recordIDs else { return try modelContext.fetch(FetchDescriptor<T>()) }
+            let ids = Array(Set(recordIDs[entity] ?? []))
+            var models: [T] = []
+            // Full verification can contain many thousands of IDs. Keep SQL
+            // predicates bounded instead of one enormous IN expression.
+            for start in stride(from: 0, to: ids.count, by: 256) {
+                let batch = Array(ids[start..<min(start + 256, ids.count)])
+                models.append(contentsOf: try modelContext.fetch(
+                    FetchDescriptor<T>(predicate: predicate(batch))
+                ))
+            }
+            return models
+        }
+        let reviewItems = try fetch("reviewItems") { ids in
+            #Predicate<ReviewItem> { ids.contains($0.id) }
+        }.map(ReviewItemSnapshot.init)
+        let reviewRecords = try fetch("reviewRecords") { ids in
+            #Predicate<ReviewRecord> { ids.contains($0.id) }
+        }.map(ReviewRecordSnapshot.init)
+        let taskItems = try fetch("taskItems") { ids in
+            #Predicate<TaskItem> { ids.contains($0.id) }
+        }.map(TaskItemSnapshot.init)
+        let taskCompletions = try fetch("taskCompletions") { ids in
+            #Predicate<TaskCompletion> { ids.contains($0.id) }
+        }.map(TaskCompletionSnapshot.init)
+        let taskSubitems = try fetch("taskSubitems") { ids in
+            #Predicate<TaskSubitem> { ids.contains($0.id) }
+        }.map(TaskSubitemSnapshot.init)
+        let taskExecutionRecords = try fetch("taskExecutionRecords") { ids in
+            #Predicate<TaskExecutionRecord> { ids.contains($0.id) }
+        }.map(TaskExecutionRecordSnapshot.init)
+        let taskSubitemExecutionRecords = try fetch("taskSubitemExecutionRecords") { ids in
+            #Predicate<TaskSubitemExecutionRecord> { ids.contains($0.id) }
+        }.map(TaskSubitemExecutionRecordSnapshot.init)
+        let dictationSessions = try fetch("dictationSessions") { ids in
+            #Predicate<DictationSession> { ids.contains($0.id) }
+        }.map(DictationSessionSnapshot.init)
+        let dictationEntries = try fetch("dictationEntries") { ids in
+            #Predicate<DictationEntry> { ids.contains($0.id) }
+        }.map(DictationEntrySnapshot.init)
+        let scheduleItems = try fetch("scheduleItems") { ids in
+            #Predicate<ScheduleItem> { ids.contains($0.id) }
+        }.map(ScheduleItemSnapshot.init)
         let mediaAssetSnapshots = mediaAssets.map(MediaAssetSnapshot.init)
-        let pointLedgerEntries = PointLedgerService.canonicalEntries(
-            try modelContext.fetch(FetchDescriptor<PointLedgerEntry>())
-        ).map(PointLedgerEntrySnapshot.init)
-        let pointRewardStates = try modelContext.fetch(FetchDescriptor<PointRewardState>()).map(PointRewardStateSnapshot.init)
-        let calculationRounds = try modelContext.fetch(FetchDescriptor<CalculationRound>()).map(CalculationRoundSnapshot.init)
+        var pointModels: [PointLedgerEntry] = try fetch("pointLedgerEntries") { ids in
+            #Predicate<PointLedgerEntry> { ids.contains($0.id) }
+        }
+        if recordIDs != nil, !pointModels.isEmpty {
+            // Include competing entries for the same reward key so scoped captures
+            // choose exactly the same canonical row as full backups.
+            let keys = Array(Set(pointModels.map(\.idempotencyKey).filter { !$0.isEmpty }))
+            for start in stride(from: 0, to: keys.count, by: 256) {
+                let batch = Array(keys[start..<min(start + 256, keys.count)])
+                pointModels.append(contentsOf: try modelContext.fetch(FetchDescriptor<PointLedgerEntry>(
+                    predicate: #Predicate<PointLedgerEntry> { batch.contains($0.idempotencyKey) }
+                )))
+            }
+        }
+        let pointLedgerEntries = PointLedgerService.canonicalEntries(pointModels)
+            .map(PointLedgerEntrySnapshot.init)
+        let pointRewardStates = try fetch("pointRewardStates") { ids in
+            #Predicate<PointRewardState> { ids.contains($0.id) }
+        }.map(PointRewardStateSnapshot.init)
+        let calculationRounds = try fetch("calculationRounds") { ids in
+            #Predicate<CalculationRound> { ids.contains($0.id) }
+        }.map(CalculationRoundSnapshot.init)
 
         return DataBackupPayload(
             settings: settings,
