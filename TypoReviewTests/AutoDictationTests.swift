@@ -5,6 +5,19 @@ import UIKit
 
 @MainActor
 final class AutoDictationTests: XCTestCase {
+    func testBoardPronunciationReadsTheAnswerThreeTimesWithPausesInItsLanguage() throws {
+        let english = SpeechUtteranceBuilder.answer(content: " apple \n", type: .englishWord, repetitions: 3)
+        XCTAssertEqual(english.map(\.speechString), ["apple", "apple", "apple"])
+        XCTAssertEqual(english.map(\.postUtteranceDelay), [0.55, 0.55, 0])
+        XCTAssertTrue(try XCTUnwrap(english.first?.voice?.language).hasPrefix("en"))
+
+        let chinese = SpeechUtteranceBuilder.answer(content: " 山川 ", type: .phrase, repetitions: 3)
+        XCTAssertEqual(chinese.map(\.speechString), ["山川", "山川", "山川"])
+        XCTAssertTrue(try XCTUnwrap(chinese.first?.voice?.language).hasPrefix("zh"))
+        XCTAssertTrue(SpeechUtteranceBuilder.answer(content: " \n", type: .englishWord, repetitions: 3).isEmpty)
+        XCTAssertTrue(SpeechUtteranceBuilder.answer(content: "apple", type: .englishWord, repetitions: 0).isEmpty)
+    }
+
     func testCorrectionReadsTheAnswerTwiceWithAPause() {
         let english = SpeechUtteranceBuilder.repeatedAnswer(content: " apple ", type: .englishWord)
         XCTAssertEqual(english.map(\.speechString), ["apple", "apple"])

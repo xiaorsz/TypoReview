@@ -113,6 +113,16 @@ enum SpeechVoicePicker {
 }
 
 enum SpeechUtteranceBuilder {
+    static func answer(content: String, type: ReviewItemType, repetitions: Int = 1) -> [AVSpeechUtterance] {
+        let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, repetitions > 0 else { return [] }
+        return (0..<repetitions).map { index in
+            let reading = utterance(text: text, voiceType: type, rate: type.isEnglish ? 0.42 : 0.36)
+            reading.postUtteranceDelay = index < repetitions - 1 ? 0.55 : 0
+            return reading
+        }
+    }
+
     static func repeatedAnswer(content: String, type: ReviewItemType) -> [AVSpeechUtterance] {
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return [] }

@@ -1,5 +1,6 @@
 import XCTest
 import SwiftData
+import SwiftUI
 @testable import TypoReview
 
 @MainActor
@@ -1009,6 +1010,151 @@ final class BoardLearningSupportTests: XCTestCase {
     private func record(_ item: ReviewItem, day: Int = 23, mode: ReviewMode = .scheduled) -> ReviewRecord {
         ReviewRecord(itemID: item.id, reviewedAt: date(day, hour: 10), result: .correct,
                      mode: mode, oldStage: 0, newStage: 1)
+    }
+
+    func testYesterdayWrongWordsUseActualSubmissionDayAndConfirmedGrades() {
+        let yesterday = DictationSession(title: "延后批改", type: .englishWord,
+                                        scheduledDate: date(20), finishedAt: date(22), reviewedAt: date(23))
+        let older = DictationSession(title: "前天听写", type: .englishWord,
+                                    finishedAt: date(21), reviewedAt: date(22))
+        let today = DictationSession(title: "今天听写", type: .englishWord,
+                                    finishedAt: date(23), reviewedAt: date(23))
+        let unconfirmed = DictationSession(title: "未确认", type: .englishWord, finishedAt: date(22))
+        let legacy = DictationSession(title: "旧记录", type: .englishWord, reviewedAt: date(22, hour: 23))
+        let sessions = [today, older, yesterday, unconfirmed, legacy]
+        let entries = sessions.map {
+            DictationEntry(sessionID: $0.id, sortOrder: 0, type: .englishWord, content: $0.title, result: .wrong)
+        }
+        let correct = DictationEntry(sessionID: yesterday.id, sortOrder: 1, type: .englishWord,
+                                     content: "correct", result: .correct)
+        let pending = DictationEntry(sessionID: yesterday.id, sortOrder: 2, type: .englishWord,
+                                     content: "pending")
+        let recitation = DictationEntry(sessionID: yesterday.id, sortOrder: 3, type: .englishSentence,
+                                        content: "A long recitation.", result: .wrong)
+        let result = BoardLearningSupport.yesterdayWrongWords(
+            sessions: sessions, entriesBySession: Dictionary(grouping: entries + [correct, pending, recitation], by: \.sessionID),
+            on: date(23), calendar: calendar
+        )
+        XCTAssertEqual(result.map(\.content), ["延后批改", "旧记录"])
+    }
+
+    func testYesterdayWrongWordsDeduplicateAndKeepStableOrderAndPrompt() {
+        let session = DictationSession(title: "单词", type: .englishWord, reviewedAt: date(22))
+        let first = DictationEntry(sessionID: session.id, sortOrder: 0, type: .englishWord,
+                                   content: "  Apple\n", result: .wrong)
+        let second = DictationEntry(sessionID: session.id, sortOrder: 1, type: .englishWord,
+                                    content: "apple", prompt: "苹果", result: .wrong)
+        let last = DictationEntry(sessionID: session.id, sortOrder: 2, type: .phrase,
+                                  content: "山川", prompt: "shān chuān", result: .wrong)
+        let blank = DictationEntry(sessionID: session.id, sortOrder: 3, type: .englishWord,
+                                   content: "  ", result: .wrong)
+        let result = BoardLearningSupport.yesterdayWrongWords(
+            sessions: [session, session], entriesBySession: [session.id: [last, second, first, blank, first]],
+            on: date(23), calendar: calendar
+        )
+        XCTAssertEqual(result.map(\.content), ["Apple", "山川"])
+        XCTAssertEqual(result.first?.mistakeCount, 2)
+        XCTAssertEqual(result.first?.prompt, "苹果")
+    }
+
+    func testYesterdayWrongWordsCrossMonthAndLoadReviewedSessionsFromStore() throws {
+        let context = try ModelContext(ModelContainer(
+            for: ReviewItem.self, ReviewRecord.self, ReviewDailyPlan.self, DictationSession.self,
+            DictationEntry.self, TaskItem.self, TaskSubitem.self, TaskExecutionRecord.self, ScheduleItem.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        ))
+        let nextMonth = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: date(30)))
+        let session = DictationSession(title: "月底听写", type: .englishWord,
+                                        finishedAt: date(30, hour: 23), reviewedAt: nextMonth)
+        let entry = DictationEntry(sessionID: session.id, sortOrder: 0, type: .englishWord,
+                                   content: "tomorrow", result: .wrong)
+        context.insert(session)
+        context.insert(entry)
+        try context.save()
+        let source = try BoardDataSource.load(from: context.container)
+        XCTAssertTrue(source.sessions.isEmpty)
+        let result = BoardLearningSupport.yesterdayWrongWords(
+            sessions: source.reviewedSessions, entriesBySession: source.entriesBySession,
+            on: nextMonth, calendar: calendar
+        )
+        XCTAssertEqual(result.map(\.content), ["tomorrow"])
+    }
+
+    func testBoardWordPagesFitTabletSizesAndIncludeEveryWordExactlyOnce() {
+        let landscape = BoardWordPageLayout(size: CGSize(width: 1024, height: 744))
+        let large = BoardWordPageLayout(size: CGSize(width: 1366, height: 1000))
+        let portrait = BoardWordPageLayout(size: CGSize(width: 768, height: 1000))
+        XCTAssertEqual(landscape.capacity, 6)
+        XCTAssertEqual(large.capacity, 8)
+        XCTAssertEqual(portrait.capacity, 6)
+        for layout in [landscape, large, portrait, BoardWordPageLayout(size: CGSize(width: 390, height: 780))] {
+            for count in [0, 1, 6, 8, 23, 100] {
+                let ranges = (0..<layout.pageCount(for: count)).map { layout.range(pageIndex: $0, count: count) }
+                XCTAssertEqual(ranges.flatMap { Array($0) }, Array(0..<count))
+                XCTAssertTrue(ranges.allSatisfy { $0.count <= layout.capacity })
+            }
+        }
+    }
+
+    func testBoardRotationWaitsFiveMinutesWrapsAndRestartsAfterManualSelection() {
+        var rotation = BoardPageRotation()
+        let start = date(23)
+        rotation.restart(at: start)
+        rotation.advanceIfNeeded(pageCount: 3, at: start.addingTimeInterval(299))
+        XCTAssertEqual(rotation.selectedPage, 0)
+        rotation.advanceIfNeeded(pageCount: 3, at: start.addingTimeInterval(300))
+        XCTAssertEqual(rotation.selectedPage, 1)
+        rotation.select(2, pageCount: 3, at: start.addingTimeInterval(310))
+        rotation.advanceIfNeeded(pageCount: 3, at: start.addingTimeInterval(609))
+        XCTAssertEqual(rotation.selectedPage, 2)
+        rotation.advanceIfNeeded(pageCount: 3, at: start.addingTimeInterval(610))
+        XCTAssertEqual(rotation.selectedPage, 0)
+        rotation.select(-1, pageCount: 3, at: start)
+        XCTAssertEqual(rotation.selectedPage, 2)
+        rotation.advanceIfNeeded(pageCount: 1, at: start.addingTimeInterval(300))
+        XCTAssertEqual(rotation.selectedPage, 0)
+    }
+
+    func testRenderYesterdayWordPagesForVisualReview() throws {
+        let words = [
+            ("beautiful", "adj. 美丽的；漂亮的", ReviewItemType.englishWord),
+            ("environment", "n. 环境；周围的状况", .englishWord),
+            ("山川", "shān chuān", .phrase),
+            ("take care of", "照顾；照料", .englishWord),
+            ("波光粼粼", "bō guāng lín lín", .phrase),
+            ("Wednesday", "n. 星期三", .englishWord),
+            ("responsibility", "n. 责任；职责", .englishWord),
+            ("迫不及待", "pò bù jí dài", .phrase)
+        ].enumerated().map { index, value in
+            BoardWrongWord(id: "\(index)", type: value.2, content: value.0, prompt: value.1, mistakeCount: 1)
+        }
+        for (name, size, empty, pageIndex) in [
+            ("landscape-six", CGSize(width: 1024, height: 744), false, 0),
+            ("large-eight", CGSize(width: 1366, height: 1000), false, 0),
+            ("portrait-six", CGSize(width: 768, height: 1000), false, 0),
+            ("speaking", CGSize(width: 1024, height: 744), false, 0),
+            ("last-page", CGSize(width: 1024, height: 744), false, 1),
+            ("empty", CGSize(width: 1024, height: 744), true, 0),
+            ("phone", CGSize(width: 390, height: 780), false, 0)
+        ] {
+            let layout = BoardWordPageLayout(size: size)
+            let pageCount = layout.pageCount(for: empty ? 0 : words.count)
+            let page = VStack(spacing: 0) {
+                BoardWrongWordsPage(words: empty ? [] : words, yesterday: date(22), pageIndex: pageIndex, layout: layout,
+                                    speakingWordID: name == "speaking" ? words.first?.id : nil)
+                BoardPageControls(selectedPage: pageIndex + 1, pageCount: pageCount + 1, wordPageCount: pageCount,
+                                  compact: size.width < 650, onSelect: { _ in })
+            }
+                .frame(width: size.width, height: size.height)
+                .background(LinearGradient(colors: [Color(red: 0.07, green: 0.12, blue: 0.22),
+                                                   Color(red: 0.05, green: 0.52, blue: 0.48)],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing))
+            let renderer = ImageRenderer(content: page)
+            let attachment = XCTAttachment(image: try XCTUnwrap(renderer.uiImage))
+            attachment.name = "board-\(name)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
     }
 
     func testBoardShowsOnlyUnfinishedItemsFromTodaysPlan() {

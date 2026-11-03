@@ -23,6 +23,10 @@ struct DashboardBoardView: View {
     @State private var remindedTaskReminderDay = Calendar.current.startOfDay(for: Date.now)
     @State private var shouldResumePlaybackAfterTaskReminder = false
     @State private var minimizedFullscreenVideoAssetID: UUID?
+    @State private var pageRotation = BoardPageRotation()
+    @StateObject private var wordSpeaker = DictationPlaybackDriver()
+    @State private var speakingWordID: String?
+    @State private var shouldResumePlaybackAfterWord = false
 
     private struct BoardSnapshot {
         let childName: String
@@ -36,6 +40,8 @@ struct DashboardBoardView: View {
         let todayHeadline: String
         let boardSettings: AppSettings?
         let enabledMediaAssets: [MediaLibraryAsset]
+        let yesterdayWrongWords: [BoardWrongWord]
+        let yesterday: Date
     }
 
     private struct BoardTaskSnapshot {
@@ -123,7 +129,12 @@ struct DashboardBoardView: View {
             todaySchedules: todaySchedules,
             todayHeadline: parts.isEmpty ? "\(childName) 今天都完成了" : "\(childName) 今天还有 \(parts.joined(separator: "、"))",
             boardSettings: boardSettings,
-            enabledMediaAssets: enabledMediaAssets
+            enabledMediaAssets: enabledMediaAssets,
+            yesterdayWrongWords: BoardLearningSupport.yesterdayWrongWords(
+                sessions: source.reviewedSessions, entriesBySession: source.entriesBySession,
+                on: date, calendar: calendar
+            ),
+            yesterday: calendar.date(byAdding: .day, value: -1, to: calendar.startOfDay(for: date)) ?? date
         )
     }
 
@@ -314,10 +325,12 @@ struct DashboardBoardView: View {
             refreshBoardSnapshot(reason: "onAppear")
             reinforceIdleTimerOverrideIfNeeded()
             lastBoardInteractionAt = .now
+            pageRotation.restart(at: .now)
             isExitButtonVisible = false
             syncBoardPlayback(for: boardNow)
         }
         .onDisappear {
+            stopBoardWordPronunciation(resumePlayback: false)
             shouldResumePlaybackAfterTaskReminder = false
             taskReminderSpeaker.stop()
             playbackCoordinator.stop()
@@ -329,6 +342,7 @@ struct DashboardBoardView: View {
         .onReceive(boardPlaybackTimer) {
             guard canRenderLiveContent else { return }
             reinforceIdleTimerOverrideIfNeeded()
+            guard !wordSpeaker.isPlaying else { return }
             checkTaskReminderIfNeeded(at: $0)
             guard !taskReminderSpeaker.isSpeaking else { return }
             syncBoardPlayback(for: $0)
@@ -338,11 +352,13 @@ struct DashboardBoardView: View {
                 refreshBoardSnapshot(reason: "scenePhase active")
                 reinforceIdleTimerOverrideIfNeeded()
                 lastBoardInteractionAt = .now
+                pageRotation.restart(at: .now)
                 isExitButtonVisible = false
-                if !taskReminderSpeaker.isSpeaking && !shouldResumePlaybackAfterTaskReminder {
+                if !taskReminderSpeaker.isSpeaking && !shouldResumePlaybackAfterTaskReminder && !wordSpeaker.isPlaying {
                     syncBoardPlayback(for: boardNow)
                 }
             } else if newPhase == .background {
+                stopBoardWordPronunciation(resumePlayback: false)
                 shouldResumePlaybackAfterTaskReminder = false
                 taskReminderSpeaker.stop()
                 playbackCoordinator.stop()
@@ -378,6 +394,10 @@ struct DashboardBoardView: View {
     private func boardActiveView(_ snapshot: BoardSnapshot) -> some View {
         GeometryReader { proxy in
             ScrollViewReader { scrollProxy in
+                let wordLayout = BoardWordPageLayout(size: proxy.size)
+                let wordPageCount = wordLayout.pageCount(for: snapshot.yesterdayWrongWords.count)
+                let pageCount = 1 + wordPageCount
+                let selectedPage = min(pageRotation.selectedPage, pageCount - 1)
                 ZStack {
                     LinearGradient(
                         colors: [
@@ -390,36 +410,73 @@ struct DashboardBoardView: View {
                     )
                     .ignoresSafeArea()
 
-                    ScrollView(.vertical, showsIndicators: true) {
-                        VStack(spacing: 28) {
-                            Color.clear
-                                .frame(height: 1)
-                                .id(boardTopAnchorID)
+                    VStack(spacing: 0) {
+                        if selectedPage == 0 {
+                            ScrollView(.vertical, showsIndicators: true) {
+                                VStack(spacing: 28) {
+                                    Color.clear
+                                        .frame(height: 1)
+                                        .id(boardTopAnchorID)
 
-                            boardHeader(snapshot)
-                            boardStats(snapshot)
-                            boardContent(snapshot)
+                                    boardHeader(snapshot)
+                                    boardStats(snapshot)
+                                    boardContent(snapshot)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .top)
+                                .padding(.top, boardTopInset(for: proxy))
+                                .padding(.horizontal, 36)
+                                .padding(.bottom, 28)
+                            }
+                            .scrollBounceBehavior(.basedOnSize)
+                        } else {
+                            BoardWrongWordsPage(
+                                words: snapshot.yesterdayWrongWords,
+                                yesterday: snapshot.yesterday,
+                                pageIndex: selectedPage - 1,
+                                layout: wordLayout,
+                                speakingWordID: speakingWordID,
+                                onPronounce: pronounceBoardWord
+                            )
+                            .id(selectedPage)
+                            .transition(.opacity)
                         }
-                        .frame(maxWidth: .infinity, alignment: .top)
-                        .padding(.top, boardTopInset(for: proxy))
-                        .padding(.horizontal, 36)
-                        .padding(.bottom, 28)
-                        .contentShape(Rectangle())
-                        .simultaneousGesture(
-                            DragGesture().onChanged { _ in
-                                recordBoardInteraction()
-                            }
-                        )
-                        .simultaneousGesture(
-                            TapGesture().onEnded {
-                                recordBoardInteraction()
-                            }
-                        )
+
+                        BoardPageControls(selectedPage: selectedPage, pageCount: pageCount,
+                                          wordPageCount: wordPageCount, compact: proxy.size.width < 650) { index in
+                            selectBoardPage(index, pageCount: pageCount)
+                        }
                     }
-                    .scrollBounceBehavior(.basedOnSize)
+                    .contentShape(Rectangle())
+                    .simultaneousGesture(DragGesture().onChanged { _ in recordBoardInteraction() })
+                    .simultaneousGesture(TapGesture().onEnded { recordBoardInteraction() })
                     .onReceive(boardInactivityTimer) { _ in
                         guard canRenderLiveContent else { return }
                         autoReturnBoardToTopIfNeeded(using: scrollProxy)
+                        let now = Date.now
+                        if !Calendar.current.isDate(boardNow, inSameDayAs: now) {
+                            refreshBoardSnapshot(reason: "day changed")
+                            pageRotation.select(0, pageCount: pageCount, at: now)
+                        }
+                        guard scenePhase == .active, !shouldShowFullscreenBoardVideo,
+                              !taskReminderSpeaker.isSpeaking, !wordSpeaker.isPlaying else {
+                            pageRotation.restart(at: now)
+                            return
+                        }
+                        withAnimation(.easeInOut(duration: 0.35)) {
+                            pageRotation.advanceIfNeeded(
+                                pageCount: snapshot.yesterdayWrongWords.isEmpty ? 1 : pageCount, at: now
+                            )
+                        }
+                    }
+                    .onChange(of: wordLayout.capacity) { _, _ in
+                        pageRotation.select(0, pageCount: pageCount, at: .now)
+                    }
+                    .onChange(of: pageCount) { _, _ in
+                        pageRotation.select(min(pageRotation.selectedPage, pageCount - 1),
+                                            pageCount: pageCount, at: .now)
+                    }
+                    .onChange(of: selectedPage) { _, _ in
+                        stopBoardWordPronunciation()
                     }
 
                     if isExitButtonVisible {
@@ -439,6 +496,46 @@ struct DashboardBoardView: View {
                 .animation(.easeInOut(duration: 0.2), value: shouldShowFullscreenBoardVideo)
             }
         }
+    }
+
+    private func selectBoardPage(_ index: Int, pageCount: Int) {
+        recordBoardInteraction()
+        withAnimation(.easeInOut(duration: 0.3)) {
+            pageRotation.select(index, pageCount: pageCount, at: .now)
+        }
+    }
+
+    private func pronounceBoardWord(_ word: BoardWrongWord) {
+        guard scenePhase == .active, !taskReminderSpeaker.isSpeaking else { return }
+        recordBoardInteraction()
+        pageRotation.restart(at: .now)
+        if speakingWordID == word.id, wordSpeaker.isPlaying {
+            stopBoardWordPronunciation()
+            return
+        }
+
+        let shouldResume = shouldResumePlaybackAfterWord || playbackCoordinator.isPlaying
+        if playbackCoordinator.isPlaying { playbackCoordinator.pauseForTemporaryInterruption() }
+        speakingWordID = word.id
+        shouldResumePlaybackAfterWord = shouldResume
+        wordSpeaker.playAnswer(content: word.content, type: word.type, repetitions: 3) { _ in
+            speakingWordID = nil
+            if shouldResumePlaybackAfterWord, scenePhase == .active, canRenderLiveContent {
+                playbackCoordinator.resumeAfterTemporaryInterruption()
+            }
+            shouldResumePlaybackAfterWord = false
+            pageRotation.restart(at: .now)
+        }
+    }
+
+    private func stopBoardWordPronunciation(resumePlayback: Bool = true) {
+        guard speakingWordID != nil || wordSpeaker.isPlaying else { return }
+        wordSpeaker.stop()
+        speakingWordID = nil
+        if resumePlayback, shouldResumePlaybackAfterWord, scenePhase == .active, canRenderLiveContent {
+            playbackCoordinator.resumeAfterTemporaryInterruption()
+        }
+        shouldResumePlaybackAfterWord = false
     }
 
     private var shouldShowFullscreenBoardVideo: Bool {
@@ -1300,6 +1397,333 @@ private struct BoardTextItem: Identifiable {
     let detail: String
 }
 
+struct BoardPageControls: View {
+    let selectedPage: Int
+    let pageCount: Int
+    let wordPageCount: Int
+    let compact: Bool
+    let onSelect: (Int) -> Void
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Button {
+                onSelect(0)
+            } label: {
+                Label("任务总览", systemImage: "square.grid.2x2.fill")
+                    .labelStyle(BoardNavigationLabelStyle(compact: compact))
+                    .foregroundStyle(selectedPage == 0 ? .white : .white.opacity(0.6))
+            }
+            .buttonStyle(.plain)
+
+            Capsule().fill(.white.opacity(0.2)).frame(width: 1, height: 18)
+
+            Button {
+                onSelect(1)
+            } label: {
+                Label("昨日错词", systemImage: "character.book.closed.fill")
+                    .labelStyle(BoardNavigationLabelStyle(compact: compact))
+                    .foregroundStyle(selectedPage > 0 ? .white : .white.opacity(0.6))
+            }
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 0)
+
+            if compact {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(.white.opacity(0.55))
+            } else {
+                Text("每 5 分钟换屏")
+                    .foregroundStyle(.white.opacity(0.55))
+            }
+
+            Button { onSelect(selectedPage - 1) } label: {
+                Image(systemName: "chevron.left").frame(width: 36, height: 40)
+            }
+            .accessibilityLabel("上一屏")
+
+            Text("\(selectedPage + 1) / \(pageCount)")
+                .monospacedDigit()
+                .accessibilityLabel("第 \(selectedPage + 1) 屏，共 \(pageCount) 屏；错词共 \(wordPageCount) 屏")
+
+            Button { onSelect(selectedPage + 1) } label: {
+                Image(systemName: "chevron.right").frame(width: 36, height: 40)
+            }
+            .accessibilityLabel("下一屏")
+        }
+        .font(.system(size: 14, weight: .semibold, design: .rounded))
+        .foregroundStyle(.white)
+        .buttonStyle(.plain)
+        .padding(.horizontal, compact ? 16 : 28)
+        .padding(.vertical, 8)
+        .background(.black.opacity(0.14))
+    }
+}
+
+private struct BoardNavigationLabelStyle: LabelStyle {
+    let compact: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 6) {
+            configuration.icon
+            if !compact { configuration.title }
+        }
+        .frame(minHeight: 40)
+    }
+}
+
+struct BoardWrongWord: Identifiable {
+    let id: String
+    let type: ReviewItemType
+    let content: String
+    var prompt: String
+    var mistakeCount: Int
+}
+
+/// Capacity is based on the whole board viewport, including its fixed navigation.
+struct BoardWordPageLayout: Equatable {
+    let columns: Int
+    let rows: Int
+    let horizontalPadding: CGFloat
+    let headerHeight: CGFloat
+    let verticalPadding: CGFloat
+
+    init(size: CGSize) {
+        horizontalPadding = size.width >= 700 ? 36 : 20
+        headerHeight = size.height < 500 ? 76 : (size.width >= 700 ? 120 : 100)
+        verticalPadding = size.height < 500 ? 12 : 24
+        columns = min(4, max(1, Int((size.width - horizontalPadding * 2 + 16) / 276)))
+        let gridHeight = size.height - 56 - verticalPadding * 2 - headerHeight - 60
+        rows = min(columns >= 3 ? 2 : 3, max(1, Int((gridHeight + 16) / 196)))
+    }
+
+    var capacity: Int { columns * rows }
+
+    func pageCount(for count: Int) -> Int {
+        max(1, (count + capacity - 1) / capacity)
+    }
+
+    func range(pageIndex: Int, count: Int) -> Range<Int> {
+        let start = min(max(0, pageIndex) * capacity, count)
+        return start..<min(start + capacity, count)
+    }
+}
+
+struct BoardPageRotation {
+    static let interval: TimeInterval = 5 * 60
+    private(set) var selectedPage = 0
+    private(set) var nextSwitchAt = Date.now.addingTimeInterval(interval)
+
+    mutating func restart(at date: Date) {
+        nextSwitchAt = date.addingTimeInterval(Self.interval)
+    }
+
+    mutating func select(_ index: Int, pageCount: Int, at date: Date) {
+        let count = max(1, pageCount)
+        selectedPage = ((index % count) + count) % count
+        restart(at: date)
+    }
+
+    mutating func advanceIfNeeded(pageCount: Int, at date: Date) {
+        guard date >= nextSwitchAt else { return }
+        select(selectedPage + 1, pageCount: pageCount, at: date)
+    }
+}
+
+struct BoardWrongWordsPage: View {
+    let words: [BoardWrongWord]
+    let yesterday: Date
+    let pageIndex: Int
+    let layout: BoardWordPageLayout
+    var speakingWordID: String? = nil
+    var onPronounce: (BoardWrongWord) -> Void = { _ in }
+
+    private let accent = Color(red: 0.61, green: 0.90, blue: 0.79)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            header.frame(height: layout.headerHeight)
+
+            GeometryReader { proxy in
+                if words.isEmpty {
+                    emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    let range = layout.range(pageIndex: pageIndex, count: words.count)
+                    let cardHeight = max(1, (proxy.size.height - CGFloat(layout.rows - 1) * 16) / CGFloat(layout.rows))
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16), count: layout.columns), spacing: 16) {
+                        ForEach(Array(range), id: \.self) { index in
+                            BoardWrongWordCard(word: words[index], number: index + 1,
+                                               compact: cardHeight < 190,
+                                               isSpeaking: speakingWordID == words[index].id,
+                                               onPronounce: { onPronounce(words[index]) })
+                                .frame(height: cardHeight)
+                        }
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                Image(systemName: "sparkle")
+                Text(words.isEmpty ? "新的今天，继续积累一点点进步。" : "看一看正确写法，把昨天的易错词再记牢一点。")
+            }
+            .font(.system(size: 14, weight: .medium, design: .rounded))
+            .foregroundStyle(.white.opacity(0.65))
+            .frame(height: 20)
+        }
+        .padding(.horizontal, layout.horizontalPadding)
+        .padding(.vertical, layout.verticalPadding)
+    }
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: 20) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "sun.horizon.fill")
+                    Text("温故知新 · \(yesterday.formatted(.dateTime.month().day()))")
+                }
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .foregroundStyle(accent)
+
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text("昨日听写错词")
+                        .font(.system(size: layout.headerHeight < 100 ? 26 : 34, weight: .bold, design: .rounded))
+                    Text("\(words.count) 个")
+                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        .foregroundStyle(accent)
+                }
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+
+                if layout.headerHeight >= 100 {
+                    Text(words.isEmpty ? "昨天已批改的听写中没有错词" : "正确词形 · 点按喇叭连读 3 遍")
+                        .font(.system(size: 16, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.65))
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            if layout.columns >= 2 {
+                VStack(alignment: .trailing, spacing: 8) {
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                        Text(context.date, format: .dateTime.hour().minute())
+                            .font(.system(size: 42, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                    }
+                    Text("错词 \(pageIndex + 1) / \(layout.pageCount(for: words.count)) 屏")
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+                .foregroundStyle(.white)
+            }
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "checkmark.seal")
+                .font(.system(size: 56, weight: .light))
+                .foregroundStyle(accent)
+            Text("昨天没有已确认的听写错词")
+                .font(.system(size: 26, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+            Text("有新的批改结果时，会自动展示在这里")
+                .font(.system(size: 17, weight: .medium, design: .rounded))
+                .foregroundStyle(.white.opacity(0.65))
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 28))
+        .overlay {
+            RoundedRectangle(cornerRadius: 28).stroke(.white.opacity(0.12), lineWidth: 1)
+        }
+    }
+}
+
+private struct BoardWrongWordCard: View {
+    let word: BoardWrongWord
+    let number: Int
+    let compact: Bool
+    let isSpeaking: Bool
+    let onPronounce: () -> Void
+
+    private var ink: Color { Color(red: 0.10, green: 0.20, blue: 0.26) }
+    private var tint: Color {
+        word.type.isEnglish ? Color(red: 0.24, green: 0.40, blue: 0.68) : Color(red: 0.12, green: 0.45, blue: 0.39)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(String(format: "%02d", number))
+                    .font(.system(size: 13, weight: .bold, design: .monospaced))
+                    .foregroundStyle(tint.opacity(0.6))
+                Spacer()
+                Text(word.type.isEnglish ? "ENGLISH" : "中文")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .tracking(word.type.isEnglish ? 1.5 : 2)
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(tint.opacity(0.08), in: Capsule())
+                if word.mistakeCount > 1 {
+                    Text("错 \(word.mistakeCount) 次")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(tint)
+                }
+
+                Button(action: onPronounce) {
+                    Image(systemName: isSpeaking ? "speaker.wave.2.fill" : "speaker.wave.2")
+                        .font(.system(size: 17, weight: .semibold))
+                        .symbolEffect(.variableColor, isActive: isSpeaking)
+                        .foregroundStyle(isSpeaking ? .white : tint)
+                        .frame(width: 40, height: 40)
+                        .background(isSpeaking ? tint : tint.opacity(0.09), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isSpeaking ? "停止\(word.content)的发音" : "连续朗读\(word.content)三遍")
+                .help("连读 3 遍")
+            }
+
+            Spacer(minLength: compact ? 8 : 12)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(word.content)
+                    .font(.system(size: compact ? 46 : 56, weight: .bold, design: .rounded))
+                    .foregroundStyle(isSpeaking ? tint : ink)
+                    .lineLimit(word.type.isEnglish && !word.content.contains(" ") ? 1 : 2)
+                    .minimumScaleFactor(0.55)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                if !word.prompt.isEmpty {
+                    Text(word.prompt)
+                        .font(.system(size: compact ? 15 : 17, weight: .medium, design: .rounded))
+                        .foregroundStyle(ink.opacity(0.65))
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.8)
+                }
+            }
+
+            Spacer(minLength: compact ? 8 : 12)
+            Capsule().fill(tint.opacity(0.3)).frame(width: 32, height: 3)
+        }
+        .padding(compact ? 18 : 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .background(
+            LinearGradient(colors: [.white, Color(red: 0.93, green: 0.97, blue: 0.96)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing),
+            in: RoundedRectangle(cornerRadius: 24)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 24)
+                .stroke(isSpeaking ? tint : .white.opacity(0.7), lineWidth: isSpeaking ? 2 : 1)
+        }
+        .shadow(color: .black.opacity(0.08), radius: 12, y: 6)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 @MainActor
 private final class BoardTaskReminderSpeaker: NSObject, ObservableObject {
     @Published var isSpeaking = false
@@ -1619,6 +2043,52 @@ private struct BoardScheduleStatCard: View {
 /// The board shows today's unfinished review plan and due, unsubmitted dictations.
 @MainActor
 enum BoardLearningSupport {
+    static func yesterdayWrongWords(
+        sessions: [DictationSession],
+        entriesBySession: [UUID: [DictationEntry]],
+        on date: Date,
+        calendar: Calendar = .current
+    ) -> [BoardWrongWord] {
+        let today = calendar.startOfDay(for: date)
+        guard let yesterday = calendar.date(byAdding: .day, value: -1, to: today) else { return [] }
+        // Use the actual submission day, including late grading. Older sessions
+        // without a submission timestamp fall back to their confirmed review day.
+        let yesterdaySessions = sessions.filter { session in
+            guard let reviewedAt = session.reviewedAt else { return false }
+            let completedAt = session.finishedAt ?? reviewedAt
+            return completedAt >= yesterday && completedAt < today
+        }.sorted {
+            let lhs = $0.finishedAt ?? $0.reviewedAt ?? .distantPast
+            let rhs = $1.finishedAt ?? $1.reviewedAt ?? .distantPast
+            return lhs == rhs ? $0.id.uuidString < $1.id.uuidString : lhs < rhs
+        }
+
+        var words: [BoardWrongWord] = []
+        var indexByKey: [String: Int] = [:]
+        var seenEntryIDs = Set<UUID>()
+        for session in yesterdaySessions {
+            let entries = (entriesBySession[session.id] ?? []).sorted {
+                $0.sortOrder == $1.sortOrder ? $0.id.uuidString < $1.id.uuidString : $0.sortOrder < $1.sortOrder
+            }
+            for entry in entries where entry.result == .wrong && !entry.type.isRecitation {
+                guard seenEntryIDs.insert(entry.id).inserted else { continue }
+                let content = ReviewContentIdentity.displayContent(entry.content)
+                guard !content.isEmpty else { continue }
+                let key = ReviewContentIdentity.key(type: entry.type, content: content)
+                let prompt = ReviewContentIdentity.displayContent(entry.prompt)
+                if let index = indexByKey[key] {
+                    words[index].mistakeCount += 1
+                    if words[index].prompt.isEmpty { words[index].prompt = prompt }
+                } else {
+                    indexByKey[key] = words.count
+                    words.append(BoardWrongWord(id: key, type: entry.type, content: content,
+                                                prompt: prompt, mistakeCount: 1))
+                }
+            }
+        }
+        return words
+    }
+
     static func pendingReviewItems(
         items: [ReviewItem],
         records: [ReviewRecord],
@@ -1689,6 +2159,7 @@ struct BoardDataSource {
     let reviewRecords: [ReviewRecord]
     let reviewDailyPlans: [ReviewDailyPlan]
     let sessions: [DictationSession]
+    let reviewedSessions: [DictationSession]
     let entriesBySession: [UUID: [DictationEntry]]
     let tasks: [TaskItem]
     let subtasks: [TaskSubitem]
@@ -1705,6 +2176,7 @@ struct BoardDataSource {
                 reviewRecords: try context.fetch(FetchDescriptor<ReviewRecord>()),
                 reviewDailyPlans: try context.fetch(FetchDescriptor<ReviewDailyPlan>()),
                 sessions: try context.fetch(FetchDescriptor<DictationSession>(predicate: #Predicate { $0.reviewedAt == nil })),
+                reviewedSessions: try context.fetch(FetchDescriptor<DictationSession>(predicate: #Predicate { $0.reviewedAt != nil })),
                 entriesBySession: Dictionary(grouping: try context.fetch(FetchDescriptor<DictationEntry>()), by: \.sessionID),
                 tasks: try context.fetch(FetchDescriptor<TaskItem>()),
                 subtasks: try context.fetch(FetchDescriptor<TaskSubitem>(predicate: #Predicate { !$0.isArchived })),

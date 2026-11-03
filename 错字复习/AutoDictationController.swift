@@ -33,6 +33,10 @@ final class DictationPlaybackDriver: NSObject, ObservableObject, DictationPlayba
         play(SpeechUtteranceBuilder.repeatedAnswer(content: content, type: type)) { _ in }
     }
 
+    func playAnswer(content: String, type: ReviewItemType, repetitions: Int = 1, completion: @escaping (Bool) -> Void) {
+        play(SpeechUtteranceBuilder.answer(content: content, type: type, repetitions: repetitions), completion: completion)
+    }
+
     private func play(_ utterances: [AVSpeechUtterance], phonetic: String? = nil, completion: @escaping (Bool) -> Void) {
         stop()
         guard let firstUtterance = utterances.first else { completion(false); return }
