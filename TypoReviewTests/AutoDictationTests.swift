@@ -1,9 +1,19 @@
+import AVFoundation
 import XCTest
 import UIKit
 @testable import TypoReview
 
 @MainActor
 final class AutoDictationTests: XCTestCase {
+    func testCorrectionReadsTheAnswerTwiceWithAPause() {
+        let english = SpeechUtteranceBuilder.repeatedAnswer(content: " apple ", type: .englishWord)
+        XCTAssertEqual(english.map(\.speechString), ["apple", "apple"])
+        XCTAssertGreaterThan(english.first?.postUtteranceDelay ?? 0, 0)
+
+        let chinese = SpeechUtteranceBuilder.repeatedAnswer(content: "你好", type: .phrase)
+        XCTAssertEqual(chinese.map(\.speechString), ["你好", "你好"])
+    }
+
     private final class Playback: DictationPlayback {
         var calls: [(String, (Bool) -> Void)] = []
         func play(content: String, type: ReviewItemType, prompt: String, completion: @escaping (Bool) -> Void) {

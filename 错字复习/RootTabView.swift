@@ -39,6 +39,7 @@ struct RootTabView: View {
     @State private var hasStartedIOS17BackgroundShield = false
     @State private var selectedLegacyTab: LegacyTab = .home
     @State private var visitedLegacyTabs: Set<LegacyTab> = [.home]
+    @State private var homeDashboardCache = HomeDashboardCache()
 
     private enum LegacyTab: Hashable {
         case home
@@ -66,6 +67,7 @@ struct RootTabView: View {
                 }
             }
         }
+        .environment(homeDashboardCache)
         .onChange(of: selectedLegacyTab) { _, newTab in
             markLegacyTabVisited(newTab)
             #if DEBUG
@@ -127,6 +129,7 @@ struct RootTabView: View {
             endCloudKitSettleBackgroundTask()
         }
         .onReceive(NotificationCenter.default.publisher(for: .NSPersistentStoreRemoteChange)) { _ in
+            homeDashboardCache.invalidate()
             #if DEBUG
             DebugPerf.mark("RootTabView received NSPersistentStoreRemoteChange")
             #endif
@@ -179,6 +182,7 @@ struct RootTabView: View {
             AppDataChangeCenter.post()
         }
         .onReceive(NotificationCenter.default.publisher(for: .appDataDidChange)) { notification in
+            homeDashboardCache.invalidate()
             guard canRefreshLiveAppState else { return }
             guard AppDataChangeCenter.requiresUpload(notification) else { return }
             ServerSyncCoordinator.shared.scheduleUpload(

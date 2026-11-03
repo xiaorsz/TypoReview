@@ -1,13 +1,15 @@
 import SwiftUI
-import AVFoundation
 import SwiftData
 
 struct ReviewSessionView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @AppStorage(AIProvider.preferenceKey) private var aiProvider = AIProvider.deepSeek
     @Environment(AppSettingsStore.self) private var settings
 
     @State private var sessionItems: [ReviewItem]
+    let handwriting: HandwrittenPractice?
+    @State private var navigateToHandwritingResults = false
     @State private var currentIndex = 0
     @State private var completedCount = 0
     @State private var wrongCount = 0
@@ -20,6 +22,8 @@ struct ReviewSessionView: View {
     @State private var reviewSessionID = UUID()
     @State private var accuracyBonusAmount = 0
     @State private var saveErrorMessage: String?
+    @State private var correctionRequest: CorrectionPracticeRequest?
+    @State private var completedCopies: [UUID: Int] = [:]
     @State private var syncNoticeMessage: String?
     @State private var learningSessionSummary: LearningSessionSummaryResult?
     @State private var learningSessionSummaryInputHash = ""
@@ -30,8 +34,10 @@ struct ReviewSessionView: View {
 
     private let scheduler = ReviewScheduler()
 
-    init(items: [ReviewItem]) {
+    init(items: [ReviewItem], handwriting: HandwrittenPractice? = nil) {
+        self.handwriting = handwriting
         _sessionItems = State(initialValue: items)
+        _currentIndex = State(initialValue: items.firstIndex { $0.id == handwriting?.draft.entryID } ?? 0)
     }
 
     private var currentItem: ReviewItem? {
@@ -52,7 +58,7 @@ struct ReviewSessionView: View {
                         let isWide = proxy.size.width >= 700
 
                         ScrollView(showsIndicators: false) {
-                            VStack(spacing: 20) {
+                            VStack(spacing: handwriting == nil ? 20 : 12) {
                                 // Progress bar
                                 VStack(spacing: 8) {
                                     ProgressView(value: progress)
@@ -65,7 +71,7 @@ struct ReviewSessionView: View {
                                 }
 
                                 // Question card
-                                VStack(alignment: .leading, spacing: 16) {
+                                VStack(alignment: .leading, spacing: handwriting == nil ? 16 : 10) {
                                     HStack {
                                         TypeBadge(type: item.type)
                                         Spacer()
@@ -77,15 +83,15 @@ struct ReviewSessionView: View {
                                             .background(item.stageBadgeColor.opacity(0.12), in: Capsule())
                                     }
 
-                                    Text(headlineText(for: item))
-                                        .font(.system(isWide ? .largeTitle : .title2, design: .rounded, weight: .bold))
-
-                                    if let phonetic = phoneticText(for: item) {
-                                        Text(phonetic)
-                                            .font(.system(.title3, design: .rounded, weight: .semibold))
-                                            .foregroundStyle(.secondary)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                    }
+                                    let pronunciation = PracticePronunciation.hint(for: item.content, type: item.type, prompt: item.prompt)
+                                    let prompt = !item.type.isEnglish && pronunciation != nil ? item.prompt : headlineText(for: item)
+                                    PracticePronunciationLine(
+                                        text: prompt,
+                                        pronunciation: pronunciation,
+                                        textFont: .system(isWide ? .largeTitle : .title2, design: .rounded, weight: .bold),
+                                        type: item.type,
+                                        highlight: speaker.pronunciationHighlight
+                                    )
 
                                     Button {
                                         speaker.speak(item)
@@ -97,30 +103,42 @@ struct ReviewSessionView: View {
                                     }
                                     .buttonStyle(.borderedProminent)
                                     .controlSize(.large)
+                                    .padding(.top, handwriting == nil ? 0 : 6)
 
-                                    HStack(alignment: .top) {
-                                        Text(helperText(for: item))
-                                            .foregroundStyle(.secondary)
-                                            .font(.subheadline)
-
-                                        Spacer()
-
-                                        Button {
-                                            withAnimation(.easeInOut(duration: 0.2)) {
-                                                isContentRevealed.toggle()
-                                            }
-                                        } label: {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: isContentRevealed ? "eye.slash.fill" : "eye.fill")
-                                                Text(isContentRevealed ? "隐藏文字" : "显示文字")
-                                            }
-                                            .font(.subheadline.weight(.medium))
-                                            .foregroundStyle(.blue)
-                                            .padding(.vertical, 6)
-                                            .padding(.horizontal, 12)
-                                            .background(Color.blue.opacity(0.1), in: Capsule())
+                                    if let handwriting {
+                                        if !item.type.isRecitation {
+                                            HandwrittenAnswerArea(practice: handwriting, question: HandwrittenQuestion(item))
+                                                .id(item.id)
                                         }
-                                        .buttonStyle(.plain)
+                                        Text(helperText(for: item))
+                                            .font(.footnote)
+                                            .foregroundStyle(.secondary)
+                                        HandwritingAnswerVisibilityButton(isRevealed: $isContentRevealed)
+                                    } else {
+                                        HStack(alignment: .top) {
+                                            Text(helperText(for: item))
+                                                .foregroundStyle(.secondary)
+                                                .font(.subheadline)
+
+                                            Spacer()
+
+                                            Button {
+                                                withAnimation(.easeInOut(duration: 0.2)) {
+                                                    isContentRevealed.toggle()
+                                                }
+                                            } label: {
+                                                HStack(spacing: 4) {
+                                                    Image(systemName: isContentRevealed ? "eye.slash.fill" : "eye.fill")
+                                                    Text(isContentRevealed ? "隐藏文字" : "显示文字")
+                                                }
+                                                .font(.subheadline.weight(.medium))
+                                                .foregroundStyle(.blue)
+                                                .padding(.vertical, 6)
+                                                .padding(.horizontal, 12)
+                                                .background(Color.blue.opacity(0.1), in: Capsule())
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
                                     }
 
                                     if isContentRevealed {
@@ -130,23 +148,24 @@ struct ReviewSessionView: View {
                                             Text("题目答案")
                                                 .font(.caption.weight(.medium))
                                                 .foregroundStyle(.secondary)
-                                            Text(item.content)
-                                                .font(.system(isWide ? .title : .title2, design: .rounded, weight: .semibold))
-                                                .foregroundStyle(.blue)
-                                            if let phonetic = phoneticText(for: item) {
-                                                Text(phonetic)
-                                                    .font(.subheadline.weight(.semibold))
-                                                    .foregroundStyle(.secondary)
-                                            }
+                                            PracticePronunciationLine(
+                                                text: item.content,
+                                                pronunciation: PracticePronunciation.englishPhonetic(for: item.content, type: item.type),
+                                                textFont: .system(isWide ? .title : .title2, design: .rounded, weight: .semibold),
+                                                type: item.type
+                                            )
                                         }
                                         .transition(.opacity.combined(with: .move(edge: .top)))
                                     }
+
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(isWide ? 32 : 24)
+                                .padding(handwriting == nil ? (isWide ? 32 : 24) : 14)
                                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 28))
 
-                                if showResultButtons {
+                                if handwriting != nil {
+                                    handwritingActions
+                                } else if showResultButtons {
                                     VStack(spacing: 14) {
                                         answerCard(for: item)
 
@@ -159,7 +178,7 @@ struct ReviewSessionView: View {
                                             .buttonStyle(ResultButtonStyle(color: .green))
 
                                             Button {
-                                                submit(.wrong, for: item)
+                                                beginWrongSubmission(for: item)
                                             } label: {
                                                 Label(item.type.isRecitation ? "没背出来" : "不正确", systemImage: "xmark.circle.fill")
                                             }
@@ -199,31 +218,32 @@ struct ReviewSessionView: View {
         }
         .navigationTitle("开始复习")
         .navigationBarTitleDisplayMode(.inline)
+        .correctionPractice($correctionRequest)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    undoLastAnswer()
-                } label: {
-                    Label("撤回", systemImage: "arrow.uturn.backward")
+            if handwriting == nil {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        undoLastAnswer()
+                    } label: {
+                        Label("撤回", systemImage: "arrow.uturn.backward")
+                    }
+                    .disabled(undoStack.isEmpty)
                 }
-                .disabled(undoStack.isEmpty)
             }
         }
-        .onAppear {
-            if let currentItem {
-                speaker.prepare(currentItem)
+        .navigationDestination(isPresented: $navigateToHandwritingResults) {
+            if let handwriting {
+                HandwrittenReviewResultsView(items: sessionItems, practice: handwriting, onReturn: { dismiss() })
             }
         }
+        .handwritingAlerts(handwriting, onSubmitted: showHandwritingResults)
         .onChange(of: currentIndex) {
             isContentRevealed = false
-            if let currentItem {
-                speaker.prepare(currentItem)
-            } else {
-                speaker.stop()
-            }
+            speaker.stop()
         }
         .onDisappear {
             speaker.stop()
+            handwriting?.flush()
             learningSessionSummaryTask?.cancel()
         }
         .alert("保存失败", isPresented: saveErrorBinding) {
@@ -240,6 +260,41 @@ struct ReviewSessionView: View {
         } message: {
             Text(syncNoticeMessage ?? "这题的进度已经更新。")
         }
+    }
+
+    private var handwritingActions: some View {
+        HStack(spacing: 12) {
+            if handwriting?.draft.submittedAt != nil {
+                Button("查看结果", action: showHandwritingResults)
+                    .buttonStyle(ResultButtonStyle(color: .green))
+            } else {
+                Button("上一题") { moveHandwriting(to: currentIndex - 1) }
+                    .buttonStyle(.bordered)
+                    .disabled(currentIndex == 0)
+                if currentIndex < sessionItems.count - 1 {
+                    Button("下一题") { moveHandwriting(to: currentIndex + 1) }
+                        .buttonStyle(ResultButtonStyle(color: .blue))
+                } else {
+                    Button("完成并进入判卷") {
+                        speaker.stop()
+                        if handwriting?.requestSubmission() == true { showHandwritingResults() }
+                    }
+                    .buttonStyle(ResultButtonStyle(color: .green))
+                }
+            }
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+    }
+
+    private func moveHandwriting(to index: Int) {
+        guard sessionItems.indices.contains(index), handwriting?.select(sessionItems[index].id) == true else { return }
+        currentIndex = index
+    }
+
+    private func showHandwritingResults() {
+        speaker.stop()
+        navigateToHandwritingResults = true
     }
 
     private var completionView: some View {
@@ -341,11 +396,26 @@ struct ReviewSessionView: View {
                 .onAppear {
                     refreshLearningSessionSummary(force: false)
                 }
+                .onChange(of: aiProvider) { _, _ in
+                    refreshLearningSessionSummary(force: true)
+                }
             }
         }
     }
 
     // MARK: - Actions
+
+    private func beginWrongSubmission(for item: ReviewItem) {
+        speaker.stop()
+        if item.type.isRecitation || completedCopies[item.id, default: 0] >= 2 {
+            submit(.wrong, for: item)
+        } else {
+            correctionRequest = CorrectionPracticeRequest(
+                questions: [HandwrittenQuestion(item)], completedCopies: completedCopies,
+                recordCopy: { completedCopies[$0] = $1 }, onFinish: { submit(.wrong, for: item) }
+            )
+        }
+    }
 
     private func submit(_ result: ReviewResult, for item: ReviewItem) {
         speaker.stop()
@@ -542,15 +612,6 @@ struct ReviewSessionView: View {
         return item.prompt
     }
 
-    private func phoneticText(for item: ReviewItem) -> String? {
-        guard item.type == .englishWord,
-              let gloss = EnglishGlossService.shared.lookup(text: item.content),
-              !gloss.displayPhonetic.isEmpty else {
-            return nil
-        }
-        return gloss.displayPhonetic
-    }
-
     private func helperText(for item: ReviewItem) -> String {
         if item.type.isRecitation {
             return "可以显示文字先读几遍，再隐藏文字背诵。背出来算对，没背出来算错。"
@@ -579,14 +640,12 @@ struct ReviewSessionView: View {
                 .font(.headline)
                 .foregroundStyle(.secondary)
 
-            Text(item.content)
-                .font(.system(.title, design: .rounded, weight: .bold))
-
-            if let phonetic = phoneticText(for: item) {
-                Text(phonetic)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
+            PracticePronunciationLine(
+                text: item.content,
+                pronunciation: PracticePronunciation.englishPhonetic(for: item.content, type: item.type),
+                textFont: .system(.title, design: .rounded, weight: .bold),
+                type: item.type
+            )
 
             if !item.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text(item.prompt)
@@ -731,7 +790,8 @@ struct ReviewSessionView: View {
     private func refreshLearningSessionSummary(force: Bool) {
         let input = makeLearningSessionSummaryInput()
         let inputHash = input.stableHash()
-        let model = DeepSeekSummaryModel(rawValue: settings.aiSummaryModelRawValue) ?? .flash
+        let provider = aiProvider
+        let model = provider.summaryModel(settings.aiSummaryModelRawValue)
         let fallback = input.localFallbackResult()
 
         guard settings.aiSummaryEnabled else {
@@ -743,8 +803,8 @@ struct ReviewSessionView: View {
             return
         }
 
-        guard let apiKey = try? DeepSeekAPIKeyStore.loadAPIKey(),
-              !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let apiKey = (try? provider.loadAPIKey()) ?? ""
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             learningSessionSummaryTask?.cancel()
             learningSessionSummaryInputHash = inputHash
             learningSessionSummary = fallback
@@ -760,7 +820,7 @@ struct ReviewSessionView: View {
         }
 
         if !force,
-           let cached = LearningSessionSummaryCache.load(inputHash: inputHash, model: model.rawValue) {
+           let cached = LearningSessionSummaryCache.load(inputHash: inputHash, model: model) {
             learningSessionSummaryTask?.cancel()
             learningSessionSummaryInputHash = inputHash
             learningSessionSummary = cached
@@ -777,16 +837,18 @@ struct ReviewSessionView: View {
 
         learningSessionSummaryTask = Task {
             do {
-                let result = try await DeepSeekSummaryClient(apiKey: apiKey, model: model.rawValue)
+                let result = try await AISummaryClient(apiKey: apiKey, model: model, provider: provider)
                     .generateLearningSessionSummary(for: input)
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    LearningSessionSummaryCache.save(result, inputHash: inputHash, model: model.rawValue)
+                    LearningSessionSummaryCache.save(result, inputHash: inputHash, model: model)
                     learningSessionSummary = result
                     learningSessionSummaryInputHash = inputHash
                     isLearningSessionSummaryAIResult = true
                     isLoadingLearningSessionSummary = false
                 }
             } catch {
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
                     learningSessionSummary = fallback
                     learningSessionSummaryInputHash = inputHash
@@ -915,66 +977,25 @@ private class UndoEntry {
 // MARK: - Speech
 
 @MainActor
-private final class ReviewSpeaker: NSObject, ObservableObject {
-    @Published var isSpeaking = false
+private final class ReviewSpeaker: ObservableObject {
+    @Published private(set) var isSpeaking = false
+    @Published private(set) var pronunciationHighlight: PronunciationHighlight?
 
-    private let synthesizer = AVSpeechSynthesizer()
-    private var currentItem: ReviewItem?
-    private var pendingUtteranceCount = 0
+    private let playback = DictationPlaybackDriver()
 
-    override init() {
-        super.init()
-        synthesizer.delegate = self
-    }
-
-    func prepare(_ item: ReviewItem) {
-        currentItem = item
-        stop()
+    init() {
+        playback.onPronunciationChange = { [weak self] in self?.pronunciationHighlight = $0 }
     }
 
     func speak(_ item: ReviewItem) {
-        currentItem = item
-        speakCurrentText(for: item)
-    }
-
-    func stop() {
-        synthesizer.stopSpeaking(at: .immediate)
-        SpeechAudioSession.deactivate()
-        pendingUtteranceCount = 0
-        isSpeaking = false
-    }
-
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
         isSpeaking = true
-    }
-
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        pendingUtteranceCount = max(pendingUtteranceCount - 1, 0)
-        if pendingUtteranceCount == 0 {
-            SpeechAudioSession.deactivate()
-            isSpeaking = false
+        playback.play(content: item.content, type: item.type, prompt: item.prompt) { [weak self] _ in
+            self?.isSpeaking = false
         }
     }
 
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        pendingUtteranceCount = 0
-        SpeechAudioSession.deactivate()
+    func stop() {
+        playback.stop()
         isSpeaking = false
     }
-
-    private func speakCurrentText(for item: ReviewItem) {
-        stop()
-        let utterances = SpeechUtteranceBuilder.utterances(
-            content: item.content,
-            type: item.type,
-            prompt: item.prompt
-        )
-        guard !utterances.isEmpty else { return }
-
-        pendingUtteranceCount = utterances.count
-        SpeechAudioSession.activate()
-        utterances.forEach { synthesizer.speak($0) }
-    }
 }
-
-extension ReviewSpeaker: @preconcurrency AVSpeechSynthesizerDelegate {}

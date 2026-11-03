@@ -221,11 +221,6 @@ struct ServerPairingCodeResponse: Decodable, Sendable {
     let persistent: Bool
 }
 
-struct ServerSecretValueResponse: Decodable, Sendable {
-    let value: String?
-    let updatedAt: Date?
-}
-
 struct ServerDailyQuoteResponse: Decodable, Sendable {
     enum Status: String, Decodable, Sendable {
         case available
@@ -341,8 +336,6 @@ protocol ServerSyncAPI: Sendable {
     func changes(after cursor: Int64, limit: Int) async throws -> ServerChangeBatch
     func dailyPlan(day: String, dailyLimit: Int) async throws -> ServerDailyPlan
     func pushMutations(_ body: Data) async throws -> ServerMutationResponse
-    func deepSeekAPIKey() async throws -> ServerSecretValueResponse
-    func saveDeepSeekAPIKey(_ value: String) async throws -> ServerSecretValueResponse
 }
 
 extension ServerSyncAPI {
@@ -436,28 +429,6 @@ actor ServerAPIClient: ServerSyncAPI {
         } catch ServerAPIError.rejected(let code, _) where code == 404 {
             return nil
         }
-    }
-
-    func deepSeekAPIKey() async throws -> ServerSecretValueResponse {
-        try await request(path: "/v1/secrets/deepseek-api-key", method: "GET")
-    }
-
-    func saveDeepSeekAPIKey(_ value: String) async throws -> ServerSecretValueResponse {
-        struct Body: Encodable {
-            let value: String
-        }
-        return try await request(
-            path: "/v1/secrets/deepseek-api-key",
-            method: "PUT",
-            body: try encoder.encode(Body(value: value))
-        )
-    }
-
-    func deleteDeepSeekAPIKey() async throws {
-        let _: ServerSecretDeletionResponse = try await request(
-            path: "/v1/secrets/deepseek-api-key",
-            method: "DELETE"
-        )
     }
 
     func dailyPlan(day: String, dailyLimit: Int) async throws -> ServerDailyPlan {
@@ -558,8 +529,4 @@ struct ServerMutationConflict: Codable, Sendable {
     let recordID: UUID
     let statusCode: Int
     let reason: ServerJSONValue
-}
-
-private struct ServerSecretDeletionResponse: Decodable {
-    let deleted: Bool
 }

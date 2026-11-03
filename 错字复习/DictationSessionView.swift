@@ -3,6 +3,61 @@ import AVFoundation
 import SwiftData
 
 struct DictationSessionView: View {
+    let session: DictationSession
+    let entries: [DictationEntry]
+
+    @AppStorage(HandwrittenDictationStore.writingModeKey) private var mode = HandwrittenDictationDraft.Mode.paper
+    @State private var handwriting: HandwrittenPractice?
+    @State private var isLoaded = false
+    @State private var openResults = false
+    @State private var loadError: String?
+
+    var body: some View {
+        Group {
+            if session.type.isRecitation || entries.isEmpty {
+                DictationPracticeView(session: session, entries: entries)
+            } else if let handwriting, openResults {
+                DictationReviewView(session: session, entries: entries, handwriting: handwriting.draft)
+            } else if isLoaded {
+                DictationPracticeView(session: session, entries: entries, handwriting: handwriting)
+            } else if let loadError {
+                ContentUnavailableView {
+                    Label("无法打开听写", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(loadError)
+                } actions: {
+                    Button("重试", action: load)
+                }
+            } else {
+                ProgressView("正在打开听写…")
+            }
+        }
+        .task {
+            if !isLoaded, !session.type.isRecitation, !entries.isEmpty { load() }
+        }
+    }
+
+    private func load() {
+        do {
+            let existing = try HandwrittenDictationStore.load(session.id)
+            let questions = entries.map(HandwrittenQuestion.init)
+            if let existing, existing.shouldResume, !session.isFinished || existing.submittedAt != nil {
+                handwriting = HandwrittenPractice(sessionID: session.id, questions: questions, draft: existing)
+                openResults = existing.submittedAt != nil || session.isReviewed
+            } else if mode == .handwriting, session.currentEntryIndex == 0, !session.isFinished, !session.isReviewed {
+                let draft = HandwrittenPractice.newDraft()
+                try HandwrittenDictationStore.save(draft, sessionID: session.id)
+                handwriting = HandwrittenPractice(sessionID: session.id, questions: questions, draft: draft)
+            }
+            loadError = nil
+            isLoaded = true
+        } catch {
+            loadError = "无法读取或保存本机手写进度。"
+        }
+    }
+}
+
+private struct DictationPracticeView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
@@ -18,13 +73,17 @@ struct DictationSessionView: View {
 
     let session: DictationSession
     let entries: [DictationEntry]
+    let handwriting: HandwrittenPractice?
 
-    init(session: DictationSession, entries: [DictationEntry]) {
+    init(session: DictationSession, entries: [DictationEntry], handwriting: HandwrittenPractice? = nil) {
         self.session = session
         self.entries = entries
+        self.handwriting = handwriting
         // 恢复上次听写进度；已完成/已判定的会话始终从头开始。
         let restoredIndex: Int
-        if session.isFinished || session.isReviewed || entries.isEmpty {
+        if let handwriting {
+            restoredIndex = entries.firstIndex { $0.id == handwriting.draft.entryID } ?? 0
+        } else if session.isFinished || session.isReviewed || entries.isEmpty {
             restoredIndex = 0
         } else {
             restoredIndex = min(max(session.currentEntryIndex, 0), entries.count - 1)
@@ -53,9 +112,9 @@ struct DictationSessionView: View {
                     let isWide = proxy.size.width >= 700
 
                             ScrollView(showsIndicators: false) {
-                                VStack(spacing: 22) {
+                                VStack(spacing: handwriting == nil ? 22 : 12) {
                                     progressHeader
-                                    if !session.type.isRecitation {
+                                    if handwriting == nil, !session.type.isRecitation {
                                         AutoDictationControls(controller: speaker)
                                     }
                                     sessionCard(for: currentEntry, isWide: isWide)
@@ -79,13 +138,13 @@ struct DictationSessionView: View {
                 entries: entries,
                 onReturnToList: {
                     dismiss()
-                }
+                },
+                handwriting: handwriting?.draft
             )
         }
         .onAppear {
             speaker.onAdvance = {
-                guard currentIndex < entries.count - 1 else { return }
-                currentIndex += 1
+                move(to: currentIndex + 1)
             }
             selectCurrentEntry(speak: !hasAutoSpokenInitialEntry)
             hasAutoSpokenInitialEntry = true
@@ -96,7 +155,10 @@ struct DictationSessionView: View {
             selectCurrentEntry()
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { speaker.pause() }
+            if phase != .active {
+                speaker.pause()
+                handwriting?.flush()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { notification in
             if let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
@@ -106,6 +168,7 @@ struct DictationSessionView: View {
         }
         .onDisappear {
             speaker.shutdown()
+            handwriting?.flush()
             persistProgress()
             // 本次访问只要保存过进度就广播一次，刷新入口列表的「继续第 X/N 条」。
             // 不依附于退出时这次保存是否发生——逐题保存可能已把进度落盘。
@@ -113,6 +176,7 @@ struct DictationSessionView: View {
                 AppDataChangeCenter.post()
             }
         }
+        .handwritingAlerts(handwriting, onSubmitted: showHandwritingResults)
         .alert("听写进度保存失败", isPresented: Binding(
             get: { saveErrorMessage != nil },
             set: { if !$0 { saveErrorMessage = nil } }
@@ -161,7 +225,7 @@ struct DictationSessionView: View {
                     Spacer()
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) {
-                            currentIndex = 0
+                            move(to: 0)
                         }
                     } label: {
                         Label("重新开始", systemImage: "arrow.counterclockwise")
@@ -172,36 +236,47 @@ struct DictationSessionView: View {
                 }
             }
         }
-        .padding(20)
+        .padding(handwriting == nil ? 20 : 12)
         .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 24))
     }
 
     private func sessionCard(for entry: DictationEntry, isWide: Bool) -> some View {
         ZStack {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: handwriting == nil ? 20 : 10) {
                 cardHeader(for: entry, isWide: isWide)
 
                 speakButton(for: entry)
+                    .padding(.top, handwriting == nil ? 0 : 6)
 
-                HStack(alignment: .top) {
-                    helperFooter
-                    Spacer()
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            isContentRevealed.toggle()
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: isContentRevealed ? "eye.slash.fill" : "eye.fill")
-                            Text(isContentRevealed ? "隐藏文字" : "显示文字")
-                        }
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.blue)
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 12)
-                        .background(Color.blue.opacity(0.1), in: Capsule())
+                if let handwriting {
+                    if !entry.type.isRecitation {
+                        HandwritingAutoDictationControls(controller: speaker)
+                        HandwrittenAnswerArea(practice: handwriting, question: HandwrittenQuestion(entry))
+                            .id(entry.id)
                     }
-                    .buttonStyle(.plain)
+                    helperFooter
+                    HandwritingAnswerVisibilityButton(isRevealed: $isContentRevealed)
+                } else {
+                    HStack(alignment: .top) {
+                        helperFooter
+                        Spacer()
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                isContentRevealed.toggle()
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: isContentRevealed ? "eye.slash.fill" : "eye.fill")
+                                Text(isContentRevealed ? "隐藏文字" : "显示文字")
+                            }
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.blue)
+                            .padding(.vertical, 6)
+                            .padding(.horizontal, 12)
+                            .background(Color.blue.opacity(0.1), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
 
                 if isContentRevealed {
@@ -211,14 +286,13 @@ struct DictationSessionView: View {
                         Text(entry.type.isRecitation ? "背诵原文" : "听写内容")
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.secondary)
-                        Text(entry.content)
-                            .font(.system(isWide ? .title : .title2, design: .rounded, weight: .bold))
-                            .foregroundStyle(.blue)
-                        if let phonetic = phoneticText(for: entry) {
-                            Text(phonetic)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                        }
+                        PracticePronunciationLine(
+                            text: entry.content,
+                            pronunciation: PracticePronunciation.englishPhonetic(for: entry.content, type: entry.type),
+                            textFont: .system(isWide ? .title : .title2, design: .rounded, weight: .bold),
+                            type: entry.type,
+                            textColor: .blue
+                        )
                     }
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
@@ -227,7 +301,7 @@ struct DictationSessionView: View {
             .transition(.asymmetric(insertion: cardContentTransition, removal: .opacity))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(isWide ? 32 : 24)
+        .padding(handwriting == nil ? (isWide ? 32 : 24) : 14)
         .background(
             RoundedRectangle(cornerRadius: 32)
                 .fill(.thinMaterial)
@@ -241,7 +315,7 @@ struct DictationSessionView: View {
     }
 
     private func cardHeader(for entry: DictationEntry, isWide: Bool) -> some View {
-        HStack(alignment: .top) {
+        HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     TypeBadge(type: entry.type)
@@ -252,28 +326,23 @@ struct DictationSessionView: View {
                         .lineLimit(1)
                 }
 
-                if !entry.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(entry.prompt)
-                        .font(.system(isWide ? .title : .title3, design: .rounded, weight: .bold))
-                        .foregroundStyle(.primary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if let phonetic = phoneticText(for: entry) {
-                    Text(phonetic)
-                        .font(.system(.title3, design: .rounded, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                PracticePronunciationLine(
+                    text: entry.prompt,
+                    pronunciation: PracticePronunciation.hint(for: entry.content, type: entry.type, prompt: entry.prompt),
+                    textFont: .system(isWide ? .title : .title3, design: .rounded, weight: .bold),
+                    type: entry.type,
+                    highlight: speaker.pronunciationHighlight
+                )
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            Spacer(minLength: 12)
-
-            Image(systemName: "waveform.badge.mic")
-                .font(.system(size: isWide ? 24 : 20, weight: .medium))
-                .foregroundStyle(.blue.opacity(0.45))
-                .padding(12)
-                .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+            if handwriting == nil {
+                Image(systemName: "waveform.badge.mic")
+                    .font(.system(size: isWide ? 24 : 20, weight: .medium))
+                    .foregroundStyle(.blue.opacity(0.45))
+                    .padding(12)
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+            }
         }
     }
 
@@ -291,15 +360,6 @@ struct DictationSessionView: View {
             .frame(minHeight: 64)
         }
         .buttonStyle(ResultButtonStyle(color: speaker.isSpeaking ? .teal : .blue))
-    }
-
-    private func phoneticText(for entry: DictationEntry) -> String? {
-        guard entry.type == .englishWord,
-              let gloss = EnglishGlossService.shared.lookup(text: entry.content),
-              !gloss.displayPhonetic.isEmpty else {
-            return nil
-        }
-        return gloss.displayPhonetic
     }
 
     private var helperFooter: some View {
@@ -321,28 +381,33 @@ struct DictationSessionView: View {
     private func bottomActionBar(isWide: Bool) -> some View {
         HStack(spacing: 12) {
             Button("上一条") {
-                currentIndex = max(currentIndex - 1, 0)
+                move(to: currentIndex - 1)
             }
             .font(.headline)
             .frame(maxWidth: .infinity)
             .frame(minHeight: 56)
             .background(Color(uiColor: currentIndex == 0 ? .systemBackground : .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20))
             .foregroundStyle(currentIndex == 0 ? Color.secondary : Color.blue)
-            .disabled(currentIndex == 0)
+            .disabled(currentIndex == 0 || handwriting?.draft.submittedAt != nil)
 
-            if currentIndex < entries.count - 1 {
+            if handwriting?.draft.submittedAt != nil {
+                Button("查看结果", action: showHandwritingResults)
+                    .buttonStyle(ResultButtonStyle(color: .green))
+            } else if currentIndex < entries.count - 1 {
                 Button("下一条") {
-                    currentIndex += 1
+                    move(to: currentIndex + 1)
                 }
                 .buttonStyle(ResultButtonStyle(color: .blue))
             } else {
-                Button(isFinishing ? "正在保存…" : (session.type.isRecitation ? "完成背诵并判定" : "完成听写并进入判卷")) {
+                Button(isFinishing ? "正在保存…" : (session.type.isRecitation ? "完成背诵" : "完成并进入判卷")) {
                     finishSession()
                 }
                 .buttonStyle(ResultButtonStyle(color: .green))
                 .disabled(isFinishing)
             }
         }
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
         .padding(.horizontal, isWide ? 32 : 20)
         .padding(.top, 12)
         .padding(.bottom, 16)
@@ -352,6 +417,10 @@ struct DictationSessionView: View {
     private func finishSession() {
         guard !isFinishing else { return }
         speaker.pause()
+        if let handwriting {
+            if handwriting.requestSubmission() { showHandwritingResults() }
+            return
+        }
         isFinishing = true
 
         let now = Date()
@@ -372,11 +441,26 @@ struct DictationSessionView: View {
         }
     }
 
+    private func move(to index: Int) {
+        guard entries.indices.contains(index) else { return }
+        if let handwriting, !handwriting.select(entries[index].id) {
+            speaker.pause()
+            return
+        }
+        currentIndex = index
+    }
+
+    private func showHandwritingResults() {
+        speaker.pause()
+        AppDataChangeCenter.post()
+        navigateToReview = true
+    }
+
     /// 把当前题号写回会话，退出后再次进入可以从这里继续。
     /// 逐题切换时静默落盘；退出页面时由 onDisappear 统一广播一次变更，
     /// 避免每条题都触发首页/列表快照重载。
     private func persistProgress() {
-        guard !session.isFinished, !session.isReviewed else { return }
+        guard handwriting == nil, !session.isFinished, !session.isReviewed else { return }
         guard session.currentEntryIndex != currentIndex else { return }
 
         let previousIndex = session.currentEntryIndex

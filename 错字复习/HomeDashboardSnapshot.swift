@@ -1,4 +1,50 @@
 import SwiftUI
+import Observation
+
+// Owned by the tab root so immutable display data survives navigation and a
+// temporary teardown of the tabs during a remote restore. Never retain models.
+@MainActor
+@Observable
+final class HomeDashboardCache {
+    private var snapshot: HomeDashboardSnapshot?
+    private var childName = ""
+    private var dailyLimit = 0
+    private var loadedAt: Date?
+    private var calendar = Calendar.current
+    private(set) var revision = 0
+    private var loadedRevision = -1
+
+    func cachedSnapshot(childName: String, dailyLimit: Int, now: Date = .now) -> HomeDashboardSnapshot? {
+        guard let loadedAt,
+              self.childName == childName, self.dailyLimit == dailyLimit,
+              calendar == Calendar.current,
+              calendar.isDate(loadedAt, inSameDayAs: now) else { return nil }
+        return snapshot
+    }
+
+    func needsRefresh(childName: String, dailyLimit: Int, now: Date = .now) -> Bool {
+        guard cachedSnapshot(childName: childName, dailyLimit: dailyLimit, now: now) != nil,
+              loadedRevision == revision, let loadedAt else { return true }
+        let age = now.timeIntervalSince(loadedAt)
+        return age < 0 || age >= 30
+    }
+
+    func invalidate() {
+        revision += 1
+    }
+
+    func store(_ snapshot: HomeDashboardSnapshot, childName: String, dailyLimit: Int,
+               loadedAt: Date, revision: Int) {
+        // A data change during the fetch must not turn an older result fresh.
+        guard revision == self.revision else { return }
+        self.snapshot = snapshot
+        self.childName = childName
+        self.dailyLimit = dailyLimit
+        self.loadedAt = loadedAt
+        calendar = .current
+        loadedRevision = revision
+    }
+}
 
 // 首页展示快照及统计计算；仅消费值类型，不访问数据库或页面状态。
 struct HomeDashboardSnapshot {
@@ -33,10 +79,6 @@ struct HomeDashboardSnapshot {
     let pointBalance: Int
     let pointsEarnedToday: Int
     let currentPointStreak: Int
-    let calculationCompletedToday: Bool
-    let calculationFirstRoundCorrect: Int
-    let calculationFirstRoundTotal: Int
-    let calculationRoundsSubmitted: Int
     let wrongReviewSamples: [String]
     let heroSubtitle: String
     let heroGradientColors: [Color]
@@ -70,10 +112,6 @@ struct HomeDashboardSnapshot {
         pointBalance: Int,
         pointsEarnedToday: Int,
         currentPointStreak: Int,
-        calculationCompletedToday: Bool,
-        calculationFirstRoundCorrect: Int,
-        calculationFirstRoundTotal: Int,
-        calculationRoundsSubmitted: Int,
         referenceDate: Date = .now
     ) -> HomeDashboardSnapshot {
         let name = childName.isEmpty ? "小朋友" : childName
@@ -321,10 +359,6 @@ struct HomeDashboardSnapshot {
             pointBalance: pointBalance,
             pointsEarnedToday: pointsEarnedToday,
             currentPointStreak: currentPointStreak,
-            calculationCompletedToday: calculationCompletedToday,
-            calculationFirstRoundCorrect: calculationFirstRoundCorrect,
-            calculationFirstRoundTotal: calculationFirstRoundTotal,
-            calculationRoundsSubmitted: calculationRoundsSubmitted,
             wrongReviewSamples: wrongSamples,
             heroSubtitle: hSubtitle,
             heroGradientColors: hGradient

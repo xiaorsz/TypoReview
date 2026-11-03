@@ -589,6 +589,78 @@ struct AnswerFeedbackOverlay: View {
     }
 }
 
+// MARK: - Practice Pronunciation
+
+struct PracticePronunciationLine: View {
+    let text: String
+    let pronunciation: String?
+    let textFont: Font
+    let type: ReviewItemType
+    var textColor: Color = .primary
+    var highlight: PronunciationHighlight? = nil
+
+    private var hasText: Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        if hasText, let pronunciation {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    mainText.fixedSize(horizontal: true, vertical: false)
+                    pronunciationText(pronunciation).fixedSize(horizontal: true, vertical: false)
+                }
+                VStack(alignment: type == .englishWord ? .center : .leading, spacing: 4) {
+                    mainText
+                    pronunciationText(pronunciation)
+                }
+            }
+            .multilineTextAlignment(type == .englishWord ? .center : .leading)
+            .frame(maxWidth: type == .englishWord ? .infinity : nil)
+        } else if hasText {
+            mainText
+                .multilineTextAlignment(type == .englishWord ? .center : .leading)
+                .frame(maxWidth: type == .englishWord ? .infinity : nil)
+        } else if let pronunciation {
+            pronunciationText(pronunciation)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var mainText: some View {
+        Text(text)
+            .font(textFont)
+            .foregroundStyle(textColor)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func pronunciationText(_ text: String) -> some View {
+        Text(highlightedPronunciation(text))
+            .font((type.isEnglish ? Font.title2 : .title).weight(.semibold))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func highlightedPronunciation(_ text: String) -> AttributedString {
+        var result = AttributedString(text)
+        switch highlight {
+        case .wholeWord:
+            result.foregroundColor = .accentColor
+        case .fragment(let range):
+            let characters = result.characters
+            if let start = characters.index(characters.startIndex, offsetBy: range.lowerBound, limitedBy: characters.endIndex),
+               let end = characters.index(start, offsetBy: range.count, limitedBy: characters.endIndex) {
+                result[start..<end].foregroundColor = .accentColor
+                result[start..<end].backgroundColor = Color.accentColor.opacity(0.14)
+            }
+        case nil:
+            break
+        }
+        return result
+    }
+}
+
 // MARK: - Type Badge
 
 struct TypeBadge: View {

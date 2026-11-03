@@ -38,8 +38,9 @@ enum HomeDashboardDataLoader {
             )) ?? []).map(HomeReviewDailyPlanProjection.init)
             let dictationSessionModels = (try? context.fetch(FetchDescriptor<DictationSession>())) ?? []
             let dictationSessions = dictationSessionModels.map(HomeDictationSessionProjection.init)
-            let dictationEntries = ((try? context.fetch(FetchDescriptor<DictationEntry>())) ?? [])
-                .map(HomeDictationEntryProjection.init)
+            let dictationEntries = (try? loadDictationEntries(
+                from: context, sessions: dictationSessions, referenceDate: referenceDate
+            )) ?? []
             let schedules = ((try? context.fetch(
                 FetchDescriptor<ScheduleItem>(predicate: #Predicate<ScheduleItem> { !$0.isArchived })
             )) ?? []).map(HomeScheduleProjection.init)
@@ -66,11 +67,6 @@ enum HomeDashboardDataLoader {
             } else {
                 currentPointStreak = 0
             }
-            let calculationRounds = ((try? context.fetch(FetchDescriptor<CalculationRound>())) ?? [])
-                .filter { $0.dayKey == todayPlanKey }
-                .sorted { $0.roundIndex < $1.roundIndex }
-            let firstCalculationRound = calculationRounds.first { $0.roundIndex == 0 && $0.isSubmitted }
-            let submittedCalculationRounds = calculationRounds.filter(\.isSubmitted)
 
             source = HomeDashboardSourceSnapshot(
                 reviewItems: reviewItems,
@@ -84,15 +80,47 @@ enum HomeDashboardDataLoader {
                 taskSubtasks: taskSubtasks,
                 pointBalance: pointSummary.balance,
                 pointsEarnedToday: pointSummary.earnedToday,
-                currentPointStreak: currentPointStreak,
-                calculationCompletedToday: calculationRounds.contains(where: \.isPerfect),
-                calculationFirstRoundCorrect: firstCalculationRound?.correctCount ?? 0,
-                calculationFirstRoundTotal: firstCalculationRound?.questions.count ?? 0,
-                calculationRoundsSubmitted: submittedCalculationRounds.count
+                currentPointStreak: currentPointStreak
             )
             }
             return source
         }
+    }
+
+    static func loadDictationEntries(
+        from context: ModelContext,
+        sessions: [HomeDictationSessionProjection],
+        referenceDate: Date
+    ) throws -> [HomeDictationEntryProjection] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: referenceDate)
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? referenceDate
+        let week = calendar.dateInterval(of: .weekOfYear, for: referenceDate)
+        let weekStart = min(week?.start ?? today, today)
+        let weekEnd = max(week?.end ?? tomorrow, tomorrow)
+        let pending = sessions.filter { !$0.isReviewed && $0.scheduledDate < tomorrow }
+        let latest = pending.min { $0.scheduledDate < $1.scheduledDate }
+            ?? sessions.filter { $0.scheduledDate < tomorrow }.min { $0.scheduledDate > $1.scheduledDate }
+        var neededIDs = Set(pending.map(\.id))
+        if let latest { neededIDs.insert(latest.id) }
+        for session in sessions {
+            if let reviewedAt = session.reviewedAt, reviewedAt >= weekStart, reviewedAt < weekEnd {
+                neededIDs.insert(session.id)
+            }
+        }
+
+        // Historical entries outside this week's calendar are unused on Home.
+        // Bound IN queries to avoid SQLite's parameter limit for large plans.
+        let ids = Array(neededIDs)
+        var entries: [HomeDictationEntryProjection] = []
+        for start in stride(from: 0, to: ids.count, by: 256) {
+            let batch = Array(ids[start..<min(start + 256, ids.count)])
+            let descriptor = FetchDescriptor<DictationEntry>(
+                predicate: #Predicate<DictationEntry> { batch.contains($0.sessionID) }
+            )
+            entries.append(contentsOf: try context.fetch(descriptor).map(HomeDictationEntryProjection.init))
+        }
+        return entries
     }
 
     static func loadPointSummary(

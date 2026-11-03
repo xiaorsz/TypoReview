@@ -12,24 +12,99 @@ struct DictationReviewView: View {
     @State private var submittedAccuracyBonusAmount = 0
     @State private var navigateToSummary = false
     @State private var isSubmitting = false
+    @State private var handwriting: HandwrittenDictationDraft?
+    @State private var handwritingLoadFailed = false
+    @State private var confirmRestartHandwriting = false
+    @State private var correctionRequest: CorrectionPracticeRequest?
+    @State private var completedCopies: [UUID: Int] = [:]
 
     let session: DictationSession
     let entries: [DictationEntry]
-    var onReturnToList: (() -> Void)? = nil
+    var onReturnToList: (() -> Void)?
 
-    private var pendingCount: Int {
-        entries.filter { $0.result == .pending }.count
+    init(session: DictationSession, entries: [DictationEntry], onReturnToList: (() -> Void)? = nil,
+         handwriting: HandwrittenDictationDraft? = nil) {
+        self.session = session
+        self.entries = entries
+        self.onReturnToList = onReturnToList
+        if let handwriting {
+            _handwriting = State(initialValue: handwriting)
+        } else {
+            do {
+                let draft = try HandwrittenDictationStore.load(session.id)
+                _handwriting = State(initialValue: draft?.mode == .handwriting && draft?.submittedAt != nil ? draft : nil)
+            } catch {
+                _handwritingLoadFailed = State(initialValue: true)
+            }
+        }
     }
 
-    private var wrongCount: Int {
-        entries.filter { $0.result == .wrong }.count
+    private var pendingCount: Int { entries.filter { $0.result == .pending }.count }
+    private var wrongCount: Int { entries.filter { $0.result == .wrong }.count }
+    private var paperCorrections: [HandwrittenQuestion] {
+        entries.filter { !$0.type.isRecitation && $0.result == .wrong && completedCopies[$0.id, default: 0] < 2 }
+            .map(HandwrittenQuestion.init)
     }
 
     private var canSubmit: Bool {
-        !entries.isEmpty && pendingCount == 0 && session.reviewedAt == nil && !isSubmitting
+        !entries.isEmpty && pendingCount == 0 && !session.isReviewed && !isSubmitting
     }
 
     var body: some View {
+        Group {
+            if handwritingLoadFailed {
+                ContentUnavailableView("无法读取本机判卷记录", systemImage: "exclamationmark.triangle")
+            } else if let handwriting, !session.isReviewed,
+                      handwriting.submittedAt != nil, handwriting.questions != entries.map(HandwrittenQuestion.init) {
+                ContentUnavailableView {
+                    Label("听写题目已更新", systemImage: "arrow.clockwise")
+                } description: {
+                    Text("本机的笔迹属于上一版题目。")
+                } actions: {
+                    Button("重新开始手写听写") { confirmRestartHandwriting = true }
+                        .buttonStyle(.borderedProminent)
+                }
+            } else if let handwriting {
+                HandwrittenResultsView(
+                    sessionID: session.id,
+                    questions: entries.map(HandwrittenQuestion.init),
+                    draft: handwriting,
+                    savedResults: session.isReviewed ? Dictionary(entries.map { ($0.id, $0.result) }, uniquingKeysWith: { first, _ in first }) : nil,
+                    isSubmitting: isSubmitting,
+                    onConfirm: { submitReview(handwriting: true) }
+                )
+            } else {
+                paperResults.safeAreaInset(edge: .bottom) { submitBar }
+                    .correctionPractice($correctionRequest)
+            }
+        }
+        .navigationTitle(handwriting == nil ? (session.type.isRecitation ? "背诵判定" : "统一判卷") : "听写结果")
+        .navigationBarTitleDisplayMode(.inline)
+        .alert("保存失败", isPresented: Binding(
+            get: { saveErrorMessage != nil },
+            set: { if !$0 { saveErrorMessage = nil } }
+        )) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text(saveErrorMessage ?? "")
+        }
+        .confirmationDialog("清空本次笔迹并重新开始？", isPresented: $confirmRestartHandwriting, titleVisibility: .visible) {
+            Button("清空并重新开始", role: .destructive, action: restartHandwriting)
+        }
+        .navigationDestination(isPresented: $navigateToSummary) {
+            DictationSummaryView(
+                title: session.title,
+                summaries: submittedSummaries,
+                accuracyBonusAmount: submittedAccuracyBonusAmount,
+                onReturnToList: {
+                    dismiss()
+                    onReturnToList?()
+                }
+            )
+        }
+    }
+
+    private var paperResults: some View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 10) {
@@ -157,52 +232,41 @@ struct DictationReviewView: View {
             .padding(.top, 12)
             .padding(.bottom, 110)
         }
-        .navigationTitle(session.type.isRecitation ? "背诵判定" : "统一判卷")
-        .navigationBarTitleDisplayMode(.inline)
-        .safeAreaInset(edge: .bottom) {
-            Group {
-                if session.reviewedAt != nil {
-                    Label(session.type.isRecitation ? "这次背诵已经完成判定" : "这次听写已经完成判定", systemImage: "checkmark.circle.fill")
-                        .font(.headline)
-                        .foregroundStyle(.green)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                } else {
-                    Button {
-                        submitReview()
-                    } label: {
-                        HStack(spacing: 8) {
-                            if isSubmitting {
-                                ProgressView()
-                                    .tint(.white)
-                            }
-                            Text(isSubmitting ? "正在提交..." : "完成判定")
-                        }
+    }
+
+    private var submitBar: some View {
+        Group {
+            if session.reviewedAt != nil {
+                Label(session.type.isRecitation ? "这次背诵已经完成判定" : "这次听写已经完成判定",
+                      systemImage: "checkmark.circle.fill")
+                    .font(.headline)
+                    .foregroundStyle(.green)
+                    .frame(maxWidth: .infinity)
+            } else {
+                Button {
+                    beginPaperSubmission()
+                } label: {
+                    HStack(spacing: 8) {
+                        if isSubmitting { ProgressView().tint(.white) }
+                        Text(isSubmitting ? "正在提交..." : (canSubmit && !paperCorrections.isEmpty ? "完成判定并重写错题" : "完成判定"))
                     }
-                    .buttonStyle(ResultButtonStyle(color: .blue))
-                    .disabled(!canSubmit)
                 }
+                .buttonStyle(ResultButtonStyle(color: .blue))
+                .disabled(!canSubmit)
             }
-            .padding()
-            .background(.bar)
         }
-        .alert("提交失败", isPresented: Binding(
-            get: { saveErrorMessage != nil },
-            set: { if !$0 { saveErrorMessage = nil } }
-        )) {
-            Button("知道了", role: .cancel) {}
-        } message: {
-            Text(saveErrorMessage ?? "")
-        }
-        .navigationDestination(isPresented: $navigateToSummary) {
-            DictationSummaryView(
-                title: session.title,
-                summaries: submittedSummaries,
-                accuracyBonusAmount: submittedAccuracyBonusAmount,
-                onReturnToList: {
-                    dismiss()
-                    onReturnToList?()
-                }
+        .padding()
+        .background(.bar)
+    }
+
+    private func beginPaperSubmission() {
+        guard canSubmit else { return }
+        if paperCorrections.isEmpty {
+            submitReview()
+        } else {
+            correctionRequest = CorrectionPracticeRequest(
+                questions: paperCorrections, completedCopies: completedCopies,
+                recordCopy: { completedCopies[$0] = $1 }, onFinish: { submitReview() }
             )
         }
     }
@@ -249,23 +313,63 @@ struct DictationReviewView: View {
         }
     }
 
-    private func submitReview() {
-        guard canSubmit, session.reviewedAt == nil, !isSubmitting else { return }
+    private func restartHandwriting() {
+        do {
+            try HandwrittenDictationStore.remove(session.id)
+            AppDataChangeCenter.post()
+            dismiss()
+            onReturnToList?()
+        } catch {
+            saveErrorMessage = "本机笔迹清理失败，请重试。"
+        }
+    }
+
+    private func submitReview(handwriting: Bool = false) {
+        guard !session.isReviewed, !isSubmitting, handwriting || canSubmit else { return }
         isSubmitting = true
 
-        // 第一阶段：先把判卷结果（entry.result）单独落盘。
-        // 之后计算阶段的保存如果失败，可以整体 rollback 而不丢失用户已选的判定；
-        // rollback 也会撤销阶段推进/新增记录/积分等全部计算变更，重试时重新计算，
-        // 保证一次听写只推进一级、不产生重复记录。
-        do {
-            try modelContext.save()
-        } catch {
-            isSubmitting = false
-            saveErrorMessage = "判定结果没有保存成功，请再试一次。\(error.localizedDescription)"
-            return
-        }
-
         let now = Date()
+        if handwriting {
+            // The draft is already persisted locally. Publish results with the settlement in one save.
+            do {
+                guard let current = try HandwrittenDictationStore.load(session.id),
+                      let submittedAt = current.submittedAt else {
+                    isSubmitting = false
+                    saveErrorMessage = "找不到本机交卷记录，请重试。"
+                    return
+                }
+                guard current.questions == entries.map(HandwrittenQuestion.init) else {
+                    isSubmitting = false
+                    saveErrorMessage = "交卷后题目已在其他设备上更新。请用更新后的计划重新听写。"
+                    return
+                }
+                guard entries.allSatisfy({ current.grades[$0.id].map { $0.result != .pending } ?? false }) else {
+                    isSubmitting = false
+                    saveErrorMessage = "仍有题目需要确认。"
+                    return
+                }
+                for entry in entries {
+                    guard let grade = current.grades[entry.id] else { continue }
+                    entry.result = grade.result
+                    entry.updatedAt = now
+                }
+                session.finishedAt = submittedAt
+                session.currentEntryIndex = 0
+            } catch {
+                isSubmitting = false
+                saveErrorMessage = "无法读取手写判卷记录，请重试。"
+                return
+            }
+        } else {
+            // Paper results are persisted before settlement so they survive a rollback.
+            do {
+                try modelContext.save()
+            } catch {
+                isSubmitting = false
+                saveErrorMessage = "判定结果没有保存成功，请再试一次。\(error.localizedDescription)"
+                return
+            }
+        }
         let summaries = entries.map {
             DictationEntrySummary(
                 content: $0.content,
@@ -414,6 +518,7 @@ private struct DictationEntrySummary: Identifiable {
 
 private struct DictationSummaryView: View {
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(AIProvider.preferenceKey) private var aiProvider = AIProvider.deepSeek
     @Environment(AppSettingsStore.self) private var settings
 
     @State private var learningSessionSummary: LearningSessionSummaryResult?
@@ -545,6 +650,9 @@ private struct DictationSummaryView: View {
                 .onAppear {
                     refreshLearningSessionSummary(force: false)
                 }
+                .onChange(of: aiProvider) { _, _ in
+                    refreshLearningSessionSummary(force: true)
+                }
             }
         }
         .navigationTitle(title)
@@ -656,7 +764,8 @@ private struct DictationSummaryView: View {
     private func refreshLearningSessionSummary(force: Bool) {
         let input = makeLearningSessionSummaryInput()
         let inputHash = input.stableHash()
-        let model = DeepSeekSummaryModel(rawValue: settings.aiSummaryModelRawValue) ?? .flash
+        let provider = aiProvider
+        let model = provider.summaryModel(settings.aiSummaryModelRawValue)
         let fallback = input.localFallbackResult()
 
         guard settings.aiSummaryEnabled else {
@@ -668,8 +777,8 @@ private struct DictationSummaryView: View {
             return
         }
 
-        guard let apiKey = try? DeepSeekAPIKeyStore.loadAPIKey(),
-              !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let apiKey = (try? provider.loadAPIKey()) ?? ""
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             learningSessionSummaryTask?.cancel()
             learningSessionSummaryInputHash = inputHash
             learningSessionSummary = fallback
@@ -685,7 +794,7 @@ private struct DictationSummaryView: View {
         }
 
         if !force,
-           let cached = LearningSessionSummaryCache.load(inputHash: inputHash, model: model.rawValue) {
+           let cached = LearningSessionSummaryCache.load(inputHash: inputHash, model: model) {
             learningSessionSummaryTask?.cancel()
             learningSessionSummaryInputHash = inputHash
             learningSessionSummary = cached
@@ -702,16 +811,18 @@ private struct DictationSummaryView: View {
 
         learningSessionSummaryTask = Task {
             do {
-                let result = try await DeepSeekSummaryClient(apiKey: apiKey, model: model.rawValue)
+                let result = try await AISummaryClient(apiKey: apiKey, model: model, provider: provider)
                     .generateLearningSessionSummary(for: input)
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    LearningSessionSummaryCache.save(result, inputHash: inputHash, model: model.rawValue)
+                    LearningSessionSummaryCache.save(result, inputHash: inputHash, model: model)
                     learningSessionSummary = result
                     learningSessionSummaryInputHash = inputHash
                     isLearningSessionSummaryAIResult = true
                     isLoadingLearningSessionSummary = false
                 }
             } catch {
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
                     learningSessionSummary = fallback
                     learningSessionSummaryInputHash = inputHash

@@ -1022,8 +1022,6 @@ private final class StubServerSyncAPI: ServerSyncAPI {
 
     func health() async throws {}
     func exportSnapshot() async throws -> DataBackupPayload { throw ServerAPIError.invalidResponse }
-    func deepSeekAPIKey() async throws -> ServerSecretValueResponse { throw ServerAPIError.notConfigured }
-    func saveDeepSeekAPIKey(_ value: String) async throws -> ServerSecretValueResponse { throw ServerAPIError.notConfigured }
 
     func changes(after cursor: Int64, limit: Int) async throws -> ServerChangeBatch {
         requestedCursors.append(cursor)

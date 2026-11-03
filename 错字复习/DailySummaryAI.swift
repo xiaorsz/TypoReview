@@ -2,6 +2,26 @@ import CryptoKit
 import Foundation
 import Security
 
+enum AIProvider: String, CaseIterable, Identifiable {
+    static let preferenceKey = "ai.provider"
+    case deepSeek = "deepseek"
+    case openAI = "openai"
+
+    var id: String { rawValue }
+    var title: String { self == .openAI ? "GPT" : "DeepSeek" }
+
+    func loadAPIKey() throws -> String {
+        switch self {
+        case .deepSeek: return try DeepSeekAPIKeyStore.loadAPIKey()
+        case .openAI: return try OpenAIAPIKeyStore.load()
+        }
+    }
+
+    func summaryModel(_ storedDeepSeekModel: String) -> String {
+        self == .openAI ? "gpt-5-mini" : (DeepSeekSummaryModel(rawValue: storedDeepSeekModel) ?? .flash).rawValue
+    }
+}
+
 enum DailySummaryAISettings {
     static let isEnabledKey = "dailySummaryAI.isEnabled"
     static let modelKey = "dailySummaryAI.deepSeekModel"
@@ -35,16 +55,6 @@ struct DailySummaryInput: Codable, Equatable {
         let tasksPending: Int
         let pointsEarnedToday: Int
         let currentStreak: Int
-        let calculationCompleted: Bool
-        let calculationFirstRoundCorrect: Int
-        let calculationFirstRoundTotal: Int
-        let calculationRoundsSubmitted: Int
-
-        var calculationFirstRoundAccuracyText: String {
-            guard calculationFirstRoundTotal > 0 else { return "--" }
-            let value = Double(calculationFirstRoundCorrect) / Double(calculationFirstRoundTotal) * 100
-            return "\(Int(value.rounded()))%"
-        }
     }
 
     struct Highlights: Codable, Equatable {
@@ -62,8 +72,7 @@ struct DailySummaryInput: Codable, Equatable {
     var hasActivity: Bool {
         metrics.reviewCompleted > 0 ||
         metrics.dictationReviewedEntries > 0 ||
-        metrics.tasksCompleted > 0 ||
-        metrics.calculationRoundsSubmitted > 0
+        metrics.tasksCompleted > 0
     }
 
     func stableHash() -> String {
@@ -98,11 +107,6 @@ struct DailySummaryInput: Codable, Equatable {
         if metrics.tasksCompleted > 0 {
             highlights.append("任务完成 \(metrics.tasksCompleted) 项")
         }
-        if metrics.calculationCompleted {
-            highlights.append("每日计算完成，首轮正确率 \(metrics.calculationFirstRoundAccuracyText)")
-        } else if metrics.calculationRoundsSubmitted > 0 {
-            highlights.append("每日计算已完成 \(metrics.calculationRoundsSubmitted) 轮，继续补练")
-        }
         if metrics.pointsEarnedToday > 0 {
             highlights.append("获得 \(metrics.pointsEarnedToday) 积分")
         }
@@ -116,10 +120,6 @@ struct DailySummaryInput: Codable, Equatable {
             }
         } else if metrics.dictationReviewedEntries > 0 {
             message = "\(name) 今天完成了听写判定，也认真记下了练习结果。一点点积累，也会带来很大的进步。"
-        } else if metrics.calculationRoundsSubmitted > 0 {
-            message = metrics.calculationCompleted
-                ? "\(name) 今天完成了每日计算，首轮正确率 \(metrics.calculationFirstRoundAccuracyText)。先求准确，再慢慢提高速度。"
-                : "\(name) 今天已经开始计算训练，继续把补练这一轮全部做对，就能完成今天的小目标。"
         } else {
             message = "\(name) 今天的任务有推进，稳定完成比一次做很多更重要。每个小小的完成，都值得点赞。"
         }
@@ -127,8 +127,6 @@ struct DailySummaryInput: Codable, Equatable {
         let focus: String
         if metrics.reviewWrong > 0 {
             focus = "明天重点回看今天答错的 \(metrics.reviewWrong) 个内容。"
-        } else if metrics.calculationFirstRoundTotal > metrics.calculationFirstRoundCorrect {
-            focus = "明天继续留意今天计算中容易出错的题型，先验算再提交。"
         } else {
             focus = "明天继续按计划少量复习，保持手感。"
         }
@@ -440,10 +438,11 @@ enum DeepSeekAPIKeyStore {
     }
 }
 
-struct DeepSeekSummaryClient {
+struct AISummaryClient {
     enum ClientError: LocalizedError {
         case missingAPIKey
         case invalidResponse
+        case invalidOpenAIResponse
         case apiError(String)
         case emptyContent
         case invalidSummary(String)
@@ -455,6 +454,8 @@ struct DeepSeekSummaryClient {
                 return "请先填写 DeepSeek API Key。"
             case .invalidResponse:
                 return "DeepSeek 返回异常。"
+            case .invalidOpenAIResponse:
+                return "GPT 返回的小结格式不正确。"
             case .apiError(let message):
                 return message
             case .emptyContent:
@@ -472,8 +473,17 @@ struct DeepSeekSummaryClient {
 
     let apiKey: String
     let model: String
+    var provider: AIProvider = .deepSeek
 
     func testConnection() async throws -> String {
+        if provider == .openAI {
+            struct ConnectionResult: Decodable { let message: String }
+            let content = try await AIResponsesClient(provider: provider, apiKey: apiKey).summarize(
+                kind: .connection, instructions: "只输出含 message 字段的 JSON。", input: "请回复连接成功。"
+            )
+            guard let result = decodeSummary(ConnectionResult.self, from: content) else { throw ClientError.invalidOpenAIResponse }
+            return result.message
+        }
         let chatResponse = try await performChatRequest(
             DeepSeekChatRequest(
                 model: model,
@@ -496,13 +506,19 @@ struct DeepSeekSummaryClient {
     }
 
     func generateSummary(for input: DailySummaryInput) async throws -> DailySummaryResult {
+        let body = try makeRequestBody(input: input)
+        if provider == .openAI {
+            let result: DailySummaryResult = try await generateOpenAISummary(kind: .daily, body: body)
+            guard result.isUsable else { throw ClientError.invalidOpenAIResponse }
+            return result
+        }
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else {
             throw ClientError.missingAPIKey
         }
 
         for attempt in 1...Self.maxAttempts {
-            let chatResponse = try await performChatRequest(makeRequestBody(input: input))
+            let chatResponse = try await performChatRequest(body)
             let choice = chatResponse.choices.first
             let content = choice?.message.content?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
@@ -526,13 +542,19 @@ struct DeepSeekSummaryClient {
     }
 
     func generateLearningSessionSummary(for input: LearningSessionSummaryInput) async throws -> LearningSessionSummaryResult {
+        let body = try makeLearningSessionRequestBody(input: input)
+        if provider == .openAI {
+            let result: LearningSessionSummaryResult = try await generateOpenAISummary(kind: .session, body: body)
+            guard result.isUsable else { throw ClientError.invalidOpenAIResponse }
+            return result
+        }
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else {
             throw ClientError.missingAPIKey
         }
 
         for attempt in 1...Self.maxAttempts {
-            let chatResponse = try await performChatRequest(makeLearningSessionRequestBody(input: input))
+            let chatResponse = try await performChatRequest(body)
             let choice = chatResponse.choices.first
             let content = choice?.message.content?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
@@ -553,6 +575,16 @@ struct DeepSeekSummaryClient {
         }
 
         throw ClientError.emptyContent
+    }
+
+    private func generateOpenAISummary<Result: Decodable>(kind: AIResponsesClient.SummaryKind, body: DeepSeekChatRequest) async throws -> Result {
+        guard let instructions = body.messages.first(where: { $0.role == "system" })?.content,
+              let input = body.messages.first(where: { $0.role == "user" })?.content else {
+            throw ClientError.invalidOpenAIResponse
+        }
+        let content = try await AIResponsesClient(provider: provider, apiKey: apiKey).summarize(kind: kind, instructions: instructions, input: input)
+        guard let result = decodeSummary(Result.self, from: content) else { throw ClientError.invalidOpenAIResponse }
+        return result
     }
 
     private func performChatRequest(_ body: DeepSeekChatRequest) async throws -> DeepSeekChatResponse {

@@ -18,6 +18,25 @@ struct SettingsView: View {
     @State private var infoAlert: InfoAlert?
     @State private var isRestoringBackup = false
     @State private var deepSeekAPIKey = ""
+    @AppStorage(HandwrittenDictationStore.writingModeKey) private var writingMode = HandwrittenDictationDraft.Mode.paper
+    @AppStorage(AIProvider.preferenceKey) private var aiProvider = AIProvider.deepSeek
+    @AppStorage(HandwrittenDictationStore.cloudEnabledKey) private var deepSeekCloudEnabled = false
+    @AppStorage(HandwrittenDictationStore.openAICloudEnabledKey) private var openAICloudEnabled = false
+    @State private var openAIKeyInput = ""
+    @State private var openAIKeyConfigured = false
+    @State private var isWorkingOnOpenAIKey = false
+    @State private var confirmOpenAIKeyDeletion = false
+
+    private var handwritingCloudEnabled: Bool {
+        aiProvider == .openAI ? openAICloudEnabled : deepSeekCloudEnabled
+    }
+
+    private func setHandwritingCloudEnabled(_ enabled: Bool) {
+        if aiProvider == .openAI { openAICloudEnabled = enabled }
+        else { deepSeekCloudEnabled = enabled }
+    }
+
+    @State private var showHandwritingCloudConsent = false
     @State private var isTestingDeepSeekConnection = false
     @State private var isConfirmingDeepSeekAPIKeyClear = false
     @State private var pairingCode = ""
@@ -168,6 +187,31 @@ struct SettingsView: View {
             }
 
             Section {
+                Picker("书写方式", selection: $writingMode) {
+                    ForEach(HandwrittenDictationDraft.Mode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                Toggle("云端自动补判", isOn: Binding(
+                    get: { handwritingCloudEnabled },
+                    set: { enabled in
+                        if enabled { showHandwritingCloudConsent = true }
+                        else { setHandwritingCloudEnabled(false) }
+                    }
+                ))
+            } header: {
+                Text("听写与复习")
+            } footer: {
+                Text("书写方式用于新开始的听写和复习。iPhone 用手指书写，iPad 用 Apple Pencil。屏幕手写会先本机识别，开启云端补判后，拿不准的题会发送裁切后的笔迹给 \(aiProvider.title)。")
+            }
+
+            Section {
+                Picker("AI 服务商", selection: $aiProvider) {
+                    ForEach(AIProvider.allCases) { provider in
+                        Text(provider.title).tag(provider)
+                    }
+                }
+
                 Toggle(isOn: bind(\.aiSummaryEnabled)) {
                     HStack {
                         SettingsIcon(name: "sparkles", color: .purple)
@@ -175,15 +219,19 @@ struct SettingsView: View {
                     }
                 }
 
-                if settings.aiSummaryEnabled {
-                    Picker(selection: bind(\.aiSummaryModelRawValue)) {
-                        ForEach(DeepSeekSummaryModel.allCases) { model in
-                            Text(model.title).tag(model.rawValue)
-                        }
-                    } label: {
-                        HStack {
-                            SettingsIcon(name: "brain.head.profile", color: .indigo)
-                            Text("DeepSeek 模型")
+                if aiProvider == .openAI {
+                    openAIConfiguration
+                } else {
+                    if settings.aiSummaryEnabled {
+                        Picker(selection: bind(\.aiSummaryModelRawValue)) {
+                            ForEach(DeepSeekSummaryModel.allCases) { model in
+                                Text(model.title).tag(model.rawValue)
+                            }
+                        } label: {
+                            HStack {
+                                SettingsIcon(name: "brain.head.profile", color: .indigo)
+                                Text("DeepSeek 模型")
+                            }
                         }
                     }
 
@@ -230,18 +278,18 @@ struct SettingsView: View {
                     .disabled(isTestingDeepSeekConnection || deepSeekAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             } header: {
-                Text("AI 小结")
+                Text("AI 设置")
             } footer: {
                 VStack(alignment: .leading, spacing: 6) {
                     SettingsNoteRow(
                         icon: "lock.shield.fill",
-                        text: hasServerCredential
-                            ? "DeepSeek API Key 会加密保存到家庭服务器，并自动写入各设备的系统 Keychain。"
-                            : "DeepSeek API Key 通过系统 iCloud Keychain 安全同步；需要各设备登录同一 Apple ID，并开启 iCloud 密码与钥匙串。"
+                        text: aiProvider == .openAI
+                            ? "GPT 使用 GPT-5 mini。Key 仅保存在本机钥匙串。"
+                            : "DeepSeek Key 保存在系统钥匙串。"
                     )
                     SettingsNoteRow(
                         icon: "arrow.up.doc.fill",
-                        text: "启用后，首页会把当天复习、听写、任务和积分统计发送给 DeepSeek 生成小结；不会上传完整题库和历史记录。"
+                        text: "AI 小结和手写补判共用所选服务商。启用 AI 小结后，所选服务商会收到用于生成小结的学习统计和少量题目样本。"
                     )
                 }
             }
@@ -567,6 +615,34 @@ struct SettingsView: View {
         ) { result in
             handleBackupImport(result)
         }
+        .onChange(of: aiProvider, initial: true) { _, provider in
+            guard provider == .openAI else {
+                openAIKeyInput = ""
+                return
+            }
+            do {
+                openAIKeyConfigured = try !OpenAIAPIKeyStore.load().isEmpty
+            } catch {
+                openAIKeyConfigured = false
+                showInfoAlert(title: "读取 GPT 配置失败", message: error.localizedDescription)
+            }
+        }
+        .alert("开启 \(aiProvider.title) 自动补判？", isPresented: $showHandwritingCloudConsent) {
+            Button("取消", role: .cancel) {}
+            Button("同意并开启") { setHandwritingCloudEnabled(true) }
+        } message: {
+            Text("交卷后，本机会先识别。只有拿不准的题会发送裁切后的笔迹和语言给 \(aiProvider.title)。你可以随时关闭。")
+        }
+        .confirmationDialog("移除本机的 OpenAI API Key？", isPresented: $confirmOpenAIKeyDeletion) {
+            Button("移除", role: .destructive) {
+                performOpenAIConfiguration {
+                    try OpenAIAPIKeyStore.remove()
+                    openAIKeyConfigured = false
+                    openAIKeyInput = ""
+                    showInfoAlert(title: "已移除", message: "本机的 OpenAI API Key 已移除。")
+                }
+            }
+        }
         .confirmationDialog(
             "清空 DeepSeek API Key？",
             isPresented: $isConfirmingDeepSeekAPIKeyClear,
@@ -577,9 +653,7 @@ struct SettingsView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text(hasServerCredential
-                ? "API Key 会从本机和家庭账号中移除，其他设备也将无法继续使用 AI 小结。"
-                : "API Key 会从本机的系统 Keychain 中移除，AI 小结将无法继续使用。")
+            Text("系统钥匙串中的 DeepSeek API Key 将被清空。")
         }
         .confirmationDialog(
             "恢复备份",
@@ -766,6 +840,57 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder private var openAIConfiguration: some View {
+        LabeledContent("OpenAI API Key", value: openAIKeyConfigured ? "已配置" : "未配置")
+        SecureField(openAIKeyConfigured ? "输入新 Key 以替换" : "OpenAI API Key", text: $openAIKeyInput)
+            .textContentType(.password)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+        HStack {
+            Button("保存 Key", systemImage: "key.fill") {
+                let key = openAIKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard key.hasPrefix("sk-"), key.count <= 1000 else {
+                    showInfoAlert(title: "Key 格式不正确", message: "请检查 OpenAI API Key 后再保存。")
+                    return
+                }
+                performOpenAIConfiguration {
+                    try OpenAIAPIKeyStore.save(key)
+                    openAIKeyConfigured = true
+                    openAIKeyInput = ""
+                    showInfoAlert(title: "保存成功", message: "OpenAI API Key 已保存到本机钥匙串。")
+                }
+            }
+            .disabled(openAIKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Spacer()
+            Button("移除", systemImage: "trash", role: .destructive) { confirmOpenAIKeyDeletion = true }
+                .disabled(!openAIKeyConfigured)
+        }
+        .buttonStyle(.borderless)
+        .disabled(isWorkingOnOpenAIKey)
+        Button("测试连接", systemImage: "network") {
+            performOpenAIConfiguration {
+                let key = try OpenAIAPIKeyStore.load()
+                let response = try await AISummaryClient(apiKey: key, model: AIProvider.openAI.summaryModel(""), provider: .openAI)
+                    .testConnection()
+                showInfoAlert(title: "GPT 连接成功", message: response)
+            }
+        }
+        .disabled(!openAIKeyConfigured || isWorkingOnOpenAIKey)
+    }
+
+    private func performOpenAIConfiguration(_ action: @escaping @MainActor () async throws -> Void) {
+        guard !isWorkingOnOpenAIKey else { return }
+        isWorkingOnOpenAIKey = true
+        Task { @MainActor in
+            defer { isWorkingOnOpenAIKey = false }
+            do {
+                try await action()
+            } catch {
+                showInfoAlert(title: "GPT 配置失败", message: error.localizedDescription)
+            }
+        }
+    }
+
     private func loadDeepSeekAPIKey() {
         do {
             deepSeekAPIKey = try DeepSeekAPIKeyStore.loadAPIKey()
@@ -839,29 +964,8 @@ struct SettingsView: View {
 
         do {
             try DeepSeekAPIKeyStore.saveAPIKey(trimmedKey)
-            deepSeekAPIKey = try DeepSeekAPIKeyStore.loadAPIKey()
-            Task {
-                do {
-                    if ServerAPIConfiguration.current != nil {
-                        _ = try await ServerAPIClient.shared.saveDeepSeekAPIKey(trimmedKey)
-                    }
-                    await MainActor.run {
-                        showInfoAlert(
-                            title: "保存成功",
-                            message: ServerAPIConfiguration.current != nil
-                                ? "DeepSeek API Key 已加密保存到家庭服务器，并会同步到其他设备。"
-                                : "DeepSeek API Key 已保存到系统 Keychain，并会通过 iCloud 钥匙串同步到其他设备。"
-                        )
-                    }
-                } catch {
-                    await MainActor.run {
-                        showInfoAlert(
-                            title: "服务器同步失败",
-                            message: "API Key 已保存在本机，但尚未同步到家庭服务器：\(error.localizedDescription)"
-                        )
-                    }
-                }
-            }
+            deepSeekAPIKey = trimmedKey
+            showInfoAlert(title: "保存成功", message: "DeepSeek API Key 已保存到系统钥匙串。")
         } catch {
             showInfoAlert(title: "保存失败", message: error.localizedDescription)
         }
@@ -870,23 +974,7 @@ struct SettingsView: View {
     private func clearDeepSeekAPIKey() {
         DeepSeekAPIKeyStore.deleteAPIKey()
         deepSeekAPIKey = ""
-        Task {
-            do {
-                if ServerAPIConfiguration.current != nil {
-                    try await ServerAPIClient.shared.deleteDeepSeekAPIKey()
-                }
-                await MainActor.run {
-                    showInfoAlert(title: "已清空", message: "DeepSeek API Key 已从本机和家庭账号移除。")
-                }
-            } catch {
-                await MainActor.run {
-                    showInfoAlert(
-                        title: "服务器同步失败",
-                        message: "本机 Key 已清空，但家庭服务器删除失败：\(error.localizedDescription)"
-                    )
-                }
-            }
-        }
+        showInfoAlert(title: "已清空", message: "DeepSeek API Key 已从系统钥匙串移除。")
     }
 
     private func testDeepSeekConnection() {
@@ -900,11 +988,8 @@ struct SettingsView: View {
         Task {
             do {
                 try DeepSeekAPIKeyStore.saveAPIKey(trimmedKey)
-                if ServerAPIConfiguration.current != nil {
-                    _ = try await ServerAPIClient.shared.saveDeepSeekAPIKey(trimmedKey)
-                }
                 let model = DeepSeekSummaryModel(rawValue: settings.aiSummaryModelRawValue) ?? .flash
-                let response = try await DeepSeekSummaryClient(apiKey: trimmedKey, model: model.rawValue)
+                let response = try await AISummaryClient(apiKey: trimmedKey, model: model.rawValue)
                     .testConnection()
 
                 await MainActor.run {

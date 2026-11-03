@@ -320,6 +320,17 @@ struct AddDictationSessionView: View {
     private func persist(context: PendingDictationSaveContext) async {
         let session: DictationSession
         if let existing = editingSession {
+            do {
+                if try HandwrittenDictationStore.load(existing.id)?.shouldResume == true {
+                    saveErrorMessage = "这份听写已开始手写，题目已锁定。"
+                    isSaving = false
+                    return
+                }
+            } catch {
+                saveErrorMessage = "无法检查本机听写进度，请重试。"
+                isSaving = false
+                return
+            }
             session = existing
             session.title = context.title
             session.type = context.type

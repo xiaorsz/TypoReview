@@ -258,6 +258,8 @@ private struct DailyReviewRecordDayDetailView: View {
                                                     .foregroundStyle(.primary)
                                             }
 
+                                            ReviewInkHistoryView(recordID: record.id, reviewedAt: record.reviewedAt)
+
                                             if let prompt = record.prompt {
                                                 Text(prompt)
                                                     .font(.caption)
@@ -559,10 +561,8 @@ struct HomeReviewSessionContent: View {
     var body: some View {
         if items.isEmpty {
             ReviewEmptyStateView()
-        } else if style == .batch {
-            BatchReviewSessionView(items: items)
         } else {
-            ReviewSessionView(items: items)
+            HandwrittenReviewModeView(items: items, style: style)
         }
     }
 }

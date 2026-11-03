@@ -79,22 +79,6 @@ final class HomeLearningStatusTests: XCTestCase {
             HomeLearningStatus(tone: .notRequired, text: "无听写", detail: "今日无需")
         )
     }
-
-    func testCalculationIsOnlyCompleteAfterPerfectRound() {
-        let retrying = HomeLearningStatusSupport.calculation(
-            completed: false,
-            submittedRoundCount: 1
-        )
-        let completed = HomeLearningStatusSupport.calculation(
-            completed: true,
-            submittedRoundCount: 2
-        )
-
-        XCTAssertEqual(retrying.tone, .pending)
-        XCTAssertEqual(retrying.detail, "第2轮补练")
-        XCTAssertEqual(completed.tone, .completed)
-        XCTAssertEqual(completed.detail, "共2轮")
-    }
 }
 
 @MainActor

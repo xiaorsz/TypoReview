@@ -264,7 +264,6 @@ final class ServerSyncCoordinator {
             return false
         }
         defaults.removeObject(forKey: Self.bootstrapInProgressDefaultsKey)
-        await synchronizeDeepSeekAPIKey()
         return await performUpload(from: modelContext, settingsStore: settingsStore)
     }
 
@@ -447,6 +446,7 @@ final class ServerSyncCoordinator {
             var pointEntries: [UUID: PointLedgerEntry] = [:]
             var pointStates: [UUID: PointRewardState] = [:]
             var settingsSnapshot: AppSettingsSnapshot?
+            var deletedInkRecordIDs: Set<UUID> = []
 
             let recordIDs = Dictionary(grouping: changes, by: \.entityType).mapValues { $0.map(\.recordID) }
             func fetch<T: PersistentModel>(
@@ -493,6 +493,7 @@ final class ServerSyncCoordinator {
                         model.updatedAt = value.updatedAt
                     }
                 case "reviewRecords":
+                    if isDeletion { deletedInkRecordIDs.insert(change.recordID) }
                     if loadedEntities.insert(change.entityType).inserted {
                         reviewRecords = modelsByID(
                             try fetch(change.entityType) { ids in
@@ -601,6 +602,7 @@ final class ServerSyncCoordinator {
                         model.updatedAt = value.updatedAt
                     }
                 case "dictationSessions":
+                    if isDeletion { deletedInkRecordIDs.insert(change.recordID) }
                     if loadedEntities.insert(change.entityType).inserted {
                         dictationSessions = modelsByID(
                             try fetch(change.entityType) { ids in
@@ -741,6 +743,9 @@ final class ServerSyncCoordinator {
             let modelDataChanged = context.hasChanges
             if modelDataChanged {
                 try context.save()
+            }
+            for recordID in deletedInkRecordIDs {
+                try? HandwrittenDictationStore.remove(recordID)
             }
             if let settingsSnapshot {
                 settingsStore.restore(from: settingsSnapshot, using: context, source: .server)
@@ -1222,27 +1227,6 @@ final class ServerSyncCoordinator {
 
     private static func dataSummary(for payload: DataBackupPayload) -> String {
         "题库 \(payload.reviewItems.count) 条，复习记录 \(payload.reviewRecords.count) 条，听写 \(payload.dictationSessions.count) 组 / \(payload.dictationEntries.count) 条，计算 \(payload.calculationRounds.count) 轮"
-    }
-
-    private func synchronizeDeepSeekAPIKey() async {
-        do {
-            let remote = try await client.deepSeekAPIKey()
-            if let value = remote.value?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !value.isEmpty {
-                try DeepSeekAPIKeyStore.saveAPIKey(value)
-                return
-            }
-
-            let local = try DeepSeekAPIKeyStore.loadAPIKey()
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !local.isEmpty {
-                _ = try await client.saveDeepSeekAPIKey(local)
-            }
-        } catch {
-            #if DEBUG
-            print("DeepSeek API Key sync failed: \(error)")
-            #endif
-        }
     }
 
     private static func isCancellation(_ error: Error) -> Bool {

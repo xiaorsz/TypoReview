@@ -20,7 +20,11 @@ private struct DictationSessionProjection: Identifiable, Hashable {
         createdAt = session.createdAt
         updatedAt = session.updatedAt
         scheduledDate = session.scheduledDate
-        finishedAt = session.finishedAt
+        if let finishedAt = session.finishedAt {
+            self.finishedAt = finishedAt
+        } else {
+            self.finishedAt = (try? HandwrittenDictationStore.load(session.id))?.submittedAt
+        }
         reviewedAt = session.reviewedAt
         currentEntryIndex = session.currentEntryIndex
     }
@@ -705,7 +709,12 @@ struct DictationHomeView: View {
 
                 }
                 await MainActor.run {
-                    AppDataChangeCenter.post()
+                    defer { AppDataChangeCenter.post() }
+                    do {
+                        try HandwrittenDictationStore.remove(sessionID)
+                    } catch {
+                        deleteErrorMessage = "听写记录已删除，但本机笔迹清理失败。"
+                    }
                 }
             } catch {
                 await MainActor.run {

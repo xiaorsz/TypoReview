@@ -79,21 +79,6 @@ enum HomeLearningStatusSupport {
         }
         return HomeLearningStatus(tone: .notRequired, text: "无听写", detail: "今日无需")
     }
-
-    static func calculation(completed: Bool, submittedRoundCount: Int) -> HomeLearningStatus {
-        if completed {
-            return HomeLearningStatus(
-                tone: .completed,
-                text: "已完成",
-                detail: submittedRoundCount > 0 ? "共\(submittedRoundCount)轮" : "全部正确"
-            )
-        }
-        return HomeLearningStatus(
-            tone: .pending,
-            text: "未完成",
-            detail: submittedRoundCount > 0 ? "第\(submittedRoundCount + 1)轮补练" : "首轮5题"
-        )
-    }
 }
 
 struct HomeReviewItemProjection: Identifiable, Hashable {
@@ -452,10 +437,6 @@ struct HomeDashboardSourceSnapshot {
     let pointBalance: Int
     let pointsEarnedToday: Int
     let currentPointStreak: Int
-    let calculationCompletedToday: Bool
-    let calculationFirstRoundCorrect: Int
-    let calculationFirstRoundTotal: Int
-    let calculationRoundsSubmitted: Int
 
     static let empty = HomeDashboardSourceSnapshot(
         reviewItems: [],
@@ -469,11 +450,7 @@ struct HomeDashboardSourceSnapshot {
         taskSubtasks: [],
         pointBalance: 0,
         pointsEarnedToday: 0,
-        currentPointStreak: 0,
-        calculationCompletedToday: false,
-        calculationFirstRoundCorrect: 0,
-        calculationFirstRoundTotal: 0,
-        calculationRoundsSubmitted: 0
+        currentPointStreak: 0
     )
 }
 

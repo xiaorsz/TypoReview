@@ -19,6 +19,8 @@ struct BatchReviewGradingView: View {
     @Environment(\.modelContext) private var modelContext
 
     let items: [ReviewItem]
+    let handwritingID: UUID?
+    let handwriting: HandwrittenDictationDraft?
     var onReturnFromCompletion: (() -> Void)? = nil
     /// 判卷提交成功（保存落盘）后回调，用于清理听写进度等收尾工作。
     var onSubmittedSuccessfully: (() -> Void)? = nil
@@ -31,15 +33,24 @@ struct BatchReviewGradingView: View {
     @State private var saveErrorMessage: String?
     @State private var skippedSyncedCount = 0
     @State private var isSubmitting = false
+    @State private var correctionRequest: CorrectionPracticeRequest?
+    @State private var completedCopies: [UUID: Int] = [:]
     
     private let scheduler = ReviewScheduler()
 
     init(
         items: [ReviewItem],
         onReturnFromCompletion: (() -> Void)? = nil,
-        onSubmittedSuccessfully: (() -> Void)? = nil
+        onSubmittedSuccessfully: (() -> Void)? = nil,
+        handwritingID: UUID? = nil,
+        handwriting: HandwrittenDictationDraft? = nil
     ) {
         self.items = items
+        self.handwritingID = handwritingID
+        self.handwriting = handwriting
+        if let handwritingID {
+            _reviewSessionID = State(initialValue: handwritingID)
+        }
         self.onReturnFromCompletion = onReturnFromCompletion
         self.onSubmittedSuccessfully = onSubmittedSuccessfully
     }
@@ -47,18 +58,31 @@ struct BatchReviewGradingView: View {
     private var allMarked: Bool {
         !entryStates.isEmpty && entryStates.allSatisfy { $0.result != .pending }
     }
+
+    private var paperCorrections: [HandwrittenQuestion] {
+        entryStates.filter { !$0.item.type.isRecitation && $0.result == .wrong && completedCopies[$0.item.id, default: 0] < 2 }
+            .map { HandwrittenQuestion($0.item) }
+    }
     var body: some View {
         Group {
             if isSubmitted {
                 completionView
+            } else if let handwritingID, let handwriting {
+                HandwrittenResultsView(
+                    sessionID: handwritingID,
+                    questions: items.map(HandwrittenQuestion.init),
+                    draft: handwriting,
+                    isSubmitting: isSubmitting,
+                    onConfirm: submitResults
+                )
             } else {
-                gradingView
+                gradingView.correctionPractice($correctionRequest)
             }
         }
-        .navigationTitle(isSubmitted ? "复习结果" : "统一判卷")
+        .navigationTitle(isSubmitted || handwritingID != nil ? "复习结果" : "统一判卷")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if !isSubmitted {
+            if !isSubmitted, handwritingID == nil {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu("便捷操作", systemImage: "ellipsis.circle") {
                         Button("全部标记为正确", systemImage: "checkmark.circle.fill") {
@@ -197,14 +221,14 @@ struct BatchReviewGradingView: View {
                 }
 
                 Button {
-                    submitResults()
+                    beginPaperSubmission()
                 } label: {
                     HStack(spacing: 8) {
                         if isSubmitting {
                             ProgressView()
                                 .tint(.white)
                         }
-                        Text(isSubmitting ? "正在提交..." : "提交复习结果")
+                        Text(isSubmitting ? "正在提交..." : (allMarked && !paperCorrections.isEmpty ? "确认判定并重写错题" : "提交复习结果"))
                     }
                 }
                 .buttonStyle(ResultButtonStyle(color: allMarked ? .blue : .gray))
@@ -376,13 +400,51 @@ struct BatchReviewGradingView: View {
         }
     }
 
+    private func beginPaperSubmission() {
+        guard allMarked, !isSubmitting else { return }
+        if paperCorrections.isEmpty {
+            submitResults()
+        } else {
+            correctionRequest = CorrectionPracticeRequest(
+                questions: paperCorrections, completedCopies: completedCopies,
+                recordCopy: { completedCopies[$0] = $1 }, onFinish: submitResults
+            )
+        }
+    }
+
     private func submitResults() {
-        guard !isSubmitting else { return }
+        guard !isSubmitting, !isSubmitted else { return }
+        let submittedStates: [BatchReviewEntryState]
+        let draft: HandwrittenDictationDraft?
+        if let handwritingID {
+            do {
+                guard let current = try HandwrittenDictationStore.load(handwritingID),
+                      current.submittedAt != nil,
+                      items.allSatisfy({ item in
+                          current.questions?.contains(HandwrittenQuestion(item)) == true
+                              && current.grades[item.id].map { $0.result != .pending } == true
+                      }) else {
+                    saveErrorMessage = "仍有题目需要确认。"
+                    return
+                }
+                draft = current
+                submittedStates = items.compactMap { item in
+                    current.grades[item.id].map { BatchReviewEntryState(item: item, result: $0.result) }
+                }
+            } catch {
+                saveErrorMessage = "无法读取手写判卷记录，请重试。"
+                return
+            }
+        } else {
+            guard allMarked else { return }
+            draft = nil
+            submittedStates = entryStates
+        }
         isSubmitting = true
 
         var summaries: [SessionReviewSummary] = []
+        var reviewInk: [(recordID: UUID, history: ReviewInkHistory)] = []
         let now = Date()
-        let submittedStates = entryStates.filter { $0.result != .pending }
         let eligibleStates: [BatchReviewEntryState]
 
         do {
@@ -426,6 +488,24 @@ struct BatchReviewGradingView: View {
             ).record
             PointLedgerService.awardReviewRecord(persistedRecord, in: modelContext)
 
+            if let handwritingID, let grade = draft?.grades[state.item.id], !state.item.type.isRecitation {
+                do {
+                    let ink = try HandwrittenDictationStore.drawingData(sessionID: handwritingID, entryID: state.item.id)
+                    reviewInk.append((persistedRecord.id, ReviewInkHistory(
+                        reviewedAt: persistedRecord.reviewedAt,
+                        question: HandwrittenQuestion(state.item),
+                        grade: grade,
+                        ink: ink,
+                        writingColumns: draft?.writingColumns
+                    )))
+                } catch {
+                    modelContext.rollback()
+                    saveErrorMessage = "无法读取复习笔迹，请重试。"
+                    isSubmitting = false
+                    return
+                }
+            }
+
             summaries.append(
                 SessionReviewSummary(
                     content: state.item.content,
@@ -445,6 +525,9 @@ struct BatchReviewGradingView: View {
         }
         
         do {
+            for (recordID, history) in reviewInk {
+                try HandwrittenDictationStore.saveReviewInk(history, recordID: recordID)
+            }
             try modelContext.save()
             AppDataChangeCenter.post()
             // 提交成功后才清理听写进度；若进入判卷但未提交就退出，进度保留可继续。

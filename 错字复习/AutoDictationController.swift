@@ -9,10 +9,14 @@ protocol DictationPlayback: AnyObject {
 
 /// Utterance identity keeps callbacks from cancelled batches out of the current batch.
 @MainActor
-final class DictationPlaybackDriver: NSObject, DictationPlayback, @preconcurrency AVSpeechSynthesizerDelegate {
+final class DictationPlaybackDriver: NSObject, ObservableObject, DictationPlayback, @preconcurrency AVSpeechSynthesizerDelegate {
+    @Published private(set) var isPlaying = false
     private let synthesizer = AVSpeechSynthesizer()
     private var pending = Set<ObjectIdentifier>()
     private var completion: ((Bool) -> Void)?
+    private var englishUtterance: ObjectIdentifier?
+    private var pronunciationProgress: EnglishPronunciationProgress?
+    var onPronunciationChange: ((PronunciationHighlight?) -> Void)?
 
     override init() {
         super.init()
@@ -20,11 +24,25 @@ final class DictationPlaybackDriver: NSObject, DictationPlayback, @preconcurrenc
     }
 
     func play(content: String, type: ReviewItemType, prompt: String, completion: @escaping (Bool) -> Void) {
-        stop()
         let utterances = SpeechUtteranceBuilder.utterances(content: content, type: type, prompt: prompt)
-        guard !utterances.isEmpty else { completion(false); return }
+        let phonetic = onPronunciationChange == nil ? nil : PracticePronunciation.englishPhonetic(for: content, type: type)
+        play(utterances, phonetic: phonetic, completion: completion)
+    }
+
+    func playAnswerTwice(content: String, type: ReviewItemType) {
+        play(SpeechUtteranceBuilder.repeatedAnswer(content: content, type: type)) { _ in }
+    }
+
+    private func play(_ utterances: [AVSpeechUtterance], phonetic: String? = nil, completion: @escaping (Bool) -> Void) {
+        stop()
+        guard let firstUtterance = utterances.first else { completion(false); return }
         self.completion = completion
         pending = Set(utterances.map(ObjectIdentifier.init))
+        if let phonetic {
+            englishUtterance = ObjectIdentifier(firstUtterance)
+            pronunciationProgress = EnglishPronunciationProgress(text: phonetic)
+        }
+        isPlaying = true
         SpeechAudioSession.activate()
         utterances.forEach { synthesizer.speak($0) }
     }
@@ -32,14 +50,31 @@ final class DictationPlaybackDriver: NSObject, DictationPlayback, @preconcurrenc
     func stop() {
         pending.removeAll()
         completion = nil
+        isPlaying = false
+        clearPronunciation()
         synthesizer.stopSpeaking(at: .immediate)
         SpeechAudioSession.deactivate()
     }
 
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        if englishUtterance == ObjectIdentifier(utterance) { onPronunciationChange?(.wholeWord) }
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, willSpeak marker: AVSpeechSynthesisMarker,
+                           utterance: AVSpeechUtterance) {
+        guard englishUtterance == ObjectIdentifier(utterance), marker.mark == .phoneme,
+              let highlight = pronunciationProgress?.advance(phoneme: marker.phoneme) else { return }
+        onPronunciationChange?(highlight)
+    }
+
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        guard pending.remove(ObjectIdentifier(utterance)) != nil, pending.isEmpty else { return }
+        let id = ObjectIdentifier(utterance)
+        guard pending.remove(id) != nil else { return }
+        if englishUtterance == id { clearPronunciation() }
+        guard pending.isEmpty else { return }
         let callback = completion
         completion = nil
+        isPlaying = false
         SpeechAudioSession.deactivate()
         callback?(true)
     }
@@ -49,6 +84,13 @@ final class DictationPlaybackDriver: NSObject, DictationPlayback, @preconcurrenc
         let callback = completion
         stop()
         callback?(false)
+    }
+
+    private func clearPronunciation() {
+        guard englishUtterance != nil else { return }
+        englishUtterance = nil
+        pronunciationProgress = nil
+        onPronunciationChange?(nil)
     }
 }
 
@@ -63,6 +105,7 @@ final class AutoDictationController: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var isEnabled = false
     @Published private(set) var isSpeaking = false
+    @Published private(set) var pronunciationHighlight: PronunciationHighlight?
     @Published private(set) var errorMessage: String?
     @Published private(set) var interval: Int
     var onAdvance: (() -> Void)?
@@ -83,6 +126,9 @@ final class AutoDictationController: ObservableObject {
         self.runsTimer = runsTimer
         let saved = defaults.integer(forKey: Self.intervalKey)
         interval = Self.intervals.contains(saved) ? saved : 3
+        (self.playback as? DictationPlaybackDriver)?.onPronunciationChange = { [weak self] in
+            self?.pronunciationHighlight = $0
+        }
     }
 
     var isRunning: Bool {
@@ -248,8 +294,29 @@ struct AutoDictationControls: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Toggle("自动听写", isOn: Binding(get: { controller.isEnabled }, set: { controller.setEnabled($0) }))
-            if controller.isEnabled {
+            AutoDictationToggle(controller: controller)
+            AutoDictationTimingControls(controller: controller)
+        }
+        .padding(20)
+        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 24))
+    }
+}
+
+struct AutoDictationToggle: View {
+    @ObservedObject var controller: AutoDictationController
+
+    var body: some View {
+        Toggle("自动听写", isOn: Binding(get: { controller.isEnabled }, set: { controller.setEnabled($0) }))
+    }
+}
+
+struct AutoDictationTimingControls: View {
+    @ObservedObject var controller: AutoDictationController
+    var spacing: CGFloat = 12
+
+    var body: some View {
+        if controller.isEnabled {
+            VStack(alignment: .leading, spacing: spacing) {
                 HStack {
                     Text("书写等待")
                     Spacer()
@@ -275,7 +342,5 @@ struct AutoDictationControls: View {
                 }
             }
         }
-        .padding(20)
-        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 24))
     }
 }

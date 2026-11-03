@@ -127,10 +127,6 @@ enum HomeDashboardSnapshotLoader {
                 pointBalance: source.pointBalance,
                 pointsEarnedToday: source.pointsEarnedToday,
                 currentPointStreak: source.currentPointStreak,
-                calculationCompletedToday: source.calculationCompletedToday,
-                calculationFirstRoundCorrect: source.calculationFirstRoundCorrect,
-                calculationFirstRoundTotal: source.calculationFirstRoundTotal,
-                calculationRoundsSubmitted: source.calculationRoundsSubmitted,
                 referenceDate: referenceDate
             )
 

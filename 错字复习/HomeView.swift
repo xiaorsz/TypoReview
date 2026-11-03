@@ -47,7 +47,9 @@ struct HomeView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.colorScheme) private var colorScheme
     @Environment(SyncStatusStore.self) private var syncStatusStore: SyncStatusStore
+    @AppStorage(AIProvider.preferenceKey) private var aiProvider = AIProvider.deepSeek
     @Environment(AppSettingsStore.self) private var appSettingsStore
+    @Environment(HomeDashboardCache.self) private var dashboardCache
     
     @State private var showingReviewPreview = false
     @State private var activeReviewRoute: HomeReviewRoute?
@@ -87,24 +89,15 @@ struct HomeView: View {
     }
 
     private var initialDashboardSnapshotDelay: TimeInterval {
-        if #available(iOS 18.0, *) {
-            return 0.08
-        }
-        return dashboardSnapshot == nil ? 2.5 : 0.35
+        0.08
     }
 
     private var foregroundDashboardSnapshotDelay: TimeInterval {
-        if #available(iOS 18.0, *) {
-            return 0.12
-        }
-        return dashboardSnapshot == nil ? 1.5 : 0.5
+        0.12
     }
 
     private var refreshDashboardSnapshotDelay: TimeInterval {
-        if #available(iOS 18.0, *) {
-            return 0.08
-        }
-        return dashboardSnapshot == nil ? 1.0 : 0.2
+        0.08
     }
 
     private struct HomeTaskDetailRoute: Hashable {
@@ -136,11 +129,7 @@ struct HomeView: View {
                 tasksCompleted: snapshot.todayCompletedTaskCount,
                 tasksPending: snapshot.totalPendingTaskCount,
                 pointsEarnedToday: snapshot.pointsEarnedToday,
-                currentStreak: snapshot.currentPointStreak,
-                calculationCompleted: snapshot.calculationCompletedToday,
-                calculationFirstRoundCorrect: snapshot.calculationFirstRoundCorrect,
-                calculationFirstRoundTotal: snapshot.calculationFirstRoundTotal,
-                calculationRoundsSubmitted: snapshot.calculationRoundsSubmitted
+                currentStreak: snapshot.currentPointStreak
             ),
             highlights: DailySummaryInput.Highlights(
                 completedTaskTitles: Array(snapshot.todayCompletedTasks.map(\.task.title).prefix(5)),
@@ -152,14 +141,15 @@ struct HomeView: View {
     private func refreshDailySummary(for snapshot: HomeDashboardSnapshot, force: Bool) {
         let input = makeDailySummaryInput(from: snapshot)
         let inputHash = input.stableHash()
-        let model = DeepSeekSummaryModel(rawValue: appSettingsStore.aiSummaryModelRawValue) ?? .flash
+        let provider = aiProvider
+        let model = provider.summaryModel(appSettingsStore.aiSummaryModelRawValue)
         let fallbackResult = input.localFallbackResult()
 
         guard appSettingsStore.aiSummaryEnabled else {
             dailySummaryTask?.cancel()
             dailySummaryPresentation = DailySummaryPresentation(
                 inputHash: inputHash,
-                modelRawValue: model.rawValue,
+                modelRawValue: model,
                 result: fallbackResult,
                 isAIResult: false,
                 isLoading: false,
@@ -168,26 +158,26 @@ struct HomeView: View {
             return
         }
 
-        guard let apiKey = try? DeepSeekAPIKeyStore.loadAPIKey(),
-              !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let apiKey = (try? provider.loadAPIKey()) ?? ""
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             dailySummaryTask?.cancel()
             dailySummaryPresentation = DailySummaryPresentation(
                 inputHash: inputHash,
-                modelRawValue: model.rawValue,
+                modelRawValue: model,
                 result: fallbackResult,
                 isAIResult: false,
                 isLoading: false,
-                aiErrorMessage: "未填写 DeepSeek API Key"
+                aiErrorMessage: "未填写 \(provider.title) API Key"
             )
             return
         }
 
         if !force,
-           let cachedResult = DailySummaryCache.load(inputHash: inputHash, model: model.rawValue) {
+           let cachedResult = DailySummaryCache.load(inputHash: inputHash, model: model) {
             dailySummaryTask?.cancel()
             dailySummaryPresentation = DailySummaryPresentation(
                 inputHash: inputHash,
-                modelRawValue: model.rawValue,
+                modelRawValue: model,
                 result: cachedResult,
                 isAIResult: true,
                 isLoading: false,
@@ -199,7 +189,7 @@ struct HomeView: View {
         dailySummaryTask?.cancel()
         dailySummaryPresentation = DailySummaryPresentation(
             inputHash: inputHash,
-            modelRawValue: model.rawValue,
+            modelRawValue: model,
             result: fallbackResult,
             isAIResult: false,
             isLoading: true,
@@ -208,14 +198,14 @@ struct HomeView: View {
 
         dailySummaryTask = Task {
             do {
-                let result = try await DeepSeekSummaryClient(apiKey: apiKey, model: model.rawValue)
+                let result = try await AISummaryClient(apiKey: apiKey, model: model, provider: provider)
                     .generateSummary(for: input)
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    DailySummaryCache.save(result, inputHash: inputHash, model: model.rawValue)
+                    DailySummaryCache.save(result, inputHash: inputHash, model: model)
                     dailySummaryPresentation = DailySummaryPresentation(
                         inputHash: inputHash,
-                        modelRawValue: model.rawValue,
+                        modelRawValue: model,
                         result: result,
                         isAIResult: true,
                         isLoading: false,
@@ -227,7 +217,7 @@ struct HomeView: View {
                 await MainActor.run {
                     dailySummaryPresentation = DailySummaryPresentation(
                         inputHash: inputHash,
-                        modelRawValue: model.rawValue,
+                        modelRawValue: model,
                         result: fallbackResult,
                         isAIResult: false,
                         isLoading: false,
@@ -365,11 +355,7 @@ struct HomeView: View {
             completedToday: snapshot.dictationCompletedToday,
             reviewedEntryCount: snapshot.todayDictationReviewedEntryCount
         )
-        let calculationStatus = HomeLearningStatusSupport.calculation(
-            completed: snapshot.calculationCompletedToday,
-            submittedRoundCount: snapshot.calculationRoundsSubmitted
-        )
-        let columnCount = dynamicTypeSize.isAccessibilitySize ? 2 : 4
+        let columnCount = dynamicTypeSize.isAccessibilitySize ? 2 : 3
         let columns = Array(
             repeating: GridItem(.flexible(minimum: 0), spacing: 6),
             count: columnCount
@@ -413,20 +399,6 @@ struct HomeView: View {
             .frame(maxWidth: .infinity)
             .accessibilityLabel("听写，\(dictationStatus.text)，\(dictationStatus.detail)")
             .accessibilityHint("进入听写页面")
-
-            NavigationLink {
-                DailyCalculationView()
-            } label: {
-                heroLearningStatusTile(
-                    title: "计算",
-                    icon: "function",
-                    status: calculationStatus
-                )
-            }
-            .buttonStyle(.plain)
-            .frame(maxWidth: .infinity)
-            .accessibilityLabel("计算，\(calculationStatus.text)，\(calculationStatus.detail)")
-            .accessibilityHint("进入每日计算")
         }
     }
 
@@ -778,7 +750,9 @@ struct HomeView: View {
 
     var body: some View {
         Group {
-            if let snapshot = dashboardSnapshot {
+            if let snapshot = dashboardSnapshot ?? dashboardCache.cachedSnapshot(
+                childName: appSettingsStore.childName, dailyLimit: dailyLimit
+            ) {
                 mainContentView(snapshot)
             } else {
                 lightweightLoadingHomeView
@@ -790,7 +764,7 @@ struct HomeView: View {
             #if DEBUG
             DebugPerf.mark("HomeView onAppear")
             #endif
-            requestDashboardSnapshotRefresh(
+            restoreDashboardAndRefreshIfNeeded(
                 reason: "onAppear",
                 delay: dashboardSnapshot == nil ? initialDashboardSnapshotDelay : refreshDashboardSnapshotDelay
             )
@@ -804,14 +778,19 @@ struct HomeView: View {
             },
             onSceneChange: { newPhase in
                 if newPhase == .active {
-                    requestDashboardSnapshotRefresh(reason: "scenePhase active", delay: foregroundDashboardSnapshotDelay)
+                    restoreDashboardAndRefreshIfNeeded(reason: "scenePhase active", delay: foregroundDashboardSnapshotDelay)
                     refreshDailyQuote()
                 } else {
-                    dashboardSnapshotTask?.cancel()
+                    cancelDashboardSnapshotUpdate()
                     dailyQuoteTask?.cancel()
                 }
             }
         ))
+        .onChange(of: aiProvider) { _, _ in
+            if let dashboardSnapshot {
+                refreshDailySummary(for: dashboardSnapshot, force: false)
+            }
+        }
         .onChange(of: appSettingsStore.aiSummaryEnabled) { _, _ in
             if let dashboardSnapshot {
                 refreshDailySummary(for: dashboardSnapshot, force: true)
@@ -827,7 +806,7 @@ struct HomeView: View {
             #if DEBUG
             DebugPerf.mark("HomeView onDisappear")
             #endif
-            dashboardSnapshotTask?.cancel()
+            cancelDashboardSnapshotUpdate()
             dailySummaryTask?.cancel()
             dailyQuoteTask?.cancel()
         }
@@ -953,13 +932,29 @@ struct HomeView: View {
         scheduleDashboardSnapshotUpdate(delay: delay)
     }
 
+    private func restoreDashboardAndRefreshIfNeeded(reason: String, delay: TimeInterval) {
+        if let cached = dashboardCache.cachedSnapshot(childName: appSettingsStore.childName, dailyLimit: dailyLimit) {
+            dashboardSnapshot = cached
+            refreshDailySummary(for: cached, force: false)
+        }
+        if dashboardCache.needsRefresh(childName: appSettingsStore.childName, dailyLimit: dailyLimit) {
+            requestDashboardSnapshotRefresh(reason: reason, delay: delay)
+        }
+    }
+
+    private func cancelDashboardSnapshotUpdate() {
+        dashboardSnapshotTask?.cancel()
+        dashboardSnapshotTask = nil
+        dashboardSnapshotTaskID = UUID()
+        isDashboardRefreshInFlight = false
+        needsDashboardRefreshAfterCurrent = false
+    }
+
     private func openDashboardBoard() {
         #if DEBUG
         DebugPerf.mark("Home openDashboardBoard")
         #endif
-        dashboardSnapshotTask?.cancel()
-        isDashboardRefreshInFlight = false
-        needsDashboardRefreshAfterCurrent = false
+        cancelDashboardSnapshotUpdate()
         activeDashboardBoardRoute = HomeDashboardBoardRoute()
     }
 
@@ -967,7 +962,7 @@ struct HomeView: View {
         #if DEBUG
         DebugPerf.mark("HomeView scheduleDashboardSnapshotUpdate delay=\(delay)")
         #endif
-        dashboardSnapshotTask?.cancel()
+        cancelDashboardSnapshotUpdate()
         guard canRenderLiveContent else { return }
         
         let childName = appSettingsStore.childName
@@ -976,7 +971,8 @@ struct HomeView: View {
 
         let taskID = UUID()
         dashboardSnapshotTaskID = taskID
-        dashboardSnapshotTask = Task(priority: .utility) {
+        let priority: TaskPriority = dashboardSnapshot == nil ? .userInitiated : .utility
+        dashboardSnapshotTask = Task(priority: priority) {
             defer {
                 if dashboardSnapshotTaskID == taskID {
                     let shouldScheduleCoalescedRefresh = needsDashboardRefreshAfterCurrent
@@ -1001,7 +997,8 @@ struct HomeView: View {
             DebugPerf.mark("HomeView background snapshot fetch begin")
             #endif
             let referenceDate = Date()
-            let snapshot = await Task.detached(priority: .utility) {
+            let revision = dashboardCache.revision
+            let snapshot = await Task.detached(priority: priority) {
                 HomeDashboardSnapshotLoader.load(
                     from: container,
                     childName: childName,
@@ -1010,8 +1007,10 @@ struct HomeView: View {
                 )
             }.value
 
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, dashboardSnapshotTaskID == taskID else { return }
             guard canRenderLiveContent else { return }
+            dashboardCache.store(snapshot, childName: childName, dailyLimit: dailyLimit,
+                                 loadedAt: referenceDate, revision: revision)
             dashboardSnapshot = snapshot
             refreshDailySummary(for: snapshot, force: false)
             #if DEBUG
@@ -1025,7 +1024,7 @@ struct HomeView: View {
             ScrollView {
                 let isWide = proxy.size.width >= 700
 
-                VStack(spacing: 14) {
+                LazyVStack(spacing: 14) {
                     heroCard(snapshot)
 
                     dailyQuoteCard
@@ -1039,8 +1038,6 @@ struct HomeView: View {
                     todayTasksCard(snapshot)
 
                     recentPlansCard(snapshot)
-
-                    DailyCalculationHomeCard()
 
                     learningCalendarCard(snapshot)
 
@@ -1086,8 +1083,6 @@ struct HomeView: View {
                     loadingHeroCard
 
                     dailyQuoteCard
-
-                    DailyCalculationHomeCard()
 
                     if isWide {
                         HStack(spacing: 12) {
@@ -2284,10 +2279,6 @@ struct HomeView: View {
                 pointBalance: snapshot.pointBalance + PointLedgerService.taskRewardAmount,
                 pointsEarnedToday: snapshot.pointsEarnedToday + PointLedgerService.taskRewardAmount,
                 currentPointStreak: snapshot.currentPointStreak,
-                calculationCompletedToday: snapshot.calculationCompletedToday,
-                calculationFirstRoundCorrect: snapshot.calculationFirstRoundCorrect,
-                calculationFirstRoundTotal: snapshot.calculationFirstRoundTotal,
-                calculationRoundsSubmitted: snapshot.calculationRoundsSubmitted,
                 wrongReviewSamples: snapshot.wrongReviewSamples,
                 heroSubtitle: snapshot.heroSubtitle,
                 heroGradientColors: snapshot.heroGradientColors
